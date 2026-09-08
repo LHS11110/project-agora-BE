@@ -94,3 +94,12 @@ ENV/
 .installed.cfg
 *.egg
 .pytest_cache/
+config.json
+!config.example.json
+
+
+### Testing files (로컬 테스트 전용)
+*test.html
+test.html
+test_*.py
+tests/
