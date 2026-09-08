@@ -77,3 +77,20 @@ Thumbs.db
 # application-secret.properties
 # application-secret.yml
 # .env
+
+*.txt
+
+### Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
