@@ -1,4 +1,12 @@
 {
   "public_ip": "127.0.0.1",
-  "port": 8000
+  "port": 8000,
+  "elasticsearch": {
+    "hosts": ["http://localhost:9200"],
+    "index": "canvases",
+    "username": null,
+    "password": null,
+    "api_key": null,
+    "strict_mode": false
+  }
 }

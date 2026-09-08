@@ -1,20 +1,24 @@
 from typing import Dict, List, Optional
 from app.models.canvas import Canvas, CanvasItem, CreateCanvasRequest
+from app.services.es_service import es_service
 
 
 class CanvasService:
-    """캔버스 생성, 조회, 수정 및 관리 비즈니스 로직 서비스"""
+    """캔버스 생성, 조회, 수정 및 관리 비즈니스 로직 서비스 (Elasticsearch 연동)"""
 
     def __init__(self):
-        self._canvases: Dict[int, Canvas] = {}
         self._next_id: int = 1
 
     def create_canvas(self, req: CreateCanvasRequest) -> Canvas:
         """
-        form.txt 최신 규격에 맞춰 새로운 캔버스를 생성합니다.
-        - admin-uid를 peoples에 기본 등록
-        - inner-group에 admin-group([admin-uid]) 및 init-group([]) 기본 구성
+        form.txt 최신 규격에 맞춰 새로운 캔버스를 생성하고 Elasticsearch에 색인/저장합니다.
+        문서의 기본키는 canvas_name으로 사용됩니다.
         """
+        # ES 내 최대 ID 조회 후 다음 ID 결정
+        max_id = es_service.get_max_canvas_id()
+        if max_id >= self._next_id:
+            self._next_id = max_id + 1
+
         canvas_id = self._next_id
         self._next_id += 1
 
@@ -40,16 +44,45 @@ class CanvasService:
             }
         )
 
-        self._canvases[canvas_id] = canvas
+        # Elasticsearch에 기본키(canvas-name)로 저장
+        es_service.save_canvas(canvas)
+
         return canvas
 
+    def get_canvas_by_name(self, canvas_name: str) -> Optional[Canvas]:
+        """Elasticsearch 기본키(canvas-name)로 캔버스를 단건 조회합니다."""
+        es_data = es_service.get_canvas_by_name(canvas_name)
+        if es_data:
+            try:
+                return Canvas(**es_data)
+            except Exception:
+                return None
+        return None
+
+    def delete_canvas_by_name(self, canvas_name: str) -> bool:
+        """기본키(canvas-name)로 Elasticsearch에서 캔버스를 삭제합니다."""
+        return es_service.delete_canvas_by_name(canvas_name)
+
     def get_canvas(self, canvas_id: int) -> Optional[Canvas]:
-        """ID로 캔버스를 단건 조회합니다."""
-        return self._canvases.get(canvas_id)
+        """ID로 Elasticsearch에서 캔버스를 단건 조회합니다."""
+        es_data = es_service.get_canvas(canvas_id)
+        if es_data:
+            try:
+                return Canvas(**es_data)
+            except Exception:
+                return None
+        return None
 
     def list_canvases(self) -> List[Canvas]:
-        """등록된 전체 캔버스 목록을 반환합니다."""
-        return list(self._canvases.values())
+        """등록된 전체 캔버스 목록을 Elasticsearch에서 조회하여 반환합니다."""
+        es_data_list = es_service.list_canvases()
+        canvases: List[Canvas] = []
+        for item in es_data_list:
+            try:
+                canvases.append(Canvas(**item))
+            except Exception:
+                continue
+        return canvases
 
     def join_user(self, canvas_id: int, uid: int) -> Optional[Canvas]:
         """캔버스에 사용자를 참가시키고 초기 내부 그룹(init-group)에 배정합니다."""
@@ -67,6 +100,8 @@ class CanvasService:
         if uid not in canvas.inner_group[init_grp]:
             canvas.inner_group[init_grp].append(uid)
 
+        # ES 동기화
+        es_service.save_canvas(canvas)
         return canvas
 
     def add_inner_group(self, canvas_id: int, group_name: str) -> Optional[Canvas]:
@@ -77,6 +112,7 @@ class CanvasService:
 
         if group_name not in canvas.inner_group:
             canvas.inner_group[group_name] = []
+            es_service.save_canvas(canvas)
 
         return canvas
 
@@ -97,12 +133,15 @@ class CanvasService:
         if uid not in canvas.inner_group[target_group]:
             canvas.inner_group[target_group].append(uid)
 
+        # ES 동기화
+        es_service.save_canvas(canvas)
         return canvas
 
     def put_item(self, canvas_id: int, item_id: str, item: CanvasItem) -> Optional[Canvas]:
         """
         캔버스에 아이템을 배치하거나 업데이트합니다.
         - permission 맵에 'admin-group': 7이 항상 포함되도록 보장
+        - 변경 사항을 Elasticsearch에 반영
         """
         canvas = self.get_canvas(canvas_id)
         if not canvas:
@@ -113,6 +152,9 @@ class CanvasService:
             item.permission[g_name] = max(0, min(7, perm))
         item.permission["admin-group"] = 7
         canvas.items[item_id] = item
+
+        # ES 동기화
+        es_service.save_canvas(canvas)
         return canvas
 
     def remove_item(self, canvas_id: int, item_id: str) -> Optional[Canvas]:
@@ -122,14 +164,13 @@ class CanvasService:
             return None
 
         del canvas.items[item_id]
+        # ES 동기화
+        es_service.save_canvas(canvas)
         return canvas
 
     def delete_canvas(self, canvas_id: int) -> bool:
-        """캔버스를 삭제합니다."""
-        if canvas_id in self._canvases:
-            del self._canvases[canvas_id]
-            return True
-        return False
+        """Elasticsearch에서 캔버스 문서를 삭제합니다."""
+        return es_service.delete_canvas(canvas_id)
 
 
 # 싱글톤 인스턴스

@@ -33,8 +33,14 @@ class MoveGroupRequest(BaseModel):
 def create_new_canvas(request: CreateCanvasRequest) -> Canvas:
     """
     form.txt 규격에 맞춰 새로운 캔버스를 생성합니다.
-    - admin-uid가 필수이며, 자동으로 peoples 및 admin-group에 등록됩니다.
+    - Elasticsearch 기본키는 canvas_name입니다.
+    - 동일한 이름의 캔버스가 이미 존재할 경우 409 Conflict를 반환합니다.
     """
+    if canvas_service.get_canvas_by_name(request.canvas_name):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Canvas with name '{request.canvas_name}' already exists"
+        )
     return canvas_service.create_canvas(request)
 
 
@@ -49,9 +55,22 @@ def list_all_canvases() -> List[Canvas]:
 
 
 @router.get(
+    "/name/{canvas_name}",
+    response_model=Canvas,
+    summary="캔버스 이름(기본키)으로 상세 조회"
+)
+def get_canvas_by_name(canvas_name: str) -> Canvas:
+    """Elasticsearch 기본키인 캔버스 이름(canvas-name)으로 상세 데이터를 조회합니다."""
+    canvas = canvas_service.get_canvas_by_name(canvas_name)
+    if not canvas:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return canvas
+
+
+@router.get(
     "/{canvas_id}",
     response_model=Canvas,
-    summary="캔버스 상세 조회"
+    summary="캔버스 ID로 상세 조회"
 )
 def get_canvas_by_id(canvas_id: int) -> Canvas:
     """지정한 ID의 캔버스 전체 데이터(관리자, 참가자, 내부 그룹, 아이템)를 조회합니다."""
