@@ -55,7 +55,7 @@ class TieredDataServiceTest {
     }
 
     @Test
-    @DisplayName("신규 데이터 저장 시 Redis Hash와 ZSet(score=1)에 저장된다")
+    @DisplayName("신규 데이터 저장 시 Redis Hash와 ZSet(score=5)에 저장된다")
     void save_Success() {
         // given
         DataRecordDto dto = DataRecordDto.builder()
@@ -68,9 +68,9 @@ class TieredDataServiceTest {
 
         // then
         assertThat(saved.getId()).isNotNull();
-        assertThat(saved.getAccessCount()).isEqualTo(1L);
+        assertThat(saved.getAccessCount()).isEqualTo(5L);
         verify(hashOperations, times(1)).put(eq(TieredDataService.CACHE_RECORDS_KEY), eq(saved.getId()), any());
-        verify(zSetOperations, times(1)).add(eq(TieredDataService.CACHE_ACTIVITY_KEY), eq(saved.getId()), eq(1.0));
+        verify(zSetOperations, times(1)).add(eq(TieredDataService.CACHE_ACTIVITY_KEY), eq(saved.getId()), eq(5.0));
     }
 
     @Test

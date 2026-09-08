@@ -21,7 +21,7 @@ public class DataRecordDto implements Serializable {
     private String content;
 
     @Builder.Default
-    private Long accessCount = 1L;
+    private Long accessCount = 5L;
 
     @Builder.Default
     @JsonFormat(pattern = "yyyy-MM-dd'T'HH:mm:ss")

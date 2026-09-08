@@ -34,6 +34,9 @@ public class TieredStorageScheduler {
     @Value("${app.tiered-storage.batch-limit:50}")
     private int batchLimit;
 
+    @Value("${app.tiered-storage.decay-factor:0.9}")
+    private double decayFactor;
+
     /**
      * 주기적으로 덜 사용된(Cold) 데이터를 탐색하여
      * MS SQL과 Elasticsearch에 영구 보관 후 Redis 캐시에서 퇴거(Evict)합니다.
@@ -45,7 +48,10 @@ public class TieredStorageScheduler {
             return;
         }
 
-        // 사용 빈도가 임계값 이하인 콜드 데이터 추출
+        // 1. 오래되었거나 조회가 없는 데이터의 점수를 점진적으로 감쇠 (Score Decay)
+        tieredDataService.decayScores(decayFactor);
+
+        // 2. 점수가 임계값 이하로 내려간 콜드 데이터 추출
         List<DataRecordDto> coldRecords = tieredDataService.identifyColdRecords(coldThresholdScore, batchLimit);
         if (coldRecords.isEmpty()) {
             log.debug("No cold records found. All items in Redis are frequently accessed (HOT).");

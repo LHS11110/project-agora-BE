@@ -61,7 +61,7 @@ class DataRecordControllerTest {
                 .id("record-101")
                 .title("New Notice")
                 .content("System Maintenance Tonight")
-                .accessCount(1L)
+                .accessCount(5L)
                 .build();
 
         when(tieredDataService.save(any(DataRecordDto.class))).thenReturn(saved);
@@ -73,7 +73,7 @@ class DataRecordControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").value("record-101"))
                 .andExpect(jsonPath("$.title").value("New Notice"))
-                .andExpect(jsonPath("$.accessCount").value(1));
+                .andExpect(jsonPath("$.accessCount").value(5));
 
         verify(tieredDataService).save(any(DataRecordDto.class));
     }

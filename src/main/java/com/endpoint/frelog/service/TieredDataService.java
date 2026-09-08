@@ -26,9 +26,12 @@ public class TieredDataService {
     private final DataRecordJpaRepository dataRecordJpaRepository;
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Value("${app.tiered-storage.initial-score:5.0}")
+    private double initialScore = 5.0;
+
     /**
      * 신규 데이터 등록 및 Redis 캐시 저장
-     * 초기 접근 빈도(score=1.0)를 부여하여 Redis Hot 영역에 저장합니다.
+     * 초기 접근 빈도(score=5.0)를 부여하여 Redis Hot 영역에 저장합니다.
      */
     public DataRecordDto save(DataRecordDto dto) {
         if (dto.getId() == null || dto.getId().isBlank()) {
@@ -36,7 +39,7 @@ public class TieredDataService {
         }
 
         if (dto.getAccessCount() == null || dto.getAccessCount() <= 0) {
-            dto.setAccessCount(1L);
+            dto.setAccessCount((long) initialScore);
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -136,6 +139,34 @@ public class TieredDataService {
         redisTemplate.opsForZSet().remove(CACHE_ACTIVITY_KEY, idArray);
 
         log.info("Evicted {} cold records from Redis cache to save memory: {}", ids.size(), ids);
+    }
+
+    /**
+     * 안 쓰이는 데이터 점수 감쇠 (Score Decay / Aging):
+     * 주기적으로 호출되어 Redis ZSet 내 모든 데이터의 점수에 decayFactor(예: 0.9)를 곱합니다.
+     * 새로운 조회(Hit)가 없는 데이터는 점수가 점진적으로 하락하여 결국 콜드 임계치 이하로 떨어집니다.
+     */
+    public void decayScores(double decayFactor) {
+        String luaScript =
+                "local key = KEYS[1]\n" +
+                "local factor = tonumber(ARGV[1])\n" +
+                "local items = redis.call('ZRANGE', key, 0, -1, 'WITHSCORES')\n" +
+                "for i = 1, #items, 2 do\n" +
+                "    local member = items[i]\n" +
+                "    local score = tonumber(items[i+1])\n" +
+                "    local newScore = score * factor\n" +
+                "    redis.call('ZADD', key, newScore, member)\n" +
+                "end\n" +
+                "return #items / 2";
+
+        try {
+            org.springframework.data.redis.core.script.DefaultRedisScript<Long> script =
+                    new org.springframework.data.redis.core.script.DefaultRedisScript<>(luaScript, Long.class);
+            redisTemplate.execute(script, Collections.singletonList(CACHE_ACTIVITY_KEY), String.valueOf(decayFactor));
+            log.debug("Applied score decay with factor {} on key {}", decayFactor, CACHE_ACTIVITY_KEY);
+        } catch (Exception e) {
+            log.warn("Failed to execute score decay script: {}", e.getMessage());
+        }
     }
 
     /**
