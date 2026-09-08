@@ -12,7 +12,7 @@ router = APIRouter(
 
 
 class JoinUserRequest(BaseModel):
-    uid: str = Field(..., description="참가할 사용자 고유 ID")
+    uid: int = Field(..., description="참가할 사용자 고유 ID (정수값)")
 
 
 class GroupPermissionRequest(BaseModel):

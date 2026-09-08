@@ -40,7 +40,7 @@ class CanvasService:
         """등록된 전체 캔버스 목록을 반환합니다."""
         return list(self._canvases.values())
 
-    def join_user(self, canvas_id: int, uid: str) -> Optional[Canvas]:
+    def join_user(self, canvas_id: int, uid: int) -> Optional[Canvas]:
         """캔버스에 사용자를 참가시키고 초기 내부 그룹에 소속시킵니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas:
