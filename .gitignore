@@ -1,16 +1,16 @@
-# Compiled class file
+### Compiled class file
 *.class
 
-# Log file
+### Log file
 *.log
 
-# BlueJ files
+### BlueJ files
 *.ctxt
 
-# Mobile Tools for Java (J2ME)
+### Mobile Tools for Java (J2ME)
 .mtj.tmp/
 
-# Package Files #
+### Package Files
 *.jar
 *.war
 *.nar
@@ -19,6 +19,59 @@
 *.tar.gz
 *.rar
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+### Virtual machine crash logs
 hs_err_pid*
 replay_pid*
+
+### Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+### Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+### IntelliJ IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### Eclipse
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+
+### Visual Studio Code
+.vscode/
+
+### OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+### Environment / Sensitive properties (선택 사항)
+# application-local.yml
+# application-secret.yml
+# .env
