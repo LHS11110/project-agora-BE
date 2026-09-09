@@ -170,6 +170,28 @@ async function handleSignup(e) {
   }
 }
 
+// Safe Base64URL UTF-8 Decoder for JWT Payload
+function decodeJwtPayload(token) {
+  try {
+    const payloadPart = token.split('.')[1];
+    if (!payloadPart) return null;
+    const base64 = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+    return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+  } catch (err) {
+    try {
+      const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      const padded = base64.padEnd(base64.length + (4 - base64.length % 4) % 4, '=');
+      return JSON.parse(decodeURIComponent(escape(atob(padded))));
+    } catch (e2) {
+      console.error('JWT 페이로드 디코딩 실패:', err, e2);
+      return null;
+    }
+  }
+}
+
 // Decode and display JWT token
 function displayToken(token) {
   const tokenDisplay = document.getElementById('tokenDisplay');
@@ -179,10 +201,8 @@ function displayToken(token) {
   tokenDisplay.textContent = token;
   tokenDisplay.classList.remove('token-empty');
 
-  try {
-    const payloadPart = token.split('.')[1];
-    const decodedPayload = JSON.parse(atob(payloadPart.replace(/-/g, '+').replace(/_/g, '/')));
-
+  const decodedPayload = decodeJwtPayload(token);
+  if (decodedPayload) {
     document.getElementById('claimUserId').textContent = decodedPayload.userId || '-';
     document.getElementById('claimEmail').textContent = decodedPayload.sub || '-';
     document.getElementById('claimRole').textContent = decodedPayload.role || '-';
@@ -191,7 +211,7 @@ function displayToken(token) {
     claimsGrid.style.display = 'grid';
     authBadge.innerHTML = `<span>인증됨: ${decodedPayload.nickname || decodedPayload.sub} (${decodedPayload.role})</span>`;
     authBadge.className = 'badge badge-status';
-  } catch (err) {
+  } else {
     claimsGrid.style.display = 'none';
   }
 }
