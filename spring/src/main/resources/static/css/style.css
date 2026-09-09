@@ -563,3 +563,130 @@ input:focus {
 .toast.success { border-color: var(--success); color: #34d399; }
 .toast.error { border-color: var(--danger); color: #f87171; }
 .toast.info { border-color: var(--primary); color: #818cf8; }
+
+/* Canvas Management Styles */
+.canvas-card {
+  width: 100%;
+}
+
+.canvas-layout {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 900px) {
+  .canvas-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.canvas-form-box {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-list-box {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  overflow-x: auto;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.canvas-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  text-align: left;
+}
+
+.canvas-table th {
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+
+.canvas-table td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.canvas-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.badge-none {
+  background: rgba(100, 116, 139, 0.15);
+  color: #94a3b8;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.badge-allocated {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.tag-cached-true {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.tag-cached-false {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.btn-table-action {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--card-border);
+  color: var(--text-main);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: var(--transition);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.btn-table-action:hover {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: var(--primary);
+}
+
+.btn-table-delete:hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger);
+  color: #fca5a5;
+}
+

@@ -14,6 +14,9 @@ public enum ErrorCode {
     EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "USER_001", "이미 사용 중인 이메일입니다."),
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "USER_002", "사용자를 찾을 수 없습니다."),
 
+    CANVAS_NOT_FOUND(HttpStatus.NOT_FOUND, "CANVAS_001", "캔버스를 찾을 수 없습니다."),
+    CANVAS_ALREADY_EXISTS(HttpStatus.CONFLICT, "CANVAS_002", "이미 존재하는 캔버스입니다."),
+
     INVALID_INPUT_VALUE(HttpStatus.BAD_REQUEST, "COMMON_001", "입력값이 유효하지 않습니다."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "COMMON_002", "서버 내부 오류가 발생했습니다.");
 

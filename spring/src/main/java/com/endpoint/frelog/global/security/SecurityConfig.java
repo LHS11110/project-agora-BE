@@ -64,6 +64,7 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/health",
+                                "/api/canvases/**",
                                 "/error"
                         ).permitAll()
                         .anyRequest().authenticated()

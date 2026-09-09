@@ -124,17 +124,86 @@ DB_HOST=192.168.1.100 DB_PORT=14333 ./gradlew bootRun
 
 ---
 
-## 4. 빌드 및 테스트 실행
+## 4. Canvas 관리 및 캐시 API 명세
+
+`~/github/project-agora-DB`의 `canvas_cache` 테이블과 연동되어 캔버스 메타데이터 및 캐시/서버 인스턴스 할당 상태를 관리합니다.  
+**요구사항 반영: 캔버스 최초 생성 시 `redis_ip`, `server_ip`는 항상 `none(null)`으로 시작하며 `is_cached`는 `false`로 등록됩니다.**
+
+### (1) 캔버스 생성 (`POST /api/canvases`)
+- **Request Body**:
+  ```json
+  {
+    "canvasName": "Agora Shared Canvas",
+    "canvasId": 1001
+  }
+  ```
+  *(canvasId 생략 시 DB 내 `MAX(canvas_id) + 1`로 자동 채번)*
+- **Response (201 Created)**:
+  ```json
+  {
+    "canvasId": 1001,
+    "canvasName": "Agora Shared Canvas",
+    "redisIp": null,
+    "redisPort": null,
+    "serverIp": null,
+    "serverPort": null,
+    "isCached": false,
+    "createdAt": "2026-09-09T14:00:00",
+    "updatedAt": "2026-09-09T14:00:00"
+  }
+  ```
+
+### (2) 전체 캔버스 목록 조회 (`GET /api/canvases`)
+- **Response (200 OK)**:
+  ```json
+  [
+    {
+      "canvasId": 1001,
+      "canvasName": "Agora Shared Canvas",
+      "redisIp": null,
+      "redisPort": null,
+      "serverIp": null,
+      "serverPort": null,
+      "isCached": false,
+      "createdAt": "2026-09-09T14:00:00",
+      "updatedAt": "2026-09-09T14:00:00"
+    }
+  ]
+  ```
+
+### (3) 캔버스 단건 조회 (`GET /api/canvases/{canvasId}`)
+- **Response (200 OK)**: 단건 캔버스 캐시 객체 반환
+- 존재하지 않을 시: `404 Not Found` (`CANVAS_001`)
+
+### (4) 캔버스 캐시 상태 업데이트 (`PATCH /api/canvases/{canvasId}/cache`)
+- **Request Body**:
+  ```json
+  {
+    "isCached": true,
+    "redisIp": "127.0.0.1",
+    "redisPort": "6379",
+    "serverIp": "127.0.0.1",
+    "serverPort": "8000"
+  }
+  ```
+- **Response (200 OK)**: 갱신된 캔버스 캐시 정보 반환
+
+### (5) 캔버스 삭제 (`DELETE /api/canvases/{canvasId}`)
+- **Response**: `204 No Content`
+
+---
+
+## 5. 빌드 및 테스트 실행
 
 ```bash
 cd spring
 
-# 테스트 전체 실행 (18개 테스트 통과)
+# 테스트 전체 실행 (32개 테스트 통과)
 ./gradlew test
 
 # 실행 가능한 jar 빌드
 ./gradlew bootJar
 
-# 애플리케이션 실행
+# 애플리케이션 실행 (웹 플레이그라운드 http://localhost:8080/ 포함)
 ./gradlew bootRun
 ```

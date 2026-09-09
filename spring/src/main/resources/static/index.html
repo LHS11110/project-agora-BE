@@ -169,6 +169,75 @@
       </div>
     </div>
 
+    <!-- Canvas Management Section -->
+    <div class="card canvas-card">
+      <div class="card-header">
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+          캔버스 캐시 관리 (Canvas Cache Management)
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" onclick="loadCanvases()">
+            🔄 목록 새로고침 (GET /api/canvases)
+          </button>
+        </div>
+      </div>
+
+      <div class="canvas-layout">
+        <!-- Canvas Create Form -->
+        <div class="canvas-form-box">
+          <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">신규 캔버스 생성</h3>
+          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;">
+            ⚠️ 생성 시 <strong style="color: #38bdf8;">redis_ip</strong>, <strong style="color: #a78bfa;">server_ip</strong>는 <strong style="color: #cbd5e1;">none(null)</strong>으로 시작하고, <strong style="color: #f59e0b;">is_cached</strong>는 <strong style="color: #f87171;">false</strong>로 등록됩니다.
+          </p>
+          <form id="createCanvasForm" onsubmit="handleCreateCanvas(event)">
+            <div class="form-group">
+              <label for="canvasNameInput">캔버스 이름</label>
+              <input type="text" id="canvasNameInput" placeholder="예: Agora Workspace 1" required>
+            </div>
+            <div class="form-group" style="margin-top: 10px;">
+              <label for="canvasIdInput">캔버스 ID (선택 - 비워두면 자동 발급)</label>
+              <input type="number" id="canvasIdInput" placeholder="비워둘 시 자동 채번">
+            </div>
+            <div style="margin-top: 14px;">
+              <button type="submit" class="btn-primary" style="width: 100%; font-size: 0.88rem; padding: 10px;">
+                캔버스 생성 (POST /api/canvases)
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Canvas Table List -->
+        <div class="canvas-list-box">
+          <div class="table-responsive">
+            <table class="canvas-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>이름</th>
+                  <th>Redis Server</th>
+                  <th>Python Server</th>
+                  <th>is_cached</th>
+                  <th>테스트 액션</th>
+                </tr>
+              </thead>
+              <tbody id="canvasTableBody">
+                <tr>
+                  <td colspan="6" style="text-align: center; color: var(--text-subtle); padding: 24px;">
+                    등록된 캔버스가 없습니다. 좌측에서 새로운 캔버스를 생성해보세요.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Console Section -->
     <div class="console-card">
       <div class="console-header">
