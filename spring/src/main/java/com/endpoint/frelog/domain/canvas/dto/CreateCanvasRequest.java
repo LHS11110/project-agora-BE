@@ -8,6 +8,11 @@ public record CreateCanvasRequest(
         @Size(max = 255, message = "캔버스 이름은 최대 255자까지 가능합니다.")
         String canvasName,
 
-        Integer canvasId
+        Integer canvasId,
+
+        Long userId
 ) {
+    public CreateCanvasRequest(String canvasName, Integer canvasId) {
+        this(canvasName, canvasId, null);
+    }
 }

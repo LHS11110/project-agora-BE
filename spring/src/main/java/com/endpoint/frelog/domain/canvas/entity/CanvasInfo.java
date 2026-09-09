@@ -1,8 +1,12 @@
 package com.endpoint.frelog.domain.canvas.entity;
 
+import com.endpoint.frelog.domain.user.entity.User;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -10,8 +14,8 @@ import jakarta.persistence.Table;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "canvas_cache")
-public class CanvasCache {
+@Table(name = "canvas_info")
+public class CanvasInfo {
 
     @Id
     @Column(name = "canvas_id", nullable = false)
@@ -32,6 +36,10 @@ public class CanvasCache {
     @Column(name = "server_port", length = 10)
     private String serverPort;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    private User user;
+
     @Column(name = "is_cached", nullable = false)
     private Boolean isCached = false;
 
@@ -41,12 +49,13 @@ public class CanvasCache {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
-    public CanvasCache() {
+    public CanvasInfo() {
     }
 
-    public CanvasCache(Integer canvasId, String canvasName) {
+    public CanvasInfo(Integer canvasId, String canvasName, User user) {
         this.canvasId = canvasId;
         this.canvasName = canvasName;
+        this.user = user;
         // 요구사항: 처음에 cache에 redis 및 server는 항상 none(null)으로 시작하고 is_cached는 false
         this.redisIp = null;
         this.redisPort = null;
@@ -131,6 +140,14 @@ public class CanvasCache {
 
     public void setServerPort(String serverPort) {
         this.serverPort = serverPort;
+    }
+
+    public User getUser() {
+        return user;
+    }
+
+    public void setUser(User user) {
+        this.user = user;
     }
 
     public Boolean getIsCached() {

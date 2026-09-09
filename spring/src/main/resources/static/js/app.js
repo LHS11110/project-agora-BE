@@ -211,6 +211,11 @@ function displayToken(token) {
     claimsGrid.style.display = 'grid';
     authBadge.innerHTML = `<span>인증됨: ${decodedPayload.nickname || decodedPayload.sub} (${decodedPayload.role})</span>`;
     authBadge.className = 'badge badge-status';
+
+    const canvasUserIdInput = document.getElementById('canvasUserIdInput');
+    if (canvasUserIdInput && decodedPayload.userId) {
+      canvasUserIdInput.value = decodedPayload.userId;
+    }
   } else {
     claimsGrid.style.display = 'none';
   }
@@ -293,6 +298,11 @@ function clearAuth() {
   authBadge.className = 'badge';
 
   showToast('로그아웃되었습니다. 토큰이 삭제되었습니다.', 'info');
+
+  const canvasUserIdInput = document.getElementById('canvasUserIdInput');
+  if (canvasUserIdInput) {
+    canvasUserIdInput.value = '';
+  }
 }
 
 // =======================================================
@@ -313,10 +323,10 @@ async function loadCanvases() {
     if (res.ok) {
       renderCanvasTable(data);
     } else {
-      tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--danger); padding: 16px;">조회 실패: ${data.message || '오류'}</td></tr>`;
+      tableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--danger); padding: 16px;">조회 실패: ${data.message || '오류'}</td></tr>`;
     }
   } catch (err) {
-    tableBody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--danger); padding: 16px;">서버 통신 실패: ${err.message}</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--danger); padding: 16px;">서버 통신 실패: ${err.message}</td></tr>`;
   }
 }
 
@@ -326,7 +336,7 @@ function renderCanvasTable(canvases) {
   if (!canvases || canvases.length === 0) {
     tableBody.innerHTML = `
       <tr>
-        <td colspan="6" style="text-align: center; color: var(--text-subtle); padding: 24px;">
+        <td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 24px;">
           등록된 캔버스가 없습니다. 좌측에서 새로운 캔버스를 생성해보세요.
         </td>
       </tr>
@@ -335,6 +345,7 @@ function renderCanvasTable(canvases) {
   }
 
   tableBody.innerHTML = canvases.map(c => {
+    const ownerDisplay = c.userId ? `<span class="badge-allocated" style="background: rgba(52, 211, 153, 0.15); color: #34d399; border-color: rgba(52, 211, 153, 0.3);">#${c.userId} ${c.userNickname || ''}</span>` : `<span class="badge-none">-</span>`;
     const redisDisplay = c.redisIp ? `<span class="badge-allocated">${c.redisIp}:${c.redisPort}</span>` : `<span class="badge-none">none</span>`;
     const serverDisplay = c.serverIp ? `<span class="badge-allocated">${c.serverIp}:${c.serverPort}</span>` : `<span class="badge-none">none</span>`;
     const cachedBadge = c.isCached ? `<span class="tag-cached-true">TRUE (캐싱됨)</span>` : `<span class="tag-cached-false">FALSE (미캐싱)</span>`;
@@ -343,6 +354,7 @@ function renderCanvasTable(canvases) {
       <tr>
         <td style="font-family: var(--font-mono); font-weight: 600;">#${c.canvasId}</td>
         <td style="font-weight: 500;">${c.canvasName}</td>
+        <td>${ownerDisplay}</td>
         <td>${redisDisplay}</td>
         <td>${serverDisplay}</td>
         <td>${cachedBadge}</td>
@@ -356,25 +368,35 @@ function renderCanvasTable(canvases) {
   }).join('');
 }
 
-// Handle Canvas Creation (Initially redis/server is none, is_cached is false)
+// Handle Canvas Creation (Initially redis/server is none, is_cached is false, user_id foreign key linked)
 async function handleCreateCanvas(e) {
   e.preventDefault();
   const nameInput = document.getElementById('canvasNameInput');
   const idInput = document.getElementById('canvasIdInput');
+  const userIdInput = document.getElementById('canvasUserIdInput');
 
   const canvasName = nameInput.value.trim();
   const canvasId = idInput.value ? parseInt(idInput.value, 10) : null;
+  const userId = userIdInput && userIdInput.value ? parseInt(userIdInput.value, 10) : null;
 
   const payload = { canvasName };
   if (canvasId !== null && !isNaN(canvasId)) {
     payload.canvasId = canvasId;
+  }
+  if (userId !== null && !isNaN(userId)) {
+    payload.userId = userId;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (currentToken) {
+    headers['Authorization'] = `Bearer ${currentToken}`;
   }
 
   const startTime = performance.now();
   try {
     const res = await fetch('/api/canvases', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload)
     });
 
@@ -383,7 +405,7 @@ async function handleCreateCanvas(e) {
     logConsole('POST', '/api/canvases', res.status, duration, data);
 
     if (res.ok) {
-      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (redis: none, is_cached: false)`, 'success');
+      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (소유자: #${data.userId}, redis: none)`, 'success');
       nameInput.value = '';
       idInput.value = '';
       loadCanvases();
@@ -399,6 +421,11 @@ async function handleCreateCanvas(e) {
 
 // Simulate Cache Allocation (PATCH /api/canvases/{id}/cache)
 async function simulateCacheAllocation(canvasId) {
+  if (!currentToken) {
+    showToast('수정 권한이 필요합니다. 먼저 로그인해주세요 (소유자 또는 관리자).', 'error');
+    return;
+  }
+
   const startTime = performance.now();
   const updateBody = {
     isCached: true,
@@ -411,7 +438,10 @@ async function simulateCacheAllocation(canvasId) {
   try {
     const res = await fetch(`/api/canvases/${canvasId}/cache`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentToken}`
+      },
       body: JSON.stringify(updateBody)
     });
 
@@ -422,8 +452,10 @@ async function simulateCacheAllocation(canvasId) {
     if (res.ok) {
       showToast(`캔버스 #${canvasId} 캐시 할당 완료 (is_cached: true)`, 'success');
       loadCanvases();
+    } else if (res.status === 403) {
+      showToast(`권한 없음 (403): 캔버스 소유자 또는 관리자만 수정할 수 있습니다.`, 'error');
     } else {
-      showToast(`캐시 변경 실패: ${data.message}`, 'error');
+      showToast(`캐시 변경 실패: ${data.message || '오류'}`, 'error');
     }
   } catch (err) {
     showToast(`요청 실패: ${err.message}`, 'error');
@@ -432,6 +464,11 @@ async function simulateCacheAllocation(canvasId) {
 
 // Reset Cache Allocation to None / False
 async function resetCacheAllocation(canvasId) {
+  if (!currentToken) {
+    showToast('수정 권한이 필요합니다. 먼저 로그인해주세요 (소유자 또는 관리자).', 'error');
+    return;
+  }
+
   const startTime = performance.now();
   const updateBody = {
     isCached: false,
@@ -444,7 +481,10 @@ async function resetCacheAllocation(canvasId) {
   try {
     const res = await fetch(`/api/canvases/${canvasId}/cache`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentToken}`
+      },
       body: JSON.stringify(updateBody)
     });
 
@@ -455,8 +495,10 @@ async function resetCacheAllocation(canvasId) {
     if (res.ok) {
       showToast(`캔버스 #${canvasId} 캐시 리셋 완료 (redis: none, is_cached: false)`, 'info');
       loadCanvases();
+    } else if (res.status === 403) {
+      showToast(`권한 없음 (403): 캔버스 소유자 또는 관리자만 수정할 수 있습니다.`, 'error');
     } else {
-      showToast(`리셋 실패: ${data.message}`, 'error');
+      showToast(`리셋 실패: ${data.message || '오류'}`, 'error');
     }
   } catch (err) {
     showToast(`요청 실패: ${err.message}`, 'error');
@@ -465,24 +507,39 @@ async function resetCacheAllocation(canvasId) {
 
 // Delete Canvas (DELETE /api/canvases/{id})
 async function deleteCanvas(canvasId) {
-  if (!confirm(`캔버스 #${canvasId}를 삭제하시겠습니까?`)) {
+  if (!currentToken) {
+    showToast('삭제 권한이 필요합니다. 먼저 로그인해주세요 (소유자 또는 관리자).', 'error');
+    return;
+  }
+
+  if (!confirm(`캔버스 #${canvasId}를 삭제하시겠습니까? (소유자 또는 관리자만 가능)`)) {
     return;
   }
 
   const startTime = performance.now();
   try {
     const res = await fetch(`/api/canvases/${canvasId}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${currentToken}`
+      }
     });
 
     const duration = Math.round(performance.now() - startTime);
-    logConsole('DELETE', `/api/canvases/${canvasId}`, res.status, duration, { message: `Canvas #${canvasId} deleted` });
+    let data = null;
+    try {
+      data = await res.json();
+    } catch (_) {}
+
+    logConsole('DELETE', `/api/canvases/${canvasId}`, res.status, duration, data || { message: `Canvas #${canvasId} deleted` });
 
     if (res.ok) {
       showToast(`캔버스 #${canvasId}가 삭제되었습니다.`, 'info');
       loadCanvases();
+    } else if (res.status === 403) {
+      showToast(`권한 없음 (403): 캔버스 소유자 또는 관리자만 삭제할 수 있습니다.`, 'error');
     } else {
-      showToast(`삭제 실패 (${res.status})`, 'error');
+      showToast(`삭제 실패 (${res.status}): ${data?.message || '권한 또는 서버 오류'}`, 'error');
     }
   } catch (err) {
     showToast(`요청 실패: ${err.message}`, 'error');

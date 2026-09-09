@@ -178,7 +178,7 @@
             <circle cx="8.5" cy="8.5" r="1.5"></circle>
             <polyline points="21 15 16 10 5 21"></polyline>
           </svg>
-          캔버스 캐시 관리 (Canvas Cache Management)
+          캔버스 정보 관리 (Canvas Info Management - canvas_info)
         </div>
         <div style="display: flex; gap: 8px;">
           <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" onclick="loadCanvases()">
@@ -192,7 +192,7 @@
         <div class="canvas-form-box">
           <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">신규 캔버스 생성</h3>
           <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;">
-            ⚠️ 생성 시 <strong style="color: #38bdf8;">redis_ip</strong>, <strong style="color: #a78bfa;">server_ip</strong>는 <strong style="color: #cbd5e1;">none(null)</strong>으로 시작하고, <strong style="color: #f59e0b;">is_cached</strong>는 <strong style="color: #f87171;">false</strong>로 등록됩니다.
+            ⚠️ 생성 시 <strong style="color: #38bdf8;">redis_ip</strong>, <strong style="color: #a78bfa;">server_ip</strong>는 <strong style="color: #cbd5e1;">none(null)</strong>, <strong style="color: #f59e0b;">is_cached</strong>는 <strong style="color: #f87171;">false</strong>로 등록되며, <strong style="color: #34d399;">user_id</strong> 외래키가 연동됩니다.
           </p>
           <form id="createCanvasForm" onsubmit="handleCreateCanvas(event)">
             <div class="form-group">
@@ -202,6 +202,10 @@
             <div class="form-group" style="margin-top: 10px;">
               <label for="canvasIdInput">캔버스 ID (선택 - 비워두면 자동 발급)</label>
               <input type="number" id="canvasIdInput" placeholder="비워둘 시 자동 채번">
+            </div>
+            <div class="form-group" style="margin-top: 10px;">
+              <label for="canvasUserIdInput">소유자 회원 ID (선택 - 로그인 계정 ID 자동 지정)</label>
+              <input type="number" id="canvasUserIdInput" placeholder="로그인 시 자동 입력됨">
             </div>
             <div style="margin-top: 14px;">
               <button type="submit" class="btn-primary" style="width: 100%; font-size: 0.88rem; padding: 10px;">
@@ -219,6 +223,7 @@
                 <tr>
                   <th>ID</th>
                   <th>이름</th>
+                  <th>소유자 (User ID)</th>
                   <th>Redis Server</th>
                   <th>Python Server</th>
                   <th>is_cached</th>
@@ -227,7 +232,7 @@
               </thead>
               <tbody id="canvasTableBody">
                 <tr>
-                  <td colspan="6" style="text-align: center; color: var(--text-subtle); padding: 24px;">
+                  <td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 24px;">
                     등록된 캔버스가 없습니다. 좌측에서 새로운 캔버스를 생성해보세요.
                   </td>
                 </tr>

@@ -30,6 +30,9 @@ class SecurityIntegrationTest {
     private UserRepository userRepository;
 
     @Autowired
+    private com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository canvasInfoRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -44,6 +47,7 @@ class SecurityIntegrationTest {
                 .apply(springSecurity())
                 .build();
 
+        canvasInfoRepository.deleteAll();
         userRepository.deleteAll();
     }
 

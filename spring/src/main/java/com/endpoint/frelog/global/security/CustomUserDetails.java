@@ -22,11 +22,11 @@ public class CustomUserDetails implements UserDetails {
     }
 
     public Long getUserId() {
-        return user.getUserId();
+        return user != null ? user.getUserId() : null;
     }
 
     public String getNickname() {
-        return user.getNickname();
+        return user != null ? user.getNickname() : null;
     }
 
     @Override

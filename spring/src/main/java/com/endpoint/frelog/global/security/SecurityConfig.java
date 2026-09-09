@@ -64,9 +64,12 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/health",
-                                "/api/canvases/**",
                                 "/error"
                         ).permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/canvases/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/canvases/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.PATCH, "/api/canvases/**").authenticated()
+                        .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/canvases/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
