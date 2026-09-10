@@ -30,6 +30,9 @@
         <div class="badge badge-db" title="application.properties에서 독립 관리되는 DB 접속 정보">
           <span>MSSQL: 127.0.0.1:1433</span>
         </div>
+        <div class="badge" style="background: rgba(14, 165, 233, 0.15); border: 1px solid rgba(14, 165, 233, 0.4); color: #38bdf8;" title="application.properties에서 연동된 Elasticsearch 인덱스: canvas">
+          <span>ES: 127.0.0.1:9200 (canvas)</span>
+        </div>
         <div class="badge badge-status" id="authStatusBadge">
           <span>인증 상태: 미로그인</span>
         </div>
@@ -60,8 +63,12 @@
           <span class="tag tag-suspended">SUSPENDED</span>
           정지된 계정 (실패 테스트)
         </button>
+        <button class="btn-quick" style="border-color: rgba(56, 189, 248, 0.5); color: #38bdf8; background: rgba(56, 189, 248, 0.1);" onclick="openUsersModal()">
+          👥 모든 사용자 조회 (GET /api/users)
+        </button>
       </div>
     </div>
+
 
     <!-- Main Grid -->
     <div class="main-grid">
@@ -178,42 +185,55 @@
             <circle cx="8.5" cy="8.5" r="1.5"></circle>
             <polyline points="21 15 16 10 5 21"></polyline>
           </svg>
-          캔버스 정보 관리 (Canvas Info Management - canvas_info)
+          캔버스 정보 관리 (MS SQL + Elasticsearch 자동 동기화)
         </div>
         <div style="display: flex; gap: 8px;">
           <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" onclick="loadCanvases()">
             🔄 목록 새로고침 (GET /api/canvases)
           </button>
+          <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.4);" onclick="loadAllElasticsearchDocuments()">
+            📚 ES 전체 도큐먼트 목록 (GET /api/canvases/documents)
+          </button>
         </div>
       </div>
+
 
       <div class="canvas-layout">
         <!-- Canvas Create Form -->
         <div class="canvas-form-box">
           <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">신규 캔버스 생성</h3>
           <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;">
-            ⚠️ 생성 시 <strong style="color: #38bdf8;">redis_ip</strong>, <strong style="color: #a78bfa;">server_ip</strong>는 <strong style="color: #cbd5e1;">none(null)</strong>, <strong style="color: #f59e0b;">is_cached</strong>는 <strong style="color: #f87171;">false</strong>로 등록되며, <strong style="color: #34d399;">user_id</strong> 외래키가 연동됩니다.
+            ⚠️ 생성 시 MS SQL에 먼저 저장된 후, <strong style="color: #38bdf8;">할당된 canvas_id</strong>가 <strong style="color: #38bdf8;">Elasticsearch</strong>에 자동 색인됩니다.
           </p>
           <form id="createCanvasForm" onsubmit="handleCreateCanvas(event)">
             <div class="form-group">
-              <label for="canvasNameInput">캔버스 이름</label>
+              <label for="canvasNameInput">캔버스 이름 (필수)</label>
               <input type="text" id="canvasNameInput" placeholder="예: Agora Workspace 1" required>
             </div>
             <div class="form-group" style="margin-top: 10px;">
-              <label for="canvasIdInput">캔버스 ID (선택 - 비워두면 자동 발급)</label>
-              <input type="number" id="canvasIdInput" placeholder="비워둘 시 자동 채번">
+              <label for="canvasIdInput">캔버스 ID (선택 - 비워둘 시 MS SQL에서 자동 발급)</label>
+              <input type="number" id="canvasIdInput" placeholder="비워둘 시 자동 채번 (maxId + 1)">
             </div>
             <div class="form-group" style="margin-top: 10px;">
               <label for="canvasUserIdInput">소유자 회원 ID (선택 - 로그인 계정 ID 자동 지정)</label>
               <input type="number" id="canvasUserIdInput" placeholder="로그인 시 자동 입력됨">
             </div>
+            <div class="form-group" style="margin-top: 10px;">
+              <label for="canvasPasswordInput">캔버스 비밀번호 (선택 - ES canvas-password)</label>
+              <input type="text" id="canvasPasswordInput" placeholder="선택 사항 (미입력 시 null)">
+            </div>
+            <div class="form-group" style="margin-top: 10px;">
+              <label for="canvasInitGroupInput">초기 내부 그룹명 (선택 - 기본값: default)</label>
+              <input type="text" id="canvasInitGroupInput" placeholder="기본값: default" value="default">
+            </div>
             <div style="margin-top: 14px;">
               <button type="submit" class="btn-primary" style="width: 100%; font-size: 0.88rem; padding: 10px;">
-                캔버스 생성 (POST /api/canvases)
+                캔버스 생성 (MS SQL & ES 연동)
               </button>
             </div>
           </form>
         </div>
+
 
         <!-- Canvas Table List -->
         <div class="canvas-list-box">
@@ -259,6 +279,51 @@
         </div>
       </div>
       <pre class="console-body" id="consoleBody">// 로그인 또는 회원가입 요청을 전송하면 여기에 HTTP 응답 헤더와 JSON 페이로드가 실시간으로 출력됩니다.</pre>
+    </div>
+  </div>
+
+  <!-- All Users Modal -->
+  <div class="modal-overlay" id="usersModalOverlay" style="display: none;" onclick="closeUsersModal(event)">
+    <div class="modal-dialog" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 1.25rem;">👥</span>
+          <h3 style="font-family: var(--font-title); font-size: 1.15rem; color: var(--text-main); font-weight: 700;">전체 사용자 목록 (모든 사용자 조회)</h3>
+        </div>
+        <button class="btn-close" onclick="closeUsersModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+          <p style="font-size: 0.82rem; color: var(--text-muted); margin: 0;">
+            모든 사용자(비로그인 포함)가 조회 가능한 <code>GET /api/users</code> 및 <code>GET /api/auth/users</code> 결과입니다.
+          </p>
+          <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.78rem;" onclick="loadUsersTableData()">
+            🔄 새로고침
+          </button>
+        </div>
+        <div class="table-responsive">
+          <table class="canvas-table">
+            <thead>
+              <tr>
+                <th>User ID</th>
+                <th>이메일 (Email)</th>
+                <th>닉네임</th>
+                <th>역할 (Role)</th>
+                <th>상태 (Status)</th>
+                <th>가입일시</th>
+                <th>빠른 적용</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr>
+                <td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 20px;">
+                  사용자 목록을 불러오는 중...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
 

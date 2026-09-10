@@ -1,8 +1,10 @@
 package com.endpoint.frelog.domain.canvas.service;
 
+import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
+import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.user.entity.Role;
@@ -21,11 +23,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
 
@@ -37,6 +41,9 @@ class CanvasServiceTest {
 
     @Mock
     private UserRepository userRepository;
+
+    @Mock
+    private CanvasElasticsearchService canvasElasticsearchService;
 
     @InjectMocks
     private CanvasService canvasService;
@@ -51,10 +58,10 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 생성 시 redis와 server는 항상 none(null), is_cached는 false로 초기화되며 user_id가 연동됨")
+    @DisplayName("캔버스 생성 시 redis와 server는 항상 none(null), is_cached는 false로 초기화되며 Elasticsearch에 저장됨")
     void createCanvas_InitialCacheState_NoneAndFalse_WithUser() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Agora Shared Canvas", 1001, 1L);
+        CreateCanvasRequest request = new CreateCanvasRequest("Agora Shared Canvas", 1001, 1L, "samplePass", "default");
         given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
         given(canvasInfoRepository.existsById(1001)).willReturn(false);
         given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
@@ -84,6 +91,7 @@ class CanvasServiceTest {
         assertThat(response.isCached()).isFalse();
 
         verify(canvasInfoRepository).save(any(CanvasInfo.class));
+        verify(canvasElasticsearchService).saveCanvas(any(CanvasDocument.class));
     }
 
     @Test
@@ -120,6 +128,8 @@ class CanvasServiceTest {
         assertThat(response.canvasName()).isEqualTo("Auto Id Canvas");
         assertThat(response.userId()).isEqualTo(1L);
         assertThat(response.isCached()).isFalse();
+
+        verify(canvasElasticsearchService).saveCanvas(any(CanvasDocument.class));
     }
 
     @Test
@@ -195,6 +205,26 @@ class CanvasServiceTest {
         assertThat(list).hasSize(1);
         assertThat(list.get(0).canvasName()).isEqualTo("User Canvas 1");
         assertThat(list.get(0).userId()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("Elasticsearch 캔버스 도큐먼트 단건 조회 성공")
+    void getCanvasDocument_Success() {
+        // given
+        CanvasInfo entity = new CanvasInfo(1001, "ES Canvas", testUser);
+        given(canvasInfoRepository.findById(1001)).willReturn(Optional.of(entity));
+
+        CanvasDocument document = new CanvasDocument("ES Canvas", 1001, 1L, null, "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(1001)).willReturn(Optional.of(document));
+
+        // when
+        CanvasDocument result = canvasService.getCanvasDocument(1001);
+
+        // then
+        assertThat(result).isNotNull();
+        assertThat(result.getCanvasName()).isEqualTo("ES Canvas");
+        assertThat(result.getCanvasId()).isEqualTo(1001);
+        assertThat(result.getAdmin()).isEqualTo(1L);
     }
 
     @Test
@@ -278,7 +308,89 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 소유자가 삭제 시 성공")
+    @DisplayName("캔버스 소유자가 Elasticsearch 도큐먼트 업데이트 시 성공")
+    void updateCanvasDocument_Success_ByOwner() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+
+        CanvasDocument updatedDoc = new CanvasDocument("ES Canvas", 100, 1L, "newPassword", "customGroup");
+        given(canvasElasticsearchService.updateCanvasDocument(eq(100), eq("ES Canvas"), eq(1L), any(UpdateCanvasDocumentRequest.class)))
+                .willReturn(Optional.of(updatedDoc));
+
+        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", List.of(1L, 2L), Map.of(), Map.of(), "customGroup");
+
+        // when
+        CanvasDocument result = canvasService.updateCanvasDocument(100, request, ownerDetails);
+
+        // then
+        assertThat(result).isNotNull();
+        assertThat(result.getCanvasPassword()).isEqualTo("newPassword");
+        assertThat(result.getInitGroup()).isEqualTo("customGroup");
+    }
+
+    @Test
+    @DisplayName("관리자(ROLE_ADMIN)가 다른 사람의 Elasticsearch 도큐먼트 업데이트 시 성공")
+    void updateCanvasDocument_Success_ByAdmin() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+
+        CanvasDocument updatedDoc = new CanvasDocument("ES Canvas", 100, 1L, "adminChanged", "adminGroup");
+        given(canvasElasticsearchService.updateCanvasDocument(eq(100), eq("ES Canvas"), eq(1L), any(UpdateCanvasDocumentRequest.class)))
+                .willReturn(Optional.of(updatedDoc));
+
+        User adminUser = new User("admin@agora.com", "pass", "관리자", Role.ROLE_ADMIN);
+        ReflectionTestUtils.setField(adminUser, "userId", 99L);
+        com.endpoint.frelog.global.security.CustomUserDetails adminDetails = new com.endpoint.frelog.global.security.CustomUserDetails(adminUser);
+
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("adminChanged", null, null, null, "adminGroup");
+
+        // when
+        CanvasDocument result = canvasService.updateCanvasDocument(100, request, adminDetails);
+
+        // then
+        assertThat(result).isNotNull();
+        assertThat(result.getCanvasPassword()).isEqualTo("adminChanged");
+    }
+
+    @Test
+    @DisplayName("소유자도 관리자도 아닌 계정이 Elasticsearch 도큐먼트 업데이트 시 ACCESS_DENIED 발생")
+    void updateCanvasDocument_AccessDenied_ByOtherUser() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+
+        User otherUser = new User("other@agora.com", "pass", "타인", Role.ROLE_USER);
+        ReflectionTestUtils.setField(otherUser, "userId", 2L);
+        com.endpoint.frelog.global.security.CustomUserDetails otherDetails = new com.endpoint.frelog.global.security.CustomUserDetails(otherUser);
+
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("pass", null, null, null, null);
+
+        // when & then
+        assertThatThrownBy(() -> canvasService.updateCanvasDocument(100, request, otherDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
+    }
+
+    @Test
+    @DisplayName("비로그인 상태에서 Elasticsearch 도큐먼트 업데이트 시 UNAUTHORIZED 발생")
+    void updateCanvasDocument_Unauthorized_WhenNoUser() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("pass", null, null, null, null);
+
+        // when & then
+        assertThatThrownBy(() -> canvasService.updateCanvasDocument(100, request, null))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
+    }
+
+    @Test
+    @DisplayName("캔버스 소유자가 삭제 시 RDBMS 및 Elasticsearch 모두 삭제 성공")
     void deleteCanvas_Success_ByOwner() {
         // given
         CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
@@ -291,10 +403,11 @@ class CanvasServiceTest {
 
         // then
         verify(canvasInfoRepository).delete(entity);
+        verify(canvasElasticsearchService).deleteCanvas(100, "Delete Canvas");
     }
 
     @Test
-    @DisplayName("관리자(ROLE_ADMIN)가 캔버스 삭제 시 성공")
+    @DisplayName("관리자(ROLE_ADMIN)가 캔버스 삭제 시 RDBMS 및 Elasticsearch 모두 삭제 성공")
     void deleteCanvas_Success_ByAdmin() {
         // given
         CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
@@ -309,6 +422,7 @@ class CanvasServiceTest {
 
         // then
         verify(canvasInfoRepository).delete(entity);
+        verify(canvasElasticsearchService).deleteCanvas(100, "Delete Canvas");
     }
 
     @Test

@@ -64,15 +64,21 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/health",
+                                "/api/auth/users",
+                                "/api/users",
+                                "/api/users/**",
                                 "/error"
                         ).permitAll()
+
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/canvases/**").permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/canvases/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/canvases/**").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.PATCH, "/api/canvases/**").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/canvases/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
 
         return http.build();
     }

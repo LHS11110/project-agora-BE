@@ -1,8 +1,10 @@
 package com.endpoint.frelog.domain.canvas.controller;
 
+import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
+import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
@@ -29,6 +31,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -118,6 +121,35 @@ class CanvasControllerTest {
     }
 
     @Test
+    @DisplayName("Elasticsearch 캔버스 도큐먼트 단건 조회 API 성공 시 200 OK")
+    void getCanvasDocumentApi_Success() throws Exception {
+        // given
+        CanvasDocument document = new CanvasDocument("Agora Doc", 1, 100L, null, "default");
+        given(canvasService.getCanvasDocument(1)).willReturn(document);
+
+        // when & then
+        mockMvc.perform(get("/api/canvases/1/document"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.['canvas-name']").value("Agora Doc"))
+                .andExpect(jsonPath("$.['canvas-id']").value(1))
+                .andExpect(jsonPath("$.admin").value(100));
+    }
+
+    @Test
+    @DisplayName("Elasticsearch 캔버스 도큐먼트 이름으로 단건 조회 API 성공 시 200 OK")
+    void getCanvasDocumentByNameApi_Success() throws Exception {
+        // given
+        CanvasDocument document = new CanvasDocument("Agora Doc", 1, 100L, null, "default");
+        given(canvasService.getCanvasDocumentByName("Agora Doc")).willReturn(document);
+
+        // when & then
+        mockMvc.perform(get("/api/canvases/name/Agora Doc/document"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.['canvas-name']").value("Agora Doc"))
+                .andExpect(jsonPath("$.['canvas-id']").value(1));
+    }
+
+    @Test
     @DisplayName("캔버스 캐시 상태 수정 API 성공 시 200 OK")
     void updateCanvasCacheApi_Success() throws Exception {
         // given
@@ -145,6 +177,39 @@ class CanvasControllerTest {
 
         // when & then
         mockMvc.perform(patch("/api/canvases/1/cache")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("AUTH_006"));
+    }
+
+    @Test
+    @DisplayName("Elasticsearch 도큐먼트 수정 API 성공 시 200 OK")
+    void updateCanvasDocumentApi_Success() throws Exception {
+        // given
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", null, null, null, "newGroup");
+        CanvasDocument responseDoc = new CanvasDocument("Agora Doc", 1, 100L, "newPassword", "newGroup");
+        given(canvasService.updateCanvasDocument(eq(1), any(UpdateCanvasDocumentRequest.class), any())).willReturn(responseDoc);
+
+        // when & then
+        mockMvc.perform(put("/api/canvases/1/document")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.['canvas-password']").value("newPassword"))
+                .andExpect(jsonPath("$.['init-group']").value("newGroup"));
+    }
+
+    @Test
+    @DisplayName("권한 없는 사용자가 Elasticsearch 도큐먼트 수정 시 403 FORBIDDEN")
+    void updateCanvasDocumentApi_AccessDenied() throws Exception {
+        // given
+        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", null, null, null, null);
+        given(canvasService.updateCanvasDocument(eq(1), any(UpdateCanvasDocumentRequest.class), any()))
+                .willThrow(new CustomException(ErrorCode.ACCESS_DENIED));
+
+        // when & then
+        mockMvc.perform(put("/api/canvases/1/document")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isForbidden())

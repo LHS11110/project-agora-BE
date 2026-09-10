@@ -82,4 +82,19 @@ public class AuthService {
 
         return UserResponse.from(user);
     }
+
+    @Transactional(readOnly = true)
+    public UserResponse getUserById(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
+        return UserResponse.from(user);
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.List<UserResponse> listUsers() {
+        return userRepository.findAll().stream()
+                .map(UserResponse::from)
+                .toList();
+    }
 }
+

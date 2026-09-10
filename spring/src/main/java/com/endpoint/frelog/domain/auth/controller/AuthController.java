@@ -46,8 +46,15 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/users")
+    public ResponseEntity<java.util.List<UserResponse>> listUsers() {
+        java.util.List<UserResponse> response = authService.listUsers();
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> healthCheck() {
         return ResponseEntity.ok(Map.of("status", "UP", "service", "Agora Auth Service"));
     }
 }
+

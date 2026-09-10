@@ -359,6 +359,8 @@ function renderCanvasTable(canvases) {
         <td>${serverDisplay}</td>
         <td>${cachedBadge}</td>
         <td>
+          <button class="btn-table-action" style="background: rgba(14, 165, 233, 0.2); color: #38bdf8; border-color: rgba(14, 165, 233, 0.4);" onclick="viewElasticsearchDocument(${c.canvasId})">🔍 ES 도큐먼트</button>
+          <button class="btn-table-action" style="background: rgba(168, 85, 247, 0.2); color: #c084fc; border-color: rgba(168, 85, 247, 0.4);" onclick="editElasticsearchDocument(${c.canvasId}, '${c.canvasName}')">✏️ ES 수정</button>
           <button class="btn-table-action" onclick="simulateCacheAllocation(${c.canvasId})">⚡ 캐시 할당</button>
           <button class="btn-table-action" onclick="resetCacheAllocation(${c.canvasId})">🔄 None 리셋</button>
           <button class="btn-table-action btn-table-delete" onclick="deleteCanvas(${c.canvasId})">🗑️ 삭제</button>
@@ -368,18 +370,26 @@ function renderCanvasTable(canvases) {
   }).join('');
 }
 
-// Handle Canvas Creation (Initially redis/server is none, is_cached is false, user_id foreign key linked)
+// Handle Canvas Creation (Initially redis/server is none, is_cached is false, user_id foreign key linked, and synced to Elasticsearch)
 async function handleCreateCanvas(e) {
   e.preventDefault();
   const nameInput = document.getElementById('canvasNameInput');
   const idInput = document.getElementById('canvasIdInput');
   const userIdInput = document.getElementById('canvasUserIdInput');
+  const passwordInput = document.getElementById('canvasPasswordInput');
+  const initGroupInput = document.getElementById('canvasInitGroupInput');
 
   const canvasName = nameInput.value.trim();
   const canvasId = idInput.value ? parseInt(idInput.value, 10) : null;
   const userId = userIdInput && userIdInput.value ? parseInt(userIdInput.value, 10) : null;
+  const canvasPassword = passwordInput && passwordInput.value.trim() ? passwordInput.value.trim() : null;
+  const initGroup = initGroupInput && initGroupInput.value.trim() ? initGroupInput.value.trim() : 'default';
 
-  const payload = { canvasName };
+  const payload = {
+    canvasName,
+    'canvas-password': canvasPassword,
+    'init-group': initGroup
+  };
   if (canvasId !== null && !isNaN(canvasId)) {
     payload.canvasId = canvasId;
   }
@@ -405,9 +415,10 @@ async function handleCreateCanvas(e) {
     logConsole('POST', '/api/canvases', res.status, duration, data);
 
     if (res.ok) {
-      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (소유자: #${data.userId}, redis: none)`, 'success');
+      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (MS SQL 저장 후 ES 자동 색인 완료)`, 'success');
       nameInput.value = '';
       idInput.value = '';
+      if (passwordInput) passwordInput.value = '';
       loadCanvases();
     } else {
       showToast(`생성 실패: ${data.message || '오류 발생'}`, 'error');
@@ -418,6 +429,73 @@ async function handleCreateCanvas(e) {
     showToast(`요청 실패: ${err.message}`, 'error');
   }
 }
+
+// View Elasticsearch Document (GET /api/canvases/{id}/document)
+async function viewElasticsearchDocument(canvasId) {
+  const startTime = performance.now();
+  try {
+    const res = await fetch(`/api/canvases/${canvasId}/document`);
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('GET', `/api/canvases/${canvasId}/document`, res.status, duration, data);
+
+    if (res.ok) {
+      showToast(`[ES] #${canvasId} 도큐먼트 조회 성공! (아래 콘솔에서 JSON 확인)`, 'success');
+      document.getElementById('consoleBody').scrollIntoView({ behavior: 'smooth' });
+    } else {
+      showToast(`ES 도큐먼트 조회 실패: ${data.message || '오류'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`통신 실패: ${err.message}`, 'error');
+  }
+}
+
+// Edit Elasticsearch Document (PUT /api/canvases/{id}/document - Requires Owner or Admin)
+async function editElasticsearchDocument(canvasId, canvasName) {
+  if (!currentToken) {
+    showToast('수정 권한이 필요합니다. 먼저 로그인해주세요 (소유자 또는 관리자).', 'error');
+    return;
+  }
+
+  const newPassword = prompt(`[#${canvasId} ${canvasName}] 변경할 Elasticsearch 비밀번호를 입력하세요 (비워둘 시 null):`, 'newSecret123');
+  if (newPassword === null) return; // cancel
+
+  const newGroup = prompt(`새로운 초기 내부 그룹명 (init-group)을 입력하세요:`, 'advanced-team');
+  if (newGroup === null) return;
+
+  const startTime = performance.now();
+  const updateBody = {
+    'canvas-password': newPassword.trim() === '' ? 'null' : newPassword.trim(),
+    'init-group': newGroup.trim() || 'default'
+  };
+
+  try {
+    const res = await fetch(`/api/canvases/${canvasId}/document`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentToken}`
+      },
+      body: JSON.stringify(updateBody)
+    });
+
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('PUT', `/api/canvases/${canvasId}/document`, res.status, duration, data);
+
+    if (res.ok) {
+      showToast(`캔버스 #${canvasId} Elasticsearch 도큐먼트 수정 완료!`, 'success');
+      document.getElementById('consoleBody').scrollIntoView({ behavior: 'smooth' });
+    } else if (res.status === 403) {
+      showToast(`권한 거절 (403): 소유자 또는 관리자 계정만 수정할 수 있습니다.`, 'error');
+    } else {
+      showToast(`수정 실패 (${res.status}): ${data.message || '오류'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
 
 // Simulate Cache Allocation (PATCH /api/canvases/{id}/cache)
 async function simulateCacheAllocation(canvasId) {
@@ -545,3 +623,126 @@ async function deleteCanvas(canvasId) {
     showToast(`요청 실패: ${err.message}`, 'error');
   }
 }
+
+// Load All Users (GET /api/users & /api/auth/users - Public / Any User)
+async function loadAllUsers() {
+  await openUsersModal();
+}
+
+// Open Users Modal
+async function openUsersModal() {
+  const modal = document.getElementById('usersModalOverlay');
+  if (modal) {
+    modal.style.display = 'flex';
+  }
+  await loadUsersTableData();
+}
+
+// Close Users Modal
+function closeUsersModal(e) {
+  if (e && e.target && e.target !== document.getElementById('usersModalOverlay') && !e.target.classList.contains('btn-close')) {
+    return;
+  }
+  const modal = document.getElementById('usersModalOverlay');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Load Users Table Data
+async function loadUsersTableData() {
+  const tbody = document.getElementById('usersTableBody');
+  if (tbody) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 20px;">사용자 목록 불러오는 중...</td></tr>`;
+  }
+
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/users');
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('GET', '/api/users', res.status, duration, data);
+
+    if (!res.ok) {
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--danger); padding: 20px;">사용자 목록 조회 실패 (${res.status}): ${data.message || '오류'}</td></tr>`;
+      }
+      showToast(`사용자 목록 조회 실패: ${data.message || '오류'}`, 'error');
+      return;
+    }
+
+    if (!Array.isArray(data) || data.length === 0) {
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 20px;">등록된 사용자가 없습니다.</td></tr>`;
+      }
+      return;
+    }
+
+    tbody.innerHTML = data.map(user => {
+      const roleTag = user.role === 'ROLE_ADMIN'
+        ? `<span class="tag tag-admin">ADMIN</span>`
+        : `<span class="tag tag-active">USER</span>`;
+
+      const statusTag = user.status === 'ACTIVE'
+        ? `<span class="tag tag-active">ACTIVE</span>`
+        : `<span class="tag tag-suspended">${user.status}</span>`;
+
+      const dateStr = user.createdAt ? new Date(user.createdAt).toLocaleString() : '-';
+
+      return `
+        <tr>
+          <td><strong style="font-family: var(--font-mono); color: #38bdf8;">#${user.userId}</strong></td>
+          <td style="font-weight: 500; color: var(--text-main);">${escapeHtml(user.email)}</td>
+          <td>${escapeHtml(user.nickname)}</td>
+          <td>${roleTag}</td>
+          <td>${statusTag}</td>
+          <td style="font-size: 0.78rem; color: var(--text-subtle);">${dateStr}</td>
+          <td>
+            <button class="btn-table-action" onclick="selectUserForCanvas(${user.userId}, '${escapeHtml(user.email)}')">
+              👉 소유자로 지정
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    showToast(`전체 회원 ${data.length}명 조회 성공!`, 'success');
+  } catch (err) {
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--danger); padding: 20px;">요청 오류: ${err.message}</td></tr>`;
+    }
+    showToast(`사용자 목록 조회 오류: ${err.message}`, 'error');
+  }
+}
+
+// Select User for Canvas Creation
+function selectUserForCanvas(userId, email) {
+  const input = document.getElementById('canvasUserIdInput');
+  if (input) {
+    input.value = userId;
+  }
+  closeUsersModal();
+  showToast(`소유자 회원 #${userId} (${email})가 캔버스 생성 폼에 지정되었습니다.`, 'info');
+  document.getElementById('createCanvasForm').scrollIntoView({ behavior: 'smooth' });
+}
+
+// Load All Elasticsearch Documents (GET /api/canvases/documents - Public / Any User)
+async function loadAllElasticsearchDocuments() {
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/canvases/documents');
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('GET', '/api/canvases/documents', res.status, duration, data);
+
+    if (res.ok) {
+      showToast(`Elasticsearch 전체 도큐먼트 ${data.length}건 조회 완료! (하단 콘솔에서 확인)`, 'success');
+      document.getElementById('consoleBody').scrollIntoView({ behavior: 'smooth' });
+    } else {
+      showToast(`도큐먼트 목록 조회 실패: ${data.message || '오류'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
