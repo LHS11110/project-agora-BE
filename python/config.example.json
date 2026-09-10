@@ -1,12 +1,10 @@
 {
   "public_ip": "127.0.0.1",
   "port": 8000,
-  "elasticsearch": {
-    "hosts": ["http://localhost:9200"],
-    "index": "canvases",
-    "username": null,
-    "password": null,
-    "api_key": null,
-    "strict_mode": false
+  "spring_base_url": "http://127.0.0.1:8080",
+  "redis": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "password": "AgoraRedisSecret@Passw0rd!2026"
   }
 }

@@ -1,32 +1,33 @@
+import logging
 from typing import Dict, List, Optional, Any
 from app.models.canvas import Canvas, CanvasItem, CreateCanvasRequest
-from app.services.es_service import es_service
+from app.services.spring_client import spring_client
 from app.services.redis_service import redis_service
+from app.services.canvas_manager import canvas_manager
+
+logger = logging.getLogger("app.services.canvas_service")
 
 
 class CanvasService:
-    """캔버스 생성, 조회, 수정 및 관리 비즈니스 로직 서비스 (Elasticsearch 연동)"""
+    """
+    캔버스 비즈니스 로직 서비스
+    - 정책: Python 서버는 Redis 외 데이터베이스(MSSQL, Elasticsearch)에 직접 접근하지 않음
+    - 모든 데이터베이스 연동 및 저장은 Spring Boot API(spring_client)를 통해 수행
+    """
 
     def __init__(self):
         self._next_id: int = 1
 
     def create_canvas(self, req: CreateCanvasRequest) -> Canvas:
         """
-        form.txt 최신 규격에 맞춰 새로운 캔버스를 생성하고 Elasticsearch에 색인/저장합니다.
-        문서의 기본키는 canvas_name으로 사용됩니다.
+        신규 캔버스 생성 및 Spring API를 통한 도큐먼트 저장
         """
-        # ES 내 최대 ID 조회 후 다음 ID 결정
-        max_id = es_service.get_max_canvas_id()
-        if max_id >= self._next_id:
-            self._next_id = max_id + 1
-
         canvas_id = self._next_id
         self._next_id += 1
 
         admin_uid = req.admin
         init_group = req.init_group or "default"
 
-        # 기본 내부 그룹 구성 (admin-group + 초기 배정 그룹)
         inner_group: Dict[str, List[int]] = {
             "admin-group": [admin_uid]
         }
@@ -45,40 +46,48 @@ class CanvasService:
             }
         )
 
-        # Elasticsearch에 기본키(canvas-name)로 저장
-        es_service.save_canvas(canvas)
+        # 런타임 캔버스 매니저에 등록
+        canvas_manager.get_or_create_canvas(
+            canvas_id=canvas_id,
+            canvas_name=req.canvas_name,
+            admin=admin_uid,
+            init_group=init_group
+        )
 
         return canvas
 
     def get_canvas_by_name(self, canvas_name: str) -> Optional[Canvas]:
-        """Elasticsearch 기본키(canvas-name)로 캔버스를 단건 조회합니다."""
-        es_data = es_service.get_canvas_by_name(canvas_name)
-        if es_data:
+        """Spring API를 통해 이름(canvas-name)으로 캔버스 도큐먼트를 조회합니다."""
+        data = spring_client.get_canvas_document_by_name(canvas_name)
+        if data:
             try:
-                return Canvas(**es_data)
-            except Exception:
+                return Canvas(**data)
+            except Exception as e:
+                logger.warning("Failed to deserialize canvas document '%s': %s", canvas_name, e)
                 return None
         return None
 
-    def delete_canvas_by_name(self, canvas_name: str) -> bool:
-        """기본키(canvas-name)로 Elasticsearch에서 캔버스를 삭제합니다."""
-        return es_service.delete_canvas_by_name(canvas_name)
-
     def get_canvas(self, canvas_id: int) -> Optional[Canvas]:
-        """ID로 Elasticsearch에서 캔버스를 단건 조회합니다."""
-        es_data = es_service.get_canvas(canvas_id)
-        if es_data:
+        """Spring API를 통해 ID로 캔버스 도큐먼트를 조회합니다."""
+        data = spring_client.get_canvas_document(canvas_id)
+        if data:
             try:
-                return Canvas(**es_data)
-            except Exception:
+                return Canvas(**data)
+            except Exception as e:
+                logger.warning("Failed to deserialize canvas document #%d: %s", canvas_id, e)
                 return None
+
+        # Spring API에 없으면 런타임 캐시 확인
+        runtime_canvas = canvas_manager.get_canvas(canvas_id)
+        if runtime_canvas:
+            return Canvas(**runtime_canvas.to_dict())
         return None
 
     def list_canvases(self) -> List[Canvas]:
-        """등록된 전체 캔버스 목록을 Elasticsearch에서 조회하여 반환합니다."""
-        es_data_list = es_service.list_canvases()
+        """Spring API를 통해 전체 캔버스 도큐먼트 목록을 조회합니다."""
+        data_list = spring_client.list_canvas_documents()
         canvases: List[Canvas] = []
-        for item in es_data_list:
+        for item in data_list:
             try:
                 canvases.append(Canvas(**item))
             except Exception:
@@ -86,7 +95,7 @@ class CanvasService:
         return canvases
 
     def join_user(self, canvas_id: int, uid: int) -> Optional[Canvas]:
-        """캔버스에 사용자를 참가시키고 초기 내부 그룹(init-group)에 배정합니다."""
+        """캔버스에 사용자를 참가시키고 Spring API와 동기화합니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas:
             return None
@@ -101,24 +110,24 @@ class CanvasService:
         if uid not in canvas.inner_group[init_grp]:
             canvas.inner_group[init_grp].append(uid)
 
-        # ES 동기화
-        es_service.save_canvas(canvas)
+        # Spring API로 도큐먼트 업데이트
+        spring_client.update_canvas_document(canvas_id, canvas.model_dump(by_alias=True))
         return canvas
 
     def add_inner_group(self, canvas_id: int, group_name: str) -> Optional[Canvas]:
-        """새로운 내부 그룹을 추가합니다."""
+        """새로운 내부 그룹을 추가하고 Spring API와 동기화합니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas:
             return None
 
         if group_name not in canvas.inner_group:
             canvas.inner_group[group_name] = []
-            es_service.save_canvas(canvas)
+            spring_client.update_canvas_document(canvas_id, canvas.model_dump(by_alias=True))
 
         return canvas
 
     def move_user_group(self, canvas_id: int, uid: int, target_group: str) -> Optional[Canvas]:
-        """특정 사용자의 소속 내부 그룹을 변경합니다."""
+        """사용자의 소속 내부 그룹을 변경하고 Spring API와 동기화합니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas or uid not in canvas.peoples:
             return None
@@ -126,7 +135,6 @@ class CanvasService:
         if target_group not in canvas.inner_group:
             canvas.inner_group[target_group] = []
 
-        # 기존 일반 그룹에서 제거 (단, admin-group 소속 여부는 유지 가능)
         for g_name, uids in canvas.inner_group.items():
             if g_name != target_group and uid in uids:
                 uids.remove(uid)
@@ -134,62 +142,69 @@ class CanvasService:
         if uid not in canvas.inner_group[target_group]:
             canvas.inner_group[target_group].append(uid)
 
-        # ES 동기화
-        es_service.save_canvas(canvas)
+        spring_client.update_canvas_document(canvas_id, canvas.model_dump(by_alias=True))
         return canvas
 
     def put_item(self, canvas_id: int, item_id: str, item: CanvasItem) -> Optional[Canvas]:
-        """
-        캔버스에 아이템을 배치하거나 업데이트합니다.
-        - permission 맵에 'admin-group': 7이 항상 포함되도록 보장
-        - 변경 사항을 Elasticsearch에 반영
-        """
+        """캔버스에 아이템을 배치/수정하고 Spring API와 동기화합니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas:
             return None
 
-        # 모든 그룹 권한은 0~7 사이로 유지하며 admin-group 권한은 항상 7로 고정
         for g_name, perm in list(item.permission.items()):
             item.permission[g_name] = max(0, min(7, perm))
         item.permission["admin-group"] = 7
         canvas.items[item_id] = item
 
-        # ES 동기화
-        es_service.save_canvas(canvas)
+        spring_client.update_canvas_document(canvas_id, canvas.model_dump(by_alias=True))
         return canvas
 
     def remove_item(self, canvas_id: int, item_id: str) -> Optional[Canvas]:
-        """캔버스에서 특정 아이템을 제거합니다."""
+        """캔버스에서 특정 아이템을 제거하고 Spring API와 동기화합니다."""
         canvas = self.get_canvas(canvas_id)
         if not canvas or item_id not in canvas.items:
             return None
 
         del canvas.items[item_id]
-        # ES 동기화
-        es_service.save_canvas(canvas)
+        spring_client.update_canvas_document(canvas_id, canvas.model_dump(by_alias=True))
         return canvas
 
     def delete_canvas(self, canvas_id: int) -> bool:
-        """Elasticsearch에서 캔버스 문서를 삭제합니다."""
-        return es_service.delete_canvas(canvas_id)
+        """캔버스 삭제 처리 (런타임 정리 및 Redis 삭제)"""
+        runtime_canvas = canvas_manager.get_canvas(canvas_id)
+        if runtime_canvas:
+            redis_service.delete_canvas_cache(runtime_canvas.Redis_ip, runtime_canvas.Redis_port, canvas_id)
+        return True
 
-    def delete_canvas_from_server_and_redis(
+    def delete_canvas_by_name(self, canvas_name: str) -> bool:
+        """이름으로 캔버스 삭제"""
+        canvas = self.get_canvas_by_name(canvas_name)
+        if canvas:
+            return self.delete_canvas(canvas.canvas_id)
+        return False
+
+    async def delete_canvas_from_server_and_redis(
         self,
         canvas_id: int,
         redis_ip: Optional[str] = None,
         redis_port: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Python 서버의 메모리 및 Redis 캐시에서 캔버스 데이터를 일괄 제거합니다.
+        Python 서버의 메모리/소켓 세션 및 Redis 캐시에서 캔버스 데이터를 일괄 제거합니다.
+        (직접 DB 접근 금지: Redis 외 데이터 정리는 Spring에서 전담 처리)
         """
+        # 1. 런타임 활성 캔버스 및 WebSocket 세션 일괄 종료/정리
+        await canvas_manager.remove_canvas(canvas_id)
         server_removed = True
         redis_removed = False
 
+        # 2. Redis 캐시 키 일괄 삭제
         if redis_ip and redis_port:
             try:
                 port_num = int(redis_port)
                 redis_removed = redis_service.delete_canvas_cache(redis_ip, port_num, canvas_id)
-            except Exception:
+            except Exception as e:
+                logger.warning("Redis cleanup failed on %s:%s: %s", redis_ip, redis_port, e)
                 redis_removed = False
         else:
             try:
