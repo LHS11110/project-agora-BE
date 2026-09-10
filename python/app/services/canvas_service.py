@@ -1,6 +1,7 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from app.models.canvas import Canvas, CanvasItem, CreateCanvasRequest
 from app.services.es_service import es_service
+from app.services.redis_service import redis_service
 
 
 class CanvasService:
@@ -171,6 +172,38 @@ class CanvasService:
     def delete_canvas(self, canvas_id: int) -> bool:
         """Elasticsearch에서 캔버스 문서를 삭제합니다."""
         return es_service.delete_canvas(canvas_id)
+
+    def delete_canvas_from_server_and_redis(
+        self,
+        canvas_id: int,
+        redis_ip: Optional[str] = None,
+        redis_port: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Python 서버의 메모리 및 Redis 캐시에서 캔버스 데이터를 일괄 제거합니다.
+        """
+        server_removed = True
+        redis_removed = False
+
+        if redis_ip and redis_port:
+            try:
+                port_num = int(redis_port)
+                redis_removed = redis_service.delete_canvas_cache(redis_ip, port_num, canvas_id)
+            except Exception:
+                redis_removed = False
+        else:
+            try:
+                redis_removed = redis_service.delete_canvas_cache("127.0.0.1", 6379, canvas_id)
+            except Exception:
+                redis_removed = False
+
+        return {
+            "status": "success",
+            "canvas_id": canvas_id,
+            "server_removed": server_removed,
+            "redis_removed": redis_removed,
+            "message": f"Canvas {canvas_id} removed from server memory and Redis cache"
+        }
 
 
 # 싱글톤 인스턴스

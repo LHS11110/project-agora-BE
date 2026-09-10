@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.api.system import router as system_router
+from app.api.canvas import router as canvas_router
 from app.core.config import TEST_HTML_PATH, load_server_config
 
 app = FastAPI(
@@ -24,6 +25,7 @@ app.add_middleware(
 
 # 2. 라우터 등록
 app.include_router(system_router)
+app.include_router(canvas_router)
 
 
 # 3. 루트 헬스체크 및 테스트 대시보드 라우트

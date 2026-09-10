@@ -1,5 +1,6 @@
 package com.endpoint.frelog.domain.canvas.service;
 
+import com.endpoint.frelog.domain.canvas.client.PythonServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -44,6 +46,9 @@ class CanvasServiceTest {
 
     @Mock
     private CanvasElasticsearchService canvasElasticsearchService;
+
+    @Mock
+    private PythonServerClient pythonServerClient;
 
     @InjectMocks
     private CanvasService canvasService;
@@ -466,4 +471,66 @@ class CanvasServiceTest {
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
     }
+
+    @Test
+    @DisplayName("서버 및 Redis에 할당된 캔버스 삭제 시 PythonServerClient를 호출하여 일괄 해제 요청")
+    void deleteCanvas_WhenAllocatedToServerAndRedis_InvokesPythonServerClient() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser);
+        entity.updateCacheState(true, "127.0.0.1", "6379", "127.0.0.1", "8000");
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+        given(pythonServerClient.deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379"))
+                .willReturn(true);
+
+        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
+
+        // when
+        canvasService.deleteCanvas(100, ownerDetails);
+
+        // then
+        verify(pythonServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379");
+        verify(canvasInfoRepository).delete(entity);
+        verify(canvasElasticsearchService).deleteCanvas(100, "Cached Canvas");
+    }
+
+    @Test
+    @DisplayName("서버에 할당되지 않은 미캐시 캔버스 삭제 시 PythonServerClient를 호출하지 않음")
+    void deleteCanvas_WhenNotAllocated_DoesNotInvokePythonServerClient() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "Uncached Canvas", testUser);
+        entity.updateCacheState(false, null, null, null, null);
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+
+        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
+
+        // when
+        canvasService.deleteCanvas(100, ownerDetails);
+
+        // then
+        verify(pythonServerClient, never()).deleteCanvasFromServerAndRedis(any(), any(), any(), any(), any());
+        verify(canvasInfoRepository).delete(entity);
+        verify(canvasElasticsearchService).deleteCanvas(100, "Uncached Canvas");
+    }
+
+    @Test
+    @DisplayName("Python 서버 호출이 실패하더라도 RDBMS 및 Elasticsearch 도큐먼트 삭제는 안정적으로 완료됨")
+    void deleteCanvas_WhenPythonServerClientFails_StillDeletesCanvasFromRdbmsAndElasticsearch() {
+        // given
+        CanvasInfo entity = new CanvasInfo(100, "Faulty Canvas", testUser);
+        entity.updateCacheState(true, "127.0.0.1", "6379", "127.0.0.1", "8000");
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
+        given(pythonServerClient.deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379"))
+                .willReturn(false);
+
+        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
+
+        // when
+        canvasService.deleteCanvas(100, ownerDetails);
+
+        // then
+        verify(pythonServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379");
+        verify(canvasInfoRepository).delete(entity);
+        verify(canvasElasticsearchService).deleteCanvas(100, "Faulty Canvas");
+    }
 }
+

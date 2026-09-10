@@ -1,5 +1,6 @@
 package com.endpoint.frelog.domain.canvas.service;
 
+import com.endpoint.frelog.domain.canvas.client.PythonServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
@@ -12,6 +13,8 @@ import com.endpoint.frelog.domain.user.repository.UserRepository;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,17 +23,22 @@ import java.util.List;
 @Service
 public class CanvasService {
 
+    private static final Logger log = LoggerFactory.getLogger(CanvasService.class);
+
     private final CanvasInfoRepository canvasInfoRepository;
     private final UserRepository userRepository;
     private final CanvasElasticsearchService canvasElasticsearchService;
+    private final PythonServerClient pythonServerClient;
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
             UserRepository userRepository,
-            CanvasElasticsearchService canvasElasticsearchService) {
+            CanvasElasticsearchService canvasElasticsearchService,
+            PythonServerClient pythonServerClient) {
         this.canvasInfoRepository = canvasInfoRepository;
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
+        this.pythonServerClient = pythonServerClient;
     }
 
     /**
@@ -200,6 +208,18 @@ public class CanvasService {
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
 
         validateCanvasOwnerOrAdmin(canvas, currentUser);
+
+        // Python 서버 및 Redis 캐시 할당 여부 확인 후 일괄 해제 요청
+        boolean isAllocatedToServer = (canvas.getServerIp() != null && !canvas.getServerIp().isBlank()
+                && canvas.getServerPort() != null && !canvas.getServerPort().isBlank());
+        boolean isCached = Boolean.TRUE.equals(canvas.getIsCached());
+
+        if (isAllocatedToServer || isCached) {
+            String serverIp = (canvas.getServerIp() != null && !canvas.getServerIp().isBlank()) ? canvas.getServerIp() : "127.0.0.1";
+            String serverPort = (canvas.getServerPort() != null && !canvas.getServerPort().isBlank()) ? canvas.getServerPort() : "8000";
+            log.info("캔버스 #{}가 서버/Redis에 할당되어 있어 Python 서버({}:{})에 일괄 해제 API를 호출합니다.", canvasId, serverIp, serverPort);
+            pythonServerClient.deleteCanvasFromServerAndRedis(serverIp, serverPort, canvasId, canvas.getRedisIp(), canvas.getRedisPort());
+        }
 
         canvasInfoRepository.delete(canvas);
         canvasElasticsearchService.deleteCanvas(canvasId, canvas.getCanvasName());
