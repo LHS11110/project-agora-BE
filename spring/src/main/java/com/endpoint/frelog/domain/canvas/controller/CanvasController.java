@@ -6,8 +6,6 @@ import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
-import com.endpoint.frelog.global.exception.CustomException;
-import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;

@@ -80,11 +80,6 @@ public class CanvasService {
         return CanvasResponse.from(saved);
     }
 
-    @Transactional
-    public CanvasResponse createCanvas(CreateCanvasRequest request) {
-        return createCanvas(request, null);
-    }
-
     @Transactional(readOnly = true)
     public CanvasResponse getCanvas(Integer canvasId) {
         CanvasInfo canvas = canvasInfoRepository.findById(canvasId)
@@ -180,11 +175,6 @@ public class CanvasService {
         return CanvasResponse.from(updated);
     }
 
-    @Transactional
-    public CanvasResponse updateCanvasCache(Integer canvasId, UpdateCanvasCacheRequest request) {
-        return updateCanvasCache(canvasId, request, null);
-    }
-
     /**
      * Elasticsearch 캔버스 도큐먼트 정보 수정 (소유자 또는 관리자 전용)
      */
@@ -213,11 +203,6 @@ public class CanvasService {
 
         canvasInfoRepository.delete(canvas);
         canvasElasticsearchService.deleteCanvas(canvasId, canvas.getCanvasName());
-    }
-
-    @Transactional
-    public void deleteCanvas(Integer canvasId) {
-        deleteCanvas(canvasId, null);
     }
 
     /**
