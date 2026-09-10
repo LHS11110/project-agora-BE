@@ -1,16 +1,58 @@
-### Compiled class file
+# ==============================================================================
+# OS Generated Files
+# ==============================================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+.LSOverride
+Icon\r\r
+.DocumentRevisions-V100
+.fseventsd
+.TemporaryItems
+.VolumeIcon.icns
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+
+# ==============================================================================
+# Java & JVM
+# ==============================================================================
+# Compiled class files
 *.class
 
-### Log file
+# Log files
 *.log
+logs/
+*.log.*
 
-### BlueJ files
+# BlueJ files
 *.ctxt
 
-### Mobile Tools for Java (J2ME)
+# Mobile Tools for Java (J2ME)
 .mtj.tmp/
 
-### Package Files
+# Package Files (excluding wrapper jars)
 *.jar
 *.war
 *.nar
@@ -19,16 +61,21 @@
 *.tar.gz
 *.rar
 
-### Virtual machine crash logs
+# Virtual machine crash logs
 hs_err_pid*
 replay_pid*
 
-### Gradle
+
+# ==============================================================================
+# Gradle & Maven
+# ==============================================================================
+# Gradle
 .gradle/
 build/
 !gradle/wrapper/gradle-wrapper.jar
+!**/gradle/wrapper/gradle-wrapper.jar
 
-### Maven
+# Maven
 target/
 pom.xml.tag
 pom.xml.releaseBackup
@@ -40,7 +87,95 @@ buildNumber.properties
 .mvn/timing.properties
 .mvn/wrapper/maven-wrapper.jar
 
-### IntelliJ IDEA
+
+# ==============================================================================
+# Spring & Spring Boot
+# ==============================================================================
+.springBeans
+.sts4-cache
+
+# Local & secret properties
+application-local.properties
+application-local.yml
+application-secret.properties
+application-secret.yml
+
+
+# ==============================================================================
+# Python & FastAPI
+# ==============================================================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+
+# Type checking / Linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables & local configuration
+.env
+.env.*
+!.env.example
+config.json
+!config.example.json
+python/config.json
+!python/config.example.json
+
+
+# ==============================================================================
+# IDEs & Editors
+# ==============================================================================
+# IntelliJ IDEA
 .idea/
 *.iws
 *.iml
@@ -49,55 +184,33 @@ out/
 !**/src/main/**/out/
 !**/src/test/**/out/
 
-### Eclipse
+# Eclipse
 .apt_generated
 .classpath
 .factorypath
 .project
-.settings
-.springBeans
-.sts4-cache
+.settings/
 bin/
 
-### Visual Studio Code
+# Visual Studio Code
 .vscode/
+*.code-workspace
+.history/
 
-### OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Vim & Editors
+*.swp
+*.swo
+.*.sw[a-z]
+#*#
+.#*
 
-### Sensitive Environment & Secret files (필요 시 주석 해제)
-# application-local.properties
-# application-local.yml
-# application-secret.properties
-# application-secret.yml
-# .env
 
+# ==============================================================================
+# Project Specific Rules
+# ==============================================================================
 *.txt
 !requirements.txt
-
-### Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-ENV/
-*.egg-info/
-.installed.cfg
-*.egg
-.pytest_cache/
-config.json
-!config.example.json
-
+!**/requirements.txt
 
 ### Testing files (로컬 테스트 전용)
 *test.html
