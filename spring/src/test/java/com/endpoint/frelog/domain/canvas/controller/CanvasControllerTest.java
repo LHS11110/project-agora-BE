@@ -58,7 +58,7 @@ class CanvasControllerTest {
     @DisplayName("캔버스 생성 API 성공 시 201 Created 및 userId, 초기 none/false 캐시 응답")
     void createCanvasApi_Success() throws Exception {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("New Canvas", 100, 1L);
+        CreateCanvasRequest request = new CreateCanvasRequest("New Canvas");
         CanvasResponse response = new CanvasResponse(
                 100, "New Canvas", 1L, "아고라유저", null, null, null, null, false, LocalDateTime.now(), LocalDateTime.now()
         );

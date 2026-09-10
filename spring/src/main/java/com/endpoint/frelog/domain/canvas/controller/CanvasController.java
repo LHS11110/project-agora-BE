@@ -6,6 +6,8 @@ import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
+import com.endpoint.frelog.global.exception.CustomException;
+import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -37,8 +39,8 @@ public class CanvasController {
     public ResponseEntity<CanvasResponse> createCanvas(
             @Valid @RequestBody CreateCanvasRequest request,
             @AuthenticationPrincipal CustomUserDetails userDetails) {
-        Long fallbackUserId = (userDetails != null && userDetails.getUser() != null) ? userDetails.getUserId() : null;
-        CanvasResponse response = canvasService.createCanvas(request, fallbackUserId);
+        Long userId = (userDetails != null && userDetails.getUser() != null) ? userDetails.getUserId() : null;
+        CanvasResponse response = canvasService.createCanvas(request, userId);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

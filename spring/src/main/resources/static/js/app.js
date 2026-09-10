@@ -21,6 +21,17 @@ function showToast(message, type = 'info') {
   }, 3500);
 }
 
+// HTML Escaping helper
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // Check server health
 async function checkServerHealth() {
   const badge = document.getElementById('serverBadge');
@@ -370,37 +381,34 @@ function renderCanvasTable(canvases) {
   }).join('');
 }
 
-// Handle Canvas Creation (Initially redis/server is none, is_cached is false, user_id foreign key linked, and synced to Elasticsearch)
+// Handle Canvas Creation (Configuring only canvasName, canvasPassword, and initGroup - Requires Login)
 async function handleCreateCanvas(e) {
   e.preventDefault();
+
+  if (!currentToken) {
+    showToast('캔버스 생성은 로그인한 사용자만 가능합니다. 먼저 로그인해주세요.', 'error');
+    document.getElementById('loginEmail').focus();
+    return;
+  }
+
   const nameInput = document.getElementById('canvasNameInput');
-  const idInput = document.getElementById('canvasIdInput');
-  const userIdInput = document.getElementById('canvasUserIdInput');
   const passwordInput = document.getElementById('canvasPasswordInput');
   const initGroupInput = document.getElementById('canvasInitGroupInput');
 
   const canvasName = nameInput.value.trim();
-  const canvasId = idInput.value ? parseInt(idInput.value, 10) : null;
-  const userId = userIdInput && userIdInput.value ? parseInt(userIdInput.value, 10) : null;
   const canvasPassword = passwordInput && passwordInput.value.trim() ? passwordInput.value.trim() : null;
   const initGroup = initGroupInput && initGroupInput.value.trim() ? initGroupInput.value.trim() : 'default';
 
   const payload = {
     canvasName,
-    'canvas-password': canvasPassword,
-    'init-group': initGroup
+    canvasPassword,
+    initGroup
   };
-  if (canvasId !== null && !isNaN(canvasId)) {
-    payload.canvasId = canvasId;
-  }
-  if (userId !== null && !isNaN(userId)) {
-    payload.userId = userId;
-  }
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (currentToken) {
-    headers['Authorization'] = `Bearer ${currentToken}`;
-  }
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${currentToken}`
+  };
 
   const startTime = performance.now();
   try {
@@ -415,9 +423,8 @@ async function handleCreateCanvas(e) {
     logConsole('POST', '/api/canvases', res.status, duration, data);
 
     if (res.ok) {
-      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (MS SQL 저장 후 ES 자동 색인 완료)`, 'success');
+      showToast(`캔버스 #${data.canvasId} ("${data.canvasName}") 생성 완료! (ID 자동 발급 및 ES 색인 완료)`, 'success');
       nameInput.value = '';
-      idInput.value = '';
       if (passwordInput) passwordInput.value = '';
       loadCanvases();
     } else {
@@ -698,8 +705,8 @@ async function loadUsersTableData() {
           <td>${statusTag}</td>
           <td style="font-size: 0.78rem; color: var(--text-subtle);">${dateStr}</td>
           <td>
-            <button class="btn-table-action" onclick="selectUserForCanvas(${user.userId}, '${escapeHtml(user.email)}')">
-              👉 소유자로 지정
+            <button class="btn-table-action" onclick="loginAsUser('${escapeHtml(user.email)}')">
+              🔑 이 계정으로 로그인
             </button>
           </td>
         </tr>
@@ -715,15 +722,12 @@ async function loadUsersTableData() {
   }
 }
 
-// Select User for Canvas Creation
-function selectUserForCanvas(userId, email) {
-  const input = document.getElementById('canvasUserIdInput');
-  if (input) {
-    input.value = userId;
-  }
+// Login as user from modal
+function loginAsUser(email) {
+  setQuickAccount(email, 'password123');
   closeUsersModal();
-  showToast(`소유자 회원 #${userId} (${email})가 캔버스 생성 폼에 지정되었습니다.`, 'info');
-  document.getElementById('createCanvasForm').scrollIntoView({ behavior: 'smooth' });
+  showToast(`${email} 계정 정보가 입력되었습니다. 로그인 버튼을 누르세요.`, 'info');
+  document.getElementById('loginForm').scrollIntoView({ behavior: 'smooth' });
 }
 
 // Load All Elasticsearch Documents (GET /api/canvases/documents - Public / Any User)

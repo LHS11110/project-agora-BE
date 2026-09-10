@@ -41,33 +41,21 @@ public class CanvasService {
      * - Elasticsearch 'canvas' 인덱스에 project-agora-DB 스키마 규격으로 초기 도큐먼트 색인 저장
      */
     @Transactional
-    public CanvasResponse createCanvas(CreateCanvasRequest request, Long fallbackUserId) {
+    public CanvasResponse createCanvas(CreateCanvasRequest request, Long userId) {
+        if (userId == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED, "캔버스 생성은 로그인한 사용자만 가능합니다.");
+        }
+
         if (canvasInfoRepository.existsByCanvasName(request.canvasName())) {
             throw new CustomException(ErrorCode.CANVAS_ALREADY_EXISTS, "이미 존재하는 캔버스 이름입니다: " + request.canvasName());
         }
 
-        Long resolvedUserId = request.userId() != null ? request.userId() : fallbackUserId;
-        if (resolvedUserId == null) {
-            // 소유자 ID가 지정되지 않은 경우 첫 번째 사용자 또는 에러
-            resolvedUserId = userRepository.findAll().stream()
-                    .map(User::getUserId)
-                    .findFirst()
-                    .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "등록된 사용자가 없습니다. 먼저 계정을 생성해주세요."));
-        }
+        User owner = userRepository.findById(userId)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "캔버스 소유자를 찾을 수 없습니다. (user_id: " + userId + ")"));
 
-        final Long targetUserId = resolvedUserId;
-        User owner = userRepository.findById(targetUserId)
-                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "캔버스 소유자를 찾을 수 없습니다. (user_id: " + targetUserId + ")"));
-
-        Integer targetId = request.canvasId();
-        if (targetId == null) {
-            Integer maxId = canvasInfoRepository.findMaxCanvasId();
-            targetId = (maxId == null ? 0 : maxId) + 1;
-        } else {
-            if (canvasInfoRepository.existsById(targetId)) {
-                throw new CustomException(ErrorCode.CANVAS_ALREADY_EXISTS, "이미 존재하는 캔버스 ID입니다: " + targetId);
-            }
-        }
+        // canvas_id는 클라이언트 입력 없이 MS SQL에서 max(canvas_id) + 1로 자동 할당
+        Integer maxId = canvasInfoRepository.findMaxCanvasId();
+        Integer targetId = (maxId == null ? 0 : maxId) + 1;
 
         // 항상 redis와 server는 none(null), is_cached는 false로 초기화
         CanvasInfo canvas = new CanvasInfo(targetId, request.canvasName(), owner);

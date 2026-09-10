@@ -61,9 +61,9 @@ class CanvasServiceTest {
     @DisplayName("캔버스 생성 시 redis와 server는 항상 none(null), is_cached는 false로 초기화되며 Elasticsearch에 저장됨")
     void createCanvas_InitialCacheState_NoneAndFalse_WithUser() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Agora Shared Canvas", 1001, 1L, "samplePass", "default");
+        CreateCanvasRequest request = new CreateCanvasRequest("Agora Shared Canvas", "samplePass", "default");
         given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
-        given(canvasInfoRepository.existsById(1001)).willReturn(false);
+        given(canvasInfoRepository.findMaxCanvasId()).willReturn(1000);
         given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
 
         CanvasInfo savedEntity = new CanvasInfo(1001, "Agora Shared Canvas", testUser);
@@ -76,7 +76,7 @@ class CanvasServiceTest {
         given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedEntity);
 
         // when
-        CanvasResponse response = canvasService.createCanvas(request);
+        CanvasResponse response = canvasService.createCanvas(request, 1L);
 
         // then
         assertThat(response).isNotNull();
@@ -98,21 +98,33 @@ class CanvasServiceTest {
     @DisplayName("캔버스 생성 시 유저가 존재하지 않으면 USER_NOT_FOUND 예외 발생")
     void createCanvas_UserNotFound_ThrowsException() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("No User Canvas", 1002, 999L);
+        CreateCanvasRequest request = new CreateCanvasRequest("No User Canvas");
         given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
         given(userRepository.findById(999L)).willReturn(Optional.empty());
 
         // when & then
-        assertThatThrownBy(() -> canvasService.createCanvas(request))
+        assertThatThrownBy(() -> canvasService.createCanvas(request, 999L))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.USER_NOT_FOUND);
     }
 
     @Test
-    @DisplayName("canvasId 미입력 시 max(canvas_id) + 1로 자동 채번")
+    @DisplayName("캔버스 생성 시 로그인하지 않은 사용자(userId=null)인 경우 UNAUTHORIZED 예외 발생")
+    void createCanvas_WithoutLogin_ThrowsUnauthorized() {
+        // given
+        CreateCanvasRequest request = new CreateCanvasRequest("Unauthenticated Canvas");
+
+        // when & then
+        assertThatThrownBy(() -> canvasService.createCanvas(request, null))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
+    }
+
+    @Test
+    @DisplayName("canvasId는 MS SQL에서 max(canvas_id) + 1로 항상 자동 채번")
     void createCanvas_AutoGenerateId() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Auto Id Canvas", null, 1L);
+        CreateCanvasRequest request = new CreateCanvasRequest("Auto Id Canvas");
         given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
         given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
         given(canvasInfoRepository.findMaxCanvasId()).willReturn(10);
@@ -121,7 +133,7 @@ class CanvasServiceTest {
         given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedEntity);
 
         // when
-        CanvasResponse response = canvasService.createCanvas(request);
+        CanvasResponse response = canvasService.createCanvas(request, 1L);
 
         // then
         assertThat(response.canvasId()).isEqualTo(11);
@@ -136,11 +148,11 @@ class CanvasServiceTest {
     @DisplayName("중복된 캔버스 이름으로 생성 시 예외 발생")
     void createCanvas_DuplicateName_ThrowsException() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Duplicate Canvas", null, 1L);
+        CreateCanvasRequest request = new CreateCanvasRequest("Duplicate Canvas");
         given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(true);
 
         // when & then
-        assertThatThrownBy(() -> canvasService.createCanvas(request))
+        assertThatThrownBy(() -> canvasService.createCanvas(request, 1L))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_ALREADY_EXISTS);
     }

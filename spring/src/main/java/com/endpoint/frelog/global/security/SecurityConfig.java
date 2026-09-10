@@ -71,7 +71,7 @@ public class SecurityConfig {
                         ).permitAll()
 
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/canvases/**").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/canvases/**").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/canvases/**").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/canvases/**").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.PATCH, "/api/canvases/**").authenticated()
                         .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/canvases/**").authenticated()
