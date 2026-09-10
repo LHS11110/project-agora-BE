@@ -1,7 +1,5 @@
 package com.endpoint.frelog.global.security;
 
-import com.endpoint.frelog.global.exception.ErrorCode;
-import com.endpoint.frelog.global.exception.ErrorResponse;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
