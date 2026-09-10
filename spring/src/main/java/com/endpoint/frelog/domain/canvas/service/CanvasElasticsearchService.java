@@ -14,9 +14,9 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -29,7 +29,6 @@ public class CanvasElasticsearchService {
     private final RestClient restClient;
     private final ElasticsearchProperties properties;
     private final ObjectMapper objectMapper;
-    private volatile boolean indexChecked = false;
 
     public CanvasElasticsearchService(
             @Qualifier("elasticsearchRestClient") RestClient restClient,
@@ -57,132 +56,49 @@ public class CanvasElasticsearchService {
     }
 
     /**
-     * canvas 인덱스 존재 여부 확인 및 부재 시 스키마 매핑 자동 생성
+     * Elasticsearch 인덱스 존재 여부 확인 (HEAD /{index})
      */
-    public synchronized boolean ensureIndex() {
-        if (indexChecked) {
-            return true;
-        }
+    public boolean isIndexExists() {
         try {
-            restClient.get()
+            restClient.head()
                     .uri("/{index}", properties.getIndex())
                     .retrieve()
                     .toBodilessEntity();
-            indexChecked = true;
             return true;
         } catch (HttpClientErrorException.NotFound e) {
-            log.info("Elasticsearch 인덱스 '{}'가 존재하지 않아 자동 생성을 시도합니다.", properties.getIndex());
-            createCanvasIndex();
-            indexChecked = true;
-            return true;
+            return false;
         } catch (Exception e) {
-            log.warn("Elasticsearch 인덱스 확인/생성 중 오류: {}", e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 인덱스 확인 실패: " + e.getMessage());
-            }
+            log.debug("Elasticsearch 인덱스 '{}' 존재 확인 실패: {}", properties.getIndex(), e.getMessage());
             return false;
         }
     }
 
-    private void createCanvasIndex() {
-        String mappingJson = """
-        {
-          "settings": {
-            "number_of_shards": 1,
-            "number_of_replicas": 0
-          },
-          "mappings": {
-            "dynamic_templates": [
-              {
-                "inner_group_uids": {
-                  "path_match": "inner-group.*",
-                  "mapping": {
-                    "type": "long"
-                  }
+    /**
+     * 예외가 Elasticsearch 인덱스 부재(index_not_found_exception / 404)로 인한 것인지 판별
+     */
+    public boolean isIndexNotFoundException(Exception e) {
+        if (e instanceof RestClientResponseException rre) {
+            if (rre.getStatusCode().value() == 404) {
+                String body = rre.getResponseBodyAsString();
+                if (body != null) {
+                    return body.contains("index_not_found_exception") || body.contains("no such index");
                 }
-              },
-              {
-                "item_id": {
-                  "path_match": "items.*.item-id",
-                  "mapping": {
-                    "type": "long"
-                  }
-                }
-              },
-              {
-                "item_type": {
-                  "path_match": "items.*.type",
-                  "mapping": {
-                    "type": "integer"
-                  }
-                }
-              },
-              {
-                "item_pos": {
-                  "path_match": "items.*.pos",
-                  "mapping": {
-                    "type": "float"
-                  }
-                }
-              },
-              {
-                "item_permission": {
-                  "path_match": "items.*.permission.*",
-                  "mapping": {
-                    "type": "byte"
-                  }
-                }
-              }
-            ],
-            "properties": {
-              "canvas-name": {
-                "type": "text",
-                "fields": {
-                  "keyword": {
-                    "type": "keyword",
-                    "ignore_above": 256
-                  }
-                }
-              },
-              "canvas-id": {
-                "type": "long"
-              },
-              "admin": {
-                "type": "long"
-              },
-              "canvas-password": {
-                "type": "keyword"
-              },
-              "peoples": {
-                "type": "long"
-              },
-              "inner-group": {
-                "type": "object"
-              },
-              "items": {
-                "type": "object"
-              },
-              "init-group": {
-                "type": "keyword"
-              }
             }
-          }
         }
-        """;
+        return false;
+    }
 
-        try {
-            restClient.put()
-                    .uri("/{index}", properties.getIndex())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(mappingJson)
-                    .retrieve()
-                    .toBodilessEntity();
-            log.info("Elasticsearch 인덱스 '{}' 매핑 생성 완료", properties.getIndex());
-        } catch (Exception e) {
-            log.warn("Elasticsearch 인덱스 생성 실패: {}", e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 인덱스 생성 실패: " + e.getMessage());
-            }
+    /**
+     * 인덱스 부재 에러 공통 로깅 및 설정에 따른 예외 처리
+     */
+    private void handleIndexNotFound(String operation, Exception e) {
+        log.error("Elasticsearch 인덱스 '{}'가 존재하지 않습니다 (index_not_found_exception). {} 실패: {}",
+                properties.getIndex(), operation, e.getMessage());
+        if (properties.isFailOnError()) {
+            throw new CustomException(
+                    ErrorCode.ELASTICSEARCH_INDEX_NOT_FOUND,
+                    "Elasticsearch 인덱스 '" + properties.getIndex() + "'가 존재하지 않습니다: " + e.getMessage()
+            );
         }
     }
 
@@ -191,7 +107,6 @@ public class CanvasElasticsearchService {
      */
     public boolean saveCanvas(CanvasDocument document) {
         try {
-            ensureIndex();
             String docId = document.getCanvasName();
             String docJson = objectMapper.writeValueAsString(document);
             restClient.put()
@@ -203,6 +118,10 @@ public class CanvasElasticsearchService {
             log.info("캔버스 '{}'(ID: {}) Elasticsearch 저장 성공", document.getCanvasName(), document.getCanvasId());
             return true;
         } catch (Exception e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 색인 저장 (saveCanvas)", e);
+                return false;
+            }
             log.warn("캔버스 '{}' Elasticsearch 저장 실패: {}", document.getCanvasName(), e.getMessage());
             if (properties.isFailOnError()) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 색인 실패: " + e.getMessage());
@@ -216,7 +135,6 @@ public class CanvasElasticsearchService {
      */
     public Optional<CanvasDocument> getCanvasDocumentByName(String canvasName) {
         try {
-            ensureIndex();
             String rawJson = restClient.get()
                     .uri("/{index}/_doc/{id}", properties.getIndex(), canvasName)
                     .retrieve()
@@ -230,8 +148,16 @@ public class CanvasElasticsearchService {
             }
             return Optional.empty();
         } catch (HttpClientErrorException.NotFound e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 이름 조회 (getCanvasDocumentByName)", e);
+                return Optional.empty();
+            }
             return Optional.empty();
         } catch (Exception e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 이름 조회 (getCanvasDocumentByName)", e);
+                return Optional.empty();
+            }
             log.warn("Elasticsearch 캔버스 이름 '{}' 조회 실패: {}", canvasName, e.getMessage());
             if (properties.isFailOnError()) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 조회 실패: " + e.getMessage());
@@ -245,7 +171,6 @@ public class CanvasElasticsearchService {
      */
     public Optional<CanvasDocument> getCanvasDocumentById(Integer canvasId) {
         try {
-            ensureIndex();
             Map<String, Object> queryBody = Map.of(
                     "query", Map.of("term", Map.of("canvas-id", canvasId)),
                     "size", 1
@@ -271,8 +196,14 @@ public class CanvasElasticsearchService {
             }
             return Optional.empty();
         } catch (HttpClientErrorException.NotFound e) {
+            // Elasticsearch에서 _search의 404는 인덱스 부재를 의미함
+            handleIndexNotFound("도큐먼트 ID 검색 (getCanvasDocumentById)", e);
             return Optional.empty();
         } catch (Exception e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 ID 검색 (getCanvasDocumentById)", e);
+                return Optional.empty();
+            }
             log.warn("Elasticsearch 캔버스 ID {} 검색 실패: {}", canvasId, e.getMessage());
             if (properties.isFailOnError()) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 검색 실패: " + e.getMessage());
@@ -286,7 +217,6 @@ public class CanvasElasticsearchService {
      */
     public List<CanvasDocument> listCanvasDocuments() {
         try {
-            ensureIndex();
             Map<String, Object> queryBody = Map.of(
                     "query", Map.of("match_all", Map.of()),
                     "size", 1000
@@ -314,8 +244,19 @@ public class CanvasElasticsearchService {
                 }
             }
             return Collections.emptyList();
+        } catch (HttpClientErrorException.NotFound e) {
+            // Elasticsearch에서 _search의 404는 인덱스 부재를 의미함
+            handleIndexNotFound("도큐먼트 전체 목록 조회 (listCanvasDocuments)", e);
+            return Collections.emptyList();
         } catch (Exception e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 전체 목록 조회 (listCanvasDocuments)", e);
+                return Collections.emptyList();
+            }
             log.warn("Elasticsearch 캔버스 목록 조회 실패: {}", e.getMessage());
+            if (properties.isFailOnError()) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 목록 조회 실패: " + e.getMessage());
+            }
             return Collections.emptyList();
         }
     }
@@ -323,7 +264,6 @@ public class CanvasElasticsearchService {
     /**
      * 캔버스 도큐먼트 업데이트
      */
-
     public Optional<CanvasDocument> updateCanvasDocument(Integer canvasId, String fallbackCanvasName, Long ownerId, UpdateCanvasDocumentRequest request) {
         Optional<CanvasDocument> existingOpt = getCanvasDocumentById(canvasId);
         if (existingOpt.isEmpty() && fallbackCanvasName != null) {
@@ -376,7 +316,6 @@ public class CanvasElasticsearchService {
         }
 
         try {
-            ensureIndex();
             restClient.delete()
                     .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), targetName)
                     .retrieve()
@@ -384,8 +323,17 @@ public class CanvasElasticsearchService {
             log.info("캔버스 '{}' Elasticsearch 문서 삭제 완료", targetName);
             return true;
         } catch (HttpClientErrorException.NotFound e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 삭제 (deleteCanvas)", e);
+                return false;
+            }
+            // 인덱스는 있으나 문서가 없는 정상 삭제 완료 간주
             return false;
         } catch (Exception e) {
+            if (isIndexNotFoundException(e)) {
+                handleIndexNotFound("도큐먼트 삭제 (deleteCanvas)", e);
+                return false;
+            }
             log.warn("캔버스 '{}' Elasticsearch 삭제 실패: {}", targetName, e.getMessage());
             if (properties.isFailOnError()) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 삭제 실패: " + e.getMessage());
