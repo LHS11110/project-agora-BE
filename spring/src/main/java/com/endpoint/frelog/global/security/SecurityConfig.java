@@ -53,9 +53,14 @@ public class SecurityConfig {
                         })
                 )
                 .authorizeHttpRequests(auth -> auth
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.FORWARD, jakarta.servlet.DispatcherType.INCLUDE, jakarta.servlet.DispatcherType.ERROR).permitAll()
                         .requestMatchers(
                                 "/",
                                 "/index.html",
+                                "/test",
+                                "/test.jsp",
+                                "/test.html",
+                                "/WEB-INF/**",
                                 "/css/**",
                                 "/js/**",
                                 "/favicon.ico",
@@ -64,6 +69,7 @@ public class SecurityConfig {
                                 "/api/auth/health",
                                 "/api/canvases/*/image",
                                 "/api/database/**",
+                                "/api/test/**",
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
