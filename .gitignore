@@ -217,3 +217,7 @@ bin/
 test.html
 test_*.py
 tests/
+
+# C++ Build
+cpp/build/
+*.o

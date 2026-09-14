@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <set>
 
 UserSockets::UserSockets(int user_id, int rx_port, int tx_port, Canvas* canvas)
@@ -59,18 +60,22 @@ void UserSockets::stop() {
     }
 
     if (rx_client_fd_ >= 0) {
+        shutdown(rx_client_fd_, SHUT_RDWR);
         close(rx_client_fd_);
         rx_client_fd_ = -1;
     }
     if (tx_client_fd_ >= 0) {
+        shutdown(tx_client_fd_, SHUT_RDWR);
         close(tx_client_fd_);
         tx_client_fd_ = -1;
     }
     if (rx_server_fd_ >= 0) {
+        shutdown(rx_server_fd_, SHUT_RDWR);
         close(rx_server_fd_);
         rx_server_fd_ = -1;
     }
     if (tx_server_fd_ >= 0) {
+        shutdown(tx_server_fd_, SHUT_RDWR);
         close(tx_server_fd_);
         tx_server_fd_ = -1;
     }
@@ -99,12 +104,12 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
     bool is_admin = false;
 
     if (canvasDoc.contains("inner-group") && canvasDoc["inner-group"].is_object()) {
-        for (auto& [grp, uids] : canvasDoc["inner-group"].items()) {
-            if (uids.is_array()) {
-                for (auto& u : uids) {
-                    if (u.is_number_integer() && u.get<int>() == user_id_) {
-                        user_groups.insert(grp);
-                        if (grp == "admin-group") {
+        for (auto& [group_name, members] : canvasDoc["inner-group"].items()) {
+            if (members.is_array()) {
+                for (auto& uid : members) {
+                    if (uid.is_number_integer() && uid.get<int>() == user_id_) {
+                        user_groups.insert(group_name);
+                        if (group_name == "admin-group") {
                             is_admin = true;
                         }
                     }
@@ -113,21 +118,19 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
         }
     }
 
-    if (canvasDoc.contains("admin-user-id") && canvasDoc["admin-user-id"].is_number_integer()) {
-        if (canvasDoc["admin-user-id"].get<int>() == user_id_) {
-            is_admin = true;
-        }
-    }
-
-    // 2. Filter items based on user's groups
+    // 2. Filter items based on group permission
     nlohmann::json filtered_items = nlohmann::json::object();
     if (canvasDoc.contains("items") && canvasDoc["items"].is_object()) {
         for (auto& [item_id, item_obj] : canvasDoc["items"].items()) {
-            bool accessible = is_admin; // admins can see all items
+            bool accessible = false;
 
-            if (!accessible && item_obj.contains("permission")) {
+            if (is_admin) {
+                accessible = true;
+            } else if (item_obj.contains("permission")) {
                 auto& perm = item_obj["permission"];
-                if (perm.is_array()) {
+                if (perm.is_string()) {
+                    accessible = (user_groups.count(perm.get<std::string>()) > 0);
+                } else if (perm.is_array()) {
                     for (auto& p : perm) {
                         if (p.is_string() && user_groups.count(p.get<std::string>()) > 0) {
                             accessible = true;
@@ -167,12 +170,21 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
 void UserSockets::rxLoop() {
     while (running_) {
         if (rx_server_fd_ < 0) break;
+
+        struct pollfd pfd{};
+        pfd.fd = rx_server_fd_;
+        pfd.events = POLLIN;
+        int ret = poll(&pfd, 1, 200);
+        if (ret <= 0 || !running_) {
+            continue;
+        }
+
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
         int client_fd = accept(rx_server_fd_, (struct sockaddr*)&client_addr, &len);
         if (client_fd < 0) {
             if (!running_) break;
-            usleep(100000);
+            usleep(50000);
             continue;
         }
 
@@ -192,9 +204,16 @@ void UserSockets::rxLoop() {
             }
         }
 
-        // Keep connection open; monitor for client close
+        // Keep connection open; monitor for client close using poll
         char buf[128];
         while (running_ && rx_client_fd_ >= 0) {
+            struct pollfd cpfd{};
+            cpfd.fd = rx_client_fd_;
+            cpfd.events = POLLIN;
+            int cret = poll(&cpfd, 1, 200);
+            if (cret < 0) break;
+            if (cret == 0) continue; // timeout, check running_ again
+
             ssize_t r = recv(rx_client_fd_, buf, sizeof(buf), 0);
             if (r <= 0) {
                 break;
@@ -202,20 +221,31 @@ void UserSockets::rxLoop() {
         }
 
         std::cout << "[UserSockets] User #" << user_id_ << " disconnected from RX socket\n";
-        close(client_fd);
-        rx_client_fd_ = -1;
+        if (rx_client_fd_ >= 0) {
+            close(rx_client_fd_);
+            rx_client_fd_ = -1;
+        }
     }
 }
 
 void UserSockets::txLoop() {
     while (running_) {
         if (tx_server_fd_ < 0) break;
+
+        struct pollfd pfd{};
+        pfd.fd = tx_server_fd_;
+        pfd.events = POLLIN;
+        int ret = poll(&pfd, 1, 200);
+        if (ret <= 0 || !running_) {
+            continue;
+        }
+
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
         int client_fd = accept(tx_server_fd_, (struct sockaddr*)&client_addr, &len);
         if (client_fd < 0) {
             if (!running_) break;
-            usleep(100000);
+            usleep(50000);
             continue;
         }
 
@@ -224,6 +254,13 @@ void UserSockets::txLoop() {
 
         char buf[4096];
         while (running_ && tx_client_fd_ >= 0) {
+            struct pollfd cpfd{};
+            cpfd.fd = tx_client_fd_;
+            cpfd.events = POLLIN;
+            int cret = poll(&cpfd, 1, 200);
+            if (cret < 0) break;
+            if (cret == 0) continue; // timeout, check running_ again
+
             ssize_t r = recv(tx_client_fd_, buf, sizeof(buf) - 1, 0);
             if (r <= 0) {
                 break;
@@ -241,7 +278,9 @@ void UserSockets::txLoop() {
         }
 
         std::cout << "[UserSockets] User #" << user_id_ << " disconnected from TX socket\n";
-        close(client_fd);
-        tx_client_fd_ = -1;
+        if (tx_client_fd_ >= 0) {
+            close(tx_client_fd_);
+            tx_client_fd_ = -1;
+        }
     }
 }
