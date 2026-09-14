@@ -227,4 +227,23 @@ class CanvasServiceTest {
         assertThat(info.getIsCached()).isTrue();
         assertThat(testUser.getIsAccessed()).isTrue();
     }
+
+    @Test
+    @DisplayName("캔버스 접속 중단 시 C++ 서버 연결 해제 및 사용자 접속 상태(isAccessed=false)를 롤백한다")
+    void disconnectCanvasAccess_Success() {
+        // given
+        testUser.setIsAccessed(true);
+        testUser.setServerIp("127.0.0.1");
+        testUser.setServerPort("8000");
+        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+
+        // when
+        canvasService.disconnectCanvasAccess(300, userDetails);
+
+        // then
+        verify(cppServerClient).disconnectUserFromCanvas("127.0.0.1", "8000", 300, 1L);
+        assertThat(testUser.getIsAccessed()).isFalse();
+        assertThat(testUser.getServerIp()).isNull();
+        assertThat(testUser.getServerPort()).isNull();
+    }
 }

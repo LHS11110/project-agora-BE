@@ -4,11 +4,16 @@
 #include <csignal>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
+#include "WebSocketServer.hpp"
 
 static HttpServer* g_server = nullptr;
+static WebSocketServer* g_ws_server = nullptr;
 
 void signal_handler(int signal) {
     std::cout << "\n[Agora C++ Server] Caught signal " << signal << ", shutting down..." << std::endl;
+    if (g_ws_server) {
+        g_ws_server->stop();
+    }
     if (g_server) {
         g_server->stop();
     }
@@ -36,12 +41,15 @@ int main(int argc, char* argv[]) {
     if (argc > 2) {
         host = argv[2];
     }
+    int ws_port = port + 1;
+    if (const char* env_ws_port = std::getenv("WS_PORT")) ws_port = std::stoi(env_ws_port);
 
     std::cout << "========================================" << std::endl;
     std::cout << " Agora C++ Realtime Canvas Server" << std::endl;
-    std::cout << " Listening on: " << host << ":" << port << std::endl;
-    std::cout << " MSSQL:        " << db_host << ":" << db_port << std::endl;
-    std::cout << " ES:           " << es_host << ":" << es_port << std::endl;
+    std::cout << " REST Listening on:      " << host << ":" << port << std::endl;
+    std::cout << " uWS WebSocket Port:     " << host << ":" << ws_port << std::endl;
+    std::cout << " MSSQL:                  " << db_host << ":" << db_port << std::endl;
+    std::cout << " ES:                     " << es_host << ":" << es_port << std::endl;
     std::cout << "========================================" << std::endl;
 
     std::signal(SIGINT, signal_handler);
@@ -49,8 +57,14 @@ int main(int argc, char* argv[]) {
 
     CanvasPool pool(db_host, db_port, es_host, es_port);
     HttpServer server(pool, host, port);
-    g_server = &server;
+    WebSocketServer ws_server(pool, host, ws_port, [&](const std::string& token) {
+        return server.authenticateToken(token);
+    });
 
+    g_server = &server;
+    g_ws_server = &ws_server;
+
+    ws_server.start();
     server.start();
 
     std::cout << "[Agora C++ Server] Server stopped gracefully." << std::endl;

@@ -14,6 +14,8 @@ public:
     void start();
     void stop();
 
+    int authenticateToken(const std::string& token);
+
 private:
     CanvasPool& canvas_pool_;
     std::string host_;
@@ -28,5 +30,4 @@ private:
     void setupRoutes();
 
     bool registerToken(int user_id, const std::string& token);
-    int authenticateToken(const std::string& token);
 };

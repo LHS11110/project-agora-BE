@@ -247,4 +247,19 @@ public class CanvasController {
         CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, token, currentUser);
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * 6-1. Disconnect API (별칭 경로: POST /api/canvases/{canvasId}/disconnect)
+     */
+    @PostMapping("/{canvasId}/disconnect")
+    public ResponseEntity<?> disconnectCanvasPath(
+            @PathVariable Integer canvasId,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.disconnectCanvasAccess(canvasId, currentUser);
+        java.util.Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("status", "success");
+        resp.put("message", "실시간 소켓/웹소켓 연결이 성공적으로 종료되었습니다.");
+        resp.put("canvas_id", canvasId);
+        return ResponseEntity.ok(resp);
+    }
 }

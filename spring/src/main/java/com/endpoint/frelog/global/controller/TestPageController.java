@@ -73,6 +73,45 @@ public class TestPageController {
     }
 
     /**
+     * Proxy endpoint for browser to call C++ /api/access/disconnect directly.
+     */
+    @PostMapping("/api/test/cpp-disconnect")
+    @ResponseBody
+    public ResponseEntity<?> proxyCppDisconnect(
+            @RequestBody Map<String, Object> requestBody,
+            @RequestHeader(value = "Authorization", required = false) String authHeader
+    ) {
+        String host = (String) requestBody.getOrDefault("server_ip", "127.0.0.1");
+        int port = requestBody.containsKey("server_port") ? Integer.parseInt(requestBody.get("server_port").toString()) : 8000;
+        int canvasId = requestBody.containsKey("canvas_id") ? Integer.parseInt(requestBody.get("canvas_id").toString()) : 0;
+        int userId = requestBody.containsKey("user_id") ? Integer.parseInt(requestBody.get("user_id").toString()) : 0;
+
+        String cppUrl = "http://" + host + ":" + port + "/api/access/disconnect";
+        try {
+            String jsonPayload = "{\"canvas_id\":" + canvasId + ",\"user_id\":" + userId + "}";
+            HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
+                    .uri(URI.create(cppUrl))
+                    .timeout(Duration.ofSeconds(5))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonPayload));
+
+            if (authHeader != null && !authHeader.isEmpty()) {
+                reqBuilder.header("Authorization", authHeader);
+            }
+
+            HttpResponse<String> response = httpClient.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            return ResponseEntity.status(response.statusCode())
+                    .header("Content-Type", "application/json")
+                    .body(response.body());
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "C++ 서버 연결 종료 실패: " + e.getMessage());
+            error.put("targetUrl", cppUrl);
+            return ResponseEntity.status(502).body(error);
+        }
+    }
+
+    /**
      * Proxy endpoint for browser to get active canvas count on C++ server.
      */
     @GetMapping("/api/test/cpp-canvas-count")

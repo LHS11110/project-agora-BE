@@ -114,10 +114,31 @@ bool CanvasPool::removeCanvas(int canvas_id) {
 
 void CanvasPool::disconnectUserFromAll(int user_id) {
     std::lock_guard<std::mutex> lock(pool_mutex_);
+    std::vector<int> empty_canvases;
     for (auto& [id, canvas] : canvases_) {
         if (canvas && canvas->isUserActive(user_id)) {
             canvas->disconnectUser(user_id);
             std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << id << "\n";
+            if (canvas->getActiveUsers().empty()) {
+                empty_canvases.push_back(id);
+            }
+        }
+    }
+    for (int id : empty_canvases) {
+        canvases_.erase(id);
+        std::cout << "[CanvasPool] Canvas #" << id << " has no active users, unloaded from pool (load -1)\n";
+    }
+}
+
+void CanvasPool::disconnectUser(int canvas_id, int user_id) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = canvases_.find(canvas_id);
+    if (it != canvases_.end() && it->second) {
+        it->second->disconnectUser(user_id);
+        std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
+        if (it->second->getActiveUsers().empty()) {
+            canvases_.erase(it);
+            std::cout << "[CanvasPool] Canvas #" << canvas_id << " has no active users, unloaded from pool (load -1)\n";
         }
     }
 }

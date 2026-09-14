@@ -71,6 +71,21 @@ public class CanvasUpdateDtos {
             String serverIp,
 
             @JsonProperty("server_port")
-            String serverPort
-    ) {}
+            String serverPort,
+
+            @JsonProperty("ws_port")
+            String wsPort
+    ) {
+        public AccessResponse(String serverIp, String serverPort) {
+            this(serverIp, serverPort, calculateWsPort(serverPort));
+        }
+
+        private static String calculateWsPort(String serverPort) {
+            try {
+                return String.valueOf(Integer.parseInt(serverPort) + 1);
+            } catch (Exception e) {
+                return "8001";
+            }
+        }
+    }
 }

@@ -17,15 +17,17 @@ std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {
         user_sockets[user_id]->stop();
     }
 
-    auto sockets = std::make_shared<UserSockets>(user_id, rx_port, tx_port, this);
-    sockets->start();
+    if (rx_port > 0 && tx_port > 0) {
+        auto sockets = std::make_shared<UserSockets>(user_id, rx_port, tx_port, this);
+        sockets->start();
+        user_sockets[user_id] = sockets;
+    }
 
-    user_sockets[user_id] = sockets;
     active_users.insert(user_id);
 
     std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
               << " connected. Total active users: " << active_users.size()
-              << " (RX: " << rx_port << ", TX: " << tx_port << ")\n";
+              << (rx_port > 0 ? " (RX: " + std::to_string(rx_port) + ", TX: " + std::to_string(tx_port) + ")" : " (WebSocket)") << "\n";
 
     return {rx_port, tx_port};
 }

@@ -8,8 +8,10 @@ let currentToken = localStorage.getItem('agora_token') || '';
 let currentUser = JSON.parse(localStorage.getItem('agora_user') || 'null');
 let allocatedCppIp = '127.0.0.1';
 let allocatedCppPort = '8000';
+let allocatedWsPort = '8001';
 let allocatedRxPort = 0;
 let allocatedTxPort = 0;
+let activeWebSocket = null;
 
 function updateAuthState() {
   const statusEl = document.getElementById('currentStatusText');
@@ -371,10 +373,146 @@ async function callSpringAccess(cid) {
   if (res.ok && res.data.server_ip) {
     allocatedCppIp = res.data.server_ip;
     allocatedCppPort = res.data.server_port;
+    allocatedWsPort = res.data.ws_port || (Number(res.data.server_port) + 1).toString();
     const disp = document.getElementById('allocatedServerDisplay');
-    if (disp) disp.innerText = `${allocatedCppIp}:${allocatedCppPort}`;
+    if (disp) disp.innerText = `REST: ${allocatedCppIp}:${allocatedCppPort} | WebSocket: ${allocatedCppIp}:${allocatedWsPort}`;
   }
   return res;
+}
+
+// Native HTML5 WebSocket connection to C++ uWebSockets server
+function connectCanvasWebSocket(cid) {
+  const canvas_id = Number(cid || document.getElementById('accessCanvasId').value);
+  const statusEl = document.getElementById('wsStatusBadge');
+  const msgEl = document.getElementById('wsMessageDisplay');
+
+  if (activeWebSocket && activeWebSocket.readyState === WebSocket.OPEN) {
+    logConsole('WEBSOCKET', '이미 활성화된 웹소켓 연결이 존재합니다.');
+    return;
+  }
+
+  const wsHost = allocatedCppIp || '127.0.0.1';
+  const wsPort = allocatedWsPort || '8001';
+  const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${canvas_id}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
+
+  logConsole('WEBSOCKET CONNECT', `uWebSockets 서버로 실제 웹소켓 연결 시도: ${wsUrl}`);
+  if (statusEl) {
+    statusEl.innerText = '🟡 WebSocket 연결 중...';
+    statusEl.className = 'badge badge-warning';
+  }
+
+  try {
+    activeWebSocket = new WebSocket(wsUrl);
+
+    activeWebSocket.onopen = async () => {
+      logConsole('WEBSOCKET OPEN', `uWebSockets 연결 성공! (Canvas #${canvas_id})`);
+      if (statusEl) {
+        statusEl.innerText = `🟢 WebSocket 연결됨 (${wsHost}:${wsPort})`;
+        statusEl.className = 'badge badge-active';
+      }
+      if (msgEl) {
+        msgEl.innerText = `[WebSocket OPEN] uWebSockets 서버에 연결되었습니다. (Topic: canvas/${canvas_id})`;
+      }
+      await refreshCppActiveStatus();
+      await listAllCanvases();
+      await listCppServers();
+    };
+
+    activeWebSocket.onmessage = (event) => {
+      logConsole('WEBSOCKET MSG', event.data);
+      if (msgEl) {
+        try {
+          const parsed = JSON.parse(event.data);
+          msgEl.innerText = `[수신 프레임: ${parsed.type || 'message'}]\n` + JSON.stringify(parsed, null, 2);
+        } catch (_) {
+          msgEl.innerText = event.data;
+        }
+      }
+    };
+
+    activeWebSocket.onclose = async (event) => {
+      logConsole('WEBSOCKET CLOSE', `uWebSockets 연결 종료됨 (code: ${event.code})`);
+      if (statusEl) {
+        statusEl.innerText = '⚪ WebSocket 종료됨';
+        statusEl.className = 'badge badge-inactive';
+      }
+      await refreshCppActiveStatus();
+      await listAllCanvases();
+      await listCppServers();
+    };
+
+    activeWebSocket.onerror = (error) => {
+      logConsole('WEBSOCKET ERROR', error.message || '웹소켓 연결 오류');
+      if (statusEl) {
+        statusEl.innerText = '🔴 WebSocket 오류';
+        statusEl.className = 'badge badge-danger';
+      }
+    };
+  } catch (err) {
+    logConsole('WEBSOCKET ERROR', err.message);
+  }
+}
+
+function sendWebSocketPing() {
+  if (!activeWebSocket || activeWebSocket.readyState !== WebSocket.OPEN) {
+    alert('먼저 웹소켓을 연결하세요.');
+    return;
+  }
+  const pingPayload = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+  activeWebSocket.send(pingPayload);
+  logConsole('WEBSOCKET SEND', pingPayload);
+}
+
+async function callDisconnectAccess() {
+  const canvas_id = Number(document.getElementById('accessCanvasId').value);
+  logConsole('DISCONNECT START', `캔버스 #${canvas_id} 실시간 접속 중단 요청...`);
+
+  // 1. Close active WebSocket if open
+  if (activeWebSocket) {
+    try {
+      activeWebSocket.close(1000, "User requested disconnect");
+    } catch (_) {}
+    activeWebSocket = null;
+  }
+
+  // 2. Call Spring Boot Disconnect API (updates DB is_accessed=false, calls C++)
+  const springRes = await apiCall('/api/access/disconnect', 'POST', { canvas_id });
+
+  // 3. Also call C++ Disconnect proxy
+  if (allocatedCppIp && allocatedCppPort) {
+    await apiCall('/api/test/cpp-disconnect', 'POST', {
+      canvas_id: canvas_id,
+      server_ip: allocatedCppIp,
+      server_port: allocatedCppPort,
+      user_id: currentUser ? currentUser.user_id : 1
+    });
+  }
+
+  allocatedRxPort = 0;
+  allocatedTxPort = 0;
+
+  const statusEl = document.getElementById('wsStatusBadge');
+  if (statusEl) {
+    statusEl.innerText = '⚪ 접속 종료됨 (Disconnected)';
+    statusEl.className = 'badge badge-inactive';
+  }
+
+  const disp = document.getElementById('cppAccessResultDisplay');
+  if (disp) {
+    disp.innerText = `🔴 실시간 접속 중단 완료 (Disconnected)\n- C++ 소켓 FD 및 uWebSockets 연결 회수\n- 활성 사용자 0인 경우 캔버스 풀에서 언로드되어 서버 부하(-1) 감소`;
+  }
+
+  const msgEl = document.getElementById('wsMessageDisplay');
+  if (msgEl) {
+    msgEl.innerText = '웹소켓 연결이 종료되었습니다.';
+  }
+
+  await refreshCppActiveStatus();
+  await listAllCanvases();
+  await listCppServers();
+
+  logConsole('DISCONNECT SUCCESS', `캔버스 #${canvas_id} 실시간 접속 중단 완료 (부하 원복)`);
+  return springRes;
 }
 
 async function callCppAccess(cid) {
@@ -388,9 +526,10 @@ async function callCppAccess(cid) {
   if (res.ok) {
     allocatedRxPort = res.data.rx_port;
     allocatedTxPort = res.data.tx_port;
+    if (res.data.ws_port) allocatedWsPort = res.data.ws_port;
     const disp = document.getElementById('cppAccessResultDisplay');
     if (disp) {
-      disp.innerText = `RX Port: ${res.data.rx_port}, TX Port: ${res.data.tx_port}\n` + JSON.stringify(res.data, null, 2);
+      disp.innerText = `RX Port: ${res.data.rx_port}, TX Port: ${res.data.tx_port}, WS Port: ${allocatedWsPort}\n` + JSON.stringify(res.data, null, 2);
     }
   }
   await refreshCppActiveStatus();
@@ -444,10 +583,11 @@ async function testAllocatedSocketPing() {
 async function testCanvasCreateAndSocketLoad() {
   const btn = document.getElementById('btnVerifyLoadIncrease');
   const resultEl = document.getElementById('verifyLoadResult');
-  if (btn) { btn.disabled = true; btn.innerText = '⏳ 부하 검증 진행 중...'; }
-  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<span style="color:#60a5fa;">1/5단계: 현재 C++ 서버 부하 측정 중...</span>'; }
+  if (btn) { btn.disabled = true; btn.innerText = '⏳ 웹소켓 부하 검증 진행 중...'; }
+  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<span style="color:#60a5fa;">1/6단계: 현재 C++ 서버 부하 측정 중...</span>'; }
 
   let testCid = null;
+  let testWs = null;
   try {
     // Step 1: Query initial load
     const initialActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
@@ -455,11 +595,11 @@ async function testCanvasCreateAndSocketLoad() {
     logConsole('LOAD TEST (Step 1)', `초기 C++ 서버 부하: ${initialLoad}개`);
 
     // Step 2: Create a new canvas
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">2/5단계: 신규 캔버스 생성 중... (현재 부하: ${initialLoad})</span>`;
-    const newName = 'LoadTest-' + Date.now().toString().slice(-4);
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">2/6단계: 신규 캔버스 생성 중... (현재 부하: ${initialLoad})</span>`;
+    const newName = 'WsLoadTest-' + Date.now().toString().slice(-4);
     const createRes = await apiCall('/api/canvases', 'POST', {
       canvasName: newName,
-      description: '실시간 소켓 연결 및 부하 증가 검증용 임시 캔버스'
+      description: 'uWebSockets 브라우저 웹소켓 및 실시간 부하 검증용 임시 캔버스'
     });
     if (!createRes.ok || !createRes.data || !createRes.data.canvas_id) {
       throw new Error('캔버스 생성 실패: ' + (createRes.data ? createRes.data.message : '오류'));
@@ -469,26 +609,43 @@ async function testCanvasCreateAndSocketLoad() {
     logConsole('LOAD TEST (Step 2)', `신규 캔버스 #${testCid} 생성 완료`);
 
     // Step 3: Spring Access
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">3/5단계: Spring Boot Access (P2C 로드밸런싱) 호출 중...</span>`;
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">3/6단계: Spring Boot Access (P2C 로드밸런싱) 호출 중...</span>`;
     const springRes = await callSpringAccess(testCid);
     if (!springRes.ok) throw new Error('Spring Access 실패: ' + (springRes.data ? springRes.data.message : '오류'));
 
-    // Step 4: C++ Access
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/5단계: C++ 실시간 Access 호출 (캔버스 메모리 적재 & 부하 +1)...</span>`;
-    const cppRes = await callCppAccess(testCid);
-    if (!cppRes.ok) throw new Error('C++ Access 실패: ' + (cppRes.data ? cppRes.data.error : '오류'));
+    // Step 4: Connect via HTML5 WebSocket to C++ uWebSockets server
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/6단계: uWebSockets(포트 ${allocatedWsPort}) 브라우저 웹소켓 실시간 연결 중...</span>`;
+    const wsHost = allocatedCppIp || '127.0.0.1';
+    const wsPort = allocatedWsPort || '8001';
+    const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${testCid}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
-    // Step 5: Check new load
+    const wsConnectPromise = new Promise((resolve, reject) => {
+      const ws = new WebSocket(wsUrl);
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error('uWebSockets 연결 시간 초과 (3초)'));
+      }, 3000);
+
+      ws.onopen = () => {
+        clearTimeout(timer);
+        resolve(ws);
+      };
+      ws.onerror = (e) => {
+        clearTimeout(timer);
+        reject(new Error('uWebSockets 연결 실패'));
+      };
+    });
+
+    testWs = await wsConnectPromise;
+    activeWebSocket = testWs;
+    logConsole('LOAD TEST (Step 4)', `uWebSockets 연결 완료!`);
+
+    // Step 5: Check load increase (+1)
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">5/6단계: 실시간 C++ 서버 부하 증가 (+1) 확인 중...</span>`;
+    await new Promise(r => setTimeout(r, 400));
     const afterActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
     const afterLoad = afterActiveRes.ok && afterActiveRes.data ? (afterActiveRes.data.count || 0) : 0;
-    logConsole('LOAD TEST (Step 5)', `C++ Access 후 서버 부하: ${afterLoad}개 (증가폭: ${afterLoad - initialLoad})`);
-
-    // Step 6: Socket Ping
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">5/5단계: 할당된 RX 소켓(포트 ${allocatedRxPort}) 실시간 Ping/Pong 검증 중...</span>`;
-    const pingRes = await testAllocatedSocketPing();
-    if (!pingRes.ok || !pingRes.data.connected) {
-      throw new Error('C++ RX 소켓 연결 실패: ' + (pingRes.data ? pingRes.data.error : ''));
-    }
+    logConsole('LOAD TEST (Step 5)', `uWebSockets 연결 후 서버 부하: ${afterLoad}개 (초기 ${initialLoad} -> 현재 ${afterLoad})`);
 
     // Refresh UI
     await refreshCppActiveStatus();
@@ -502,22 +659,28 @@ async function testCanvasCreateAndSocketLoad() {
       resultEl.innerHTML = `
         <div style="padding: 10px; background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 6px;">
           <div style="font-weight: bold; color: ${statusColor}; margin-bottom: 4px;">
-            ${isLoadIncreased ? '🎉 실시간 소켓 연결 및 부하 증가 검증 성공!' : '⚠️ 소켓 연결 성공 (부하 수치 유지)'}
+            ${isLoadIncreased ? '🎉 uWebSockets 브라우저 웹소켓 연결 및 부하 +1 검증 성공!' : '⚠️ 웹소켓 연결 성공 (부하 수치 유지)'}
           </div>
           <div>- 생성 캔버스: <strong>#${testCid} (${newName})</strong></div>
+          <div>- C++ uWebSockets 포트: <strong>${wsPort}</strong> (ws://${wsHost}:${wsPort}/ws/canvas/${testCid})</div>
           <div>- C++ 실시간 부하 변화: <strong>${initialLoad}개 ➡️ ${afterLoad}개 (${afterLoad - initialLoad >= 0 ? '+' : ''}${afterLoad - initialLoad})</strong></div>
-          <div>- 할당 포트: RX <strong>${allocatedRxPort}</strong>, TX <strong>${allocatedTxPort}</strong> (${pingRes.data.latencyMs}ms)</div>
-          <div style="margin-top: 8px;">
+          <div style="margin-top: 8px; display: flex; gap: 6px;">
+            <button class="btn btn-warning" style="padding: 4px 10px; font-size: 0.75rem;" onclick="callDisconnectAccess()">
+              🔴 실시간 접속 중단 (WebSocket 종료 & 부하 -1)
+            </button>
             <button class="btn btn-danger" style="padding: 4px 10px; font-size: 0.75rem;" onclick="cleanupLoadTestCanvas(${testCid})">
-              🗑️ 테스트 캔버스 #${testCid} 삭제 및 부하 원복 (-1)
+              🗑️ 테스트 캔버스 #${testCid} 영구 삭제
             </button>
           </div>
         </div>
       `;
     }
-    logConsole('LOAD TEST SUCCESS', `캔버스 #${testCid} 생성 및 C++ 실시간 소켓 연결 완료 (부하: ${initialLoad} -> ${afterLoad})`);
+    logConsole('LOAD TEST SUCCESS', `캔버스 #${testCid} uWebSockets 연결 및 부하 증가 검증 완료 (${initialLoad} -> ${afterLoad})`);
   } catch (err) {
     logConsole('LOAD TEST ERROR', err.message);
+    if (testWs) {
+      try { testWs.close(); } catch (_) {}
+    }
     if (resultEl) {
       resultEl.innerHTML = `
         <div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 6px; color: #f87171;">

@@ -83,6 +83,24 @@ public class CppServerClient {
     }
 
     /**
+     * C++ 서버에서 특정 캔버스의 사용자 연결 즉시 종료 (POST /api/canvas/{canvasId}/users/{userId}/disconnect)
+     */
+    public boolean disconnectUserFromCanvas(String serverIp, String serverPort, Integer canvasId, Long userId) {
+        try {
+            String url = getBaseUrl(serverIp, serverPort) + "/api/canvas/" + canvasId + "/users/" + userId + "/disconnect";
+            restClient.post()
+                    .uri(URI.create(url))
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("C++ 서버({}:{}) 캔버스 #{} 사용자 #{} 연결 해제 완료", serverIp, serverPort, canvasId, userId);
+            return true;
+        } catch (Exception e) {
+            log.warn("C++ 서버({}:{}) 캔버스 #{} 사용자 #{} 연결 해제 실패, fallback to disconnectUser: {}", serverIp, serverPort, canvasId, userId, e.getMessage());
+            return disconnectUser(serverIp, serverPort, userId);
+        }
+    }
+
+    /**
      * 캔버스 이름 변경 즉시 반영 (POST /api/canvas/{canvasId}/reflect/name)
      */
     public boolean reflectCanvasName(String serverIp, String serverPort, Integer canvasId, String canvasName) {

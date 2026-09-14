@@ -8,8 +8,10 @@ let currentToken = localStorage.getItem('agora_token') || '';
 let currentUser = JSON.parse(localStorage.getItem('agora_user') || 'null');
 let allocatedCppIp = '127.0.0.1';
 let allocatedCppPort = '8000';
+let allocatedWsPort = '8001';
 let allocatedRxPort = 0;
 let allocatedTxPort = 0;
+let activeWebSocket = null;
 
 function updateAuthState() {
   const statusEl = document.getElementById('currentStatusText');

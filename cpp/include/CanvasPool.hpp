@@ -26,6 +26,9 @@ public:
     // Disconnect a user across all active canvases
     void disconnectUserFromAll(int user_id);
 
+    // Disconnect a user from a specific canvas (unloads canvas if no active users remain)
+    void disconnectUser(int canvas_id, int user_id);
+
     int getActiveCanvasCount();
     std::vector<int> getActiveCanvasIds();
 

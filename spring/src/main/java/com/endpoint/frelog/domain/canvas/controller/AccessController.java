@@ -39,4 +39,25 @@ public class AccessController {
         CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(request.canvasId(), token, currentUser);
         return ResponseEntity.ok(response);
     }
+
+    /**
+     * 5-1. Disconnect Access API (POST /api/access/disconnect)
+     */
+    @PostMapping("/disconnect")
+    public ResponseEntity<?> disconnectCanvas(
+            @RequestBody(required = false) java.util.Map<String, Object> request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        Integer canvasId = null;
+        if (request != null && request.containsKey("canvas_id")) {
+            try {
+                canvasId = Integer.parseInt(request.get("canvas_id").toString());
+            } catch (Exception ignored) {}
+        }
+        canvasService.disconnectCanvasAccess(canvasId, currentUser);
+        java.util.Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("status", "success");
+        resp.put("message", "실시간 소켓/웹소켓 연결이 성공적으로 종료되었습니다.");
+        if (canvasId != null) resp.put("canvas_id", canvasId);
+        return ResponseEntity.ok(resp);
+    }
 }

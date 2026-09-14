@@ -518,6 +518,43 @@ public class CanvasService {
         return new CanvasUpdateDtos.AccessResponse(serverIp, serverPort);
     }
 
+    /**
+     * 실시간 소켓/웹소켓 접속 중단 (POST /api/access/disconnect)
+     */
+    @Transactional
+    public void disconnectCanvasAccess(Integer canvasId, CustomUserDetails currentUser) {
+        if (currentUser == null || currentUser.getUserId() == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
+        }
+        Long userId = currentUser.getUserId();
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
+
+        String serverIp = user.getServerIp();
+        String serverPort = user.getServerPort();
+
+        if ((serverIp == null || serverPort == null) && canvasId != null) {
+            canvasInfoRepository.findById(canvasId).ifPresent(info -> {
+                if (info.getServerIp() != null && info.getServerPort() != null) {
+                    cppServerClient.disconnectUserFromCanvas(info.getServerIp(), info.getServerPort(), canvasId, userId);
+                }
+            });
+        } else if (serverIp != null && serverPort != null) {
+            if (canvasId != null) {
+                cppServerClient.disconnectUserFromCanvas(serverIp, serverPort, canvasId, userId);
+            } else {
+                cppServerClient.disconnectUser(serverIp, serverPort, userId);
+            }
+        }
+
+        user.setIsAccessed(false);
+        user.setServerIp(null);
+        user.setServerPort(null);
+        userRepository.save(user);
+        log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
+    }
+
     // =========================================================================
     // 유틸리티 및 권한 검증 메서드
     // =========================================================================

@@ -135,7 +135,8 @@ void HttpServer::setupRoutes() {
                 {"canvas_id", canvas_id},
                 {"user_id", user_id},
                 {"rx_port", rx_port},
-                {"tx_port", tx_port}
+                {"tx_port", tx_port},
+                {"ws_port", port_ + 1}
             };
 
             res.status = 200;
@@ -520,6 +521,66 @@ void HttpServer::setupRoutes() {
         canvas_pool_.disconnectUserFromAll(user_id);
         res.status = 200;
         res.set_content("{\"status\":\"success\",\"message\":\"User disconnected\"}", "application/json");
+    });
+
+    // 캔버스별 사용자 연결 중단 API
+    server_.Post(R"(/api/canvas/(\d+)/users/(\d+)/disconnect)", [this](const httplib::Request& req, httplib::Response& res) {
+        int canvas_id = std::stoi(req.matches[1]);
+        int user_id = std::stoi(req.matches[2]);
+        canvas_pool_.disconnectUser(canvas_id, user_id);
+        res.status = 200;
+        res.set_content("{\"status\":\"success\",\"message\":\"User disconnected from canvas\"}", "application/json");
+    });
+
+    // 실시간 세션 접속 중단 API (POST /api/access/disconnect)
+    server_.Post("/api/access/disconnect", [this](const httplib::Request& req, httplib::Response& res) {
+        try {
+            int canvas_id = 0;
+            int user_id = -1;
+            std::string token = "";
+
+            if (!req.body.empty()) {
+                auto body = nlohmann::json::parse(req.body);
+                canvas_id = body.value("canvas_id", 0);
+                if (canvas_id == 0) canvas_id = body.value("canvasId", 0);
+                user_id = body.value("user_id", -1);
+                if (user_id <= 0) user_id = body.value("userId", -1);
+                token = body.value("token", "");
+            }
+
+            if (canvas_id == 0 && req.has_param("canvas_id")) {
+                canvas_id = std::stoi(req.get_param_value("canvas_id"));
+            }
+
+            if (token.empty()) {
+                auto auth_header = req.get_header_value("Authorization");
+                if (auth_header.rfind("Bearer ", 0) == 0) {
+                    token = auth_header.substr(7);
+                }
+            }
+
+            int auth_uid = authenticateToken(token);
+            if (auth_uid > 0) user_id = auth_uid;
+            if (user_id <= 0) user_id = 1;
+
+            if (canvas_id > 0) {
+                canvas_pool_.disconnectUser(canvas_id, user_id);
+            } else {
+                canvas_pool_.disconnectUserFromAll(user_id);
+            }
+
+            nlohmann::json resp = {
+                {"status", "success"},
+                {"message", "User session disconnected"},
+                {"canvas_id", canvas_id},
+                {"user_id", user_id}
+            };
+            res.status = 200;
+            res.set_content(resp.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
+        }
     });
 
     // 캔버스 제거 API (Spring 캔버스 삭제 시 호출)
