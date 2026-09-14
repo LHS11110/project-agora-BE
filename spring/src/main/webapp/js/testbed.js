@@ -350,8 +350,12 @@ async function callSpringAccess(cid) {
 
 async function callCppAccess(cid) {
   const canvas_id = Number(cid || document.getElementById('accessCanvasId').value);
-  const cppUrl = `http://${allocatedCppIp}:${allocatedCppPort}/api/access`;
-  const res = await apiCall(cppUrl, 'POST', { canvas_id });
+  // Call via Spring Boot gateway proxy (/api/test/cpp-access) for 100% reliable CORS and network handling
+  const res = await apiCall('/api/test/cpp-access', 'POST', {
+    canvas_id: canvas_id,
+    server_ip: allocatedCppIp,
+    server_port: allocatedCppPort
+  });
   if (res.ok) {
     allocatedRxPort = res.data.rx_port;
     allocatedTxPort = res.data.tx_port;
@@ -364,8 +368,7 @@ async function callCppAccess(cid) {
 }
 
 async function getCppCanvasCount() {
-  const cppUrl = `http://${allocatedCppIp}:${allocatedCppPort}/api/canvas/count`;
-  return await apiCall(cppUrl, 'GET');
+  return await apiCall(`/api/test/cpp-canvas-count?host=${allocatedCppIp}&port=${allocatedCppPort}`, 'GET');
 }
 
 async function testAllocatedSocketPing() {
@@ -399,15 +402,21 @@ async function runFullE2ETest() {
 
   for (let i = 1; i <= 10; i++) setStepState('step' + i, 'pending', '대기 중');
 
+  let currentStep = 'step1';
   try {
     // Step 1: Admin Login
+    currentStep = 'step1';
     setStepState('step1', 'running', '로그인 중...');
     const s1 = await quickLogin('admin@agora.com', 'admin123');
-    if (!s1.ok) throw new Error('관리자 로그인 실패: ' + JSON.stringify(s1.data));
+    if (!s1.ok) {
+      setStepState('step1', 'failed', '실패: ' + (s1.data && s1.data.message ? s1.data.message : '로그인 에러'));
+      throw new Error('관리자 로그인 실패');
+    }
     setStepState('step1', 'success', '성공 (토큰 획득)');
     await sleep(300);
 
     // Step 2: Register Servers
+    currentStep = 'step2';
     setStepState('step2', 'running', '서버 등록 중...');
     await registerCppServer('127.0.0.1', '8000');
     await registerRedisServer('127.0.0.1', '6379');
@@ -415,46 +424,68 @@ async function runFullE2ETest() {
     await sleep(300);
 
     // Step 3: Create Canvas
+    currentStep = 'step3';
     setStepState('step3', 'running', '캔버스 생성 중...');
     const cRes = await apiCall('/api/canvases', 'POST', {
       canvasName: 'E2E 자동테스트 캔버스 ' + Math.floor(Math.random()*1000),
       description: 'JSP 자동 E2E 테스트용 캔버스입니다.'
     });
-    if (!cRes.ok || !cRes.data.canvas_id) throw new Error('캔버스 생성 실패');
+    if (!cRes.ok || !cRes.data.canvas_id) {
+      setStepState('step3', 'failed', '실패: 캔버스 생성 실패');
+      throw new Error('캔버스 생성 실패');
+    }
     const testCanvasId = cRes.data.canvas_id;
     selectCanvasForTest(testCanvasId);
     setStepState('step3', 'success', `성공 (Canvas #${testCanvasId})`);
     await sleep(300);
 
     // Step 4: ES Search
+    currentStep = 'step4';
     setStepState('step4', 'running', 'ES 검색 중...');
     const searchRes = await searchCanvases('E2E');
-    if (!searchRes.ok) throw new Error('ES 검색 실패');
+    if (!searchRes.ok) {
+      setStepState('step4', 'failed', '실패: ES 검색 실패');
+      throw new Error('ES 검색 실패');
+    }
     setStepState('step4', 'success', '성공 (ES 인덱스 검색 완료)');
     await sleep(300);
 
     // Step 5: Spring Access (P2C)
+    currentStep = 'step5';
     setStepState('step5', 'running', 'Spring Access 호출 중...');
     const aRes = await callSpringAccess(testCanvasId);
-    if (!aRes.ok) throw new Error('Spring Access 실패');
+    if (!aRes.ok) {
+      setStepState('step5', 'failed', '실패: Spring Access 실패');
+      throw new Error('Spring Access 실패');
+    }
     setStepState('step5', 'success', `성공 (할당: ${aRes.data.server_ip}:${aRes.data.server_port})`);
     await sleep(300);
 
     // Step 6: C++ Access
+    currentStep = 'step6';
     setStepState('step6', 'running', 'C++ Access 호출 중...');
     const cppRes = await callCppAccess(testCanvasId);
-    if (!cppRes.ok) throw new Error('C++ Access 실패');
+    if (!cppRes.ok || !cppRes.data || cppRes.data.status !== 'success') {
+      const errMsg = cppRes.data && cppRes.data.error ? cppRes.data.error : '응답 실패';
+      setStepState('step6', 'failed', '실패: ' + errMsg);
+      throw new Error('C++ Access 실패: ' + errMsg);
+    }
     setStepState('step6', 'success', `성공 (RX:${allocatedRxPort}, TX:${allocatedTxPort})`);
     await sleep(300);
 
     // Step 7: TCP Socket Ping
+    currentStep = 'step7';
     setStepState('step7', 'running', '소켓 연결 검증 중...');
     const pingRes = await apiCall(`/api/test/socket-ping?host=${allocatedCppIp}&port=${allocatedRxPort}`);
-    if (!pingRes.ok || !pingRes.data.connected) throw new Error('C++ RX 소켓 연결 실패');
+    if (!pingRes.ok || !pingRes.data.connected) {
+      setStepState('step7', 'failed', '실패: RX 소켓 연결 실패');
+      throw new Error('C++ RX 소켓 연결 실패');
+    }
     setStepState('step7', 'success', `성공 (${pingRes.data.latencyMs}ms, 아이템 수신 확인)`);
     await sleep(300);
 
     // Step 8: Granular Reflection
+    currentStep = 'step8';
     setStepState('step8', 'running', 'C++ 즉시 반영 검증 중...');
     await patchCanvasField('name', '반영 확인 완료 캔버스');
     await manageGroup('add', 'e2e-group');
@@ -462,6 +493,7 @@ async function runFullE2ETest() {
     await sleep(300);
 
     // Step 9: Protection
+    currentStep = 'step9';
     setStepState('step9', 'running', '서버 보호 로직 검증 중...');
     const srvList = await apiCall('/api/servers');
     if (srvList.ok && srvList.data.length > 0) {
@@ -471,6 +503,7 @@ async function runFullE2ETest() {
     await sleep(300);
 
     // Step 10: Soft Delete & Disconnect
+    currentStep = 'step10';
     setStepState('step10', 'running', '회원 탈퇴 소프트 삭제 검증 중...');
     const tempEmail = 'tmp_' + Date.now() + '@agora.com';
     const regUser = await apiCall('/api/auth/signup', 'POST', {

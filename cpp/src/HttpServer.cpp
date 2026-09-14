@@ -38,6 +38,20 @@ int HttpServer::authenticateToken(const std::string& token) {
 }
 
 void HttpServer::setupRoutes() {
+    // Global CORS Preflight and headers
+    server_.Options(".*", [](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "*");
+        res.status = 204;
+    });
+
+    server_.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers", "*");
+    });
+
     // 1. JWT 토큰 등록 API (POST /api/auth/token)
     server_.Post("/api/auth/token", [this](const httplib::Request& req, httplib::Response& res) {
         try {
