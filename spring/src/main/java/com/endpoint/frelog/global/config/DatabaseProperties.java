@@ -10,11 +10,36 @@ import org.springframework.context.annotation.Configuration;
 @ConfigurationProperties(prefix = "app.db")
 public class DatabaseProperties {
 
+    private String address;
     private String host = "127.0.0.1";
     private int port = 1433;
     private String name = "agora_db";
     private String username = "agora_user";
     private String password = "AgoraUserSecret@Passw0rd!2026";
+
+    public String getAddress() {
+        if (address != null && !address.isBlank()) {
+            return address;
+        }
+        return host + ":" + port;
+    }
+
+    public void setAddress(String address) {
+        this.address = address;
+        if (address != null && !address.isBlank()) {
+            String trimmed = address.trim();
+            if (trimmed.contains(":")) {
+                String[] parts = trimmed.split(":", 2);
+                this.host = parts[0].trim();
+                try {
+                    this.port = Integer.parseInt(parts[1].trim());
+                } catch (NumberFormatException ignored) {
+                }
+            } else {
+                this.host = trimmed;
+            }
+        }
+    }
 
     public String getHost() {
         return host;

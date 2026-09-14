@@ -83,7 +83,7 @@ class CanvasElasticsearchServiceTest {
         var putSpec = mock(RestClient.RequestBodyUriSpec.class);
         var putResponseSpec = mock(RestClient.ResponseSpec.class);
         given(restClient.put()).willReturn(putSpec);
-        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("My Canvas"))).willReturn(putSpec);
+        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("100"))).willReturn(putSpec);
         given(putSpec.contentType(any())).willReturn(putSpec);
         given(putSpec.body(any(Object.class))).willReturn(putSpec);
         given(putSpec.retrieve()).willReturn(putResponseSpec);
@@ -127,7 +127,7 @@ class CanvasElasticsearchServiceTest {
     void saveCanvas_IndexNotFound_FailOnErrorFalse() {
         var putSpec = mock(RestClient.RequestBodyUriSpec.class);
         given(restClient.put()).willReturn(putSpec);
-        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("My Canvas"))).willReturn(putSpec);
+        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("100"))).willReturn(putSpec);
         given(putSpec.contentType(any())).willReturn(putSpec);
         given(putSpec.body(any(Object.class))).willReturn(putSpec);
 
@@ -147,7 +147,7 @@ class CanvasElasticsearchServiceTest {
 
         var putSpec = mock(RestClient.RequestBodyUriSpec.class);
         given(restClient.put()).willReturn(putSpec);
-        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("My Canvas"))).willReturn(putSpec);
+        given(putSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("100"))).willReturn(putSpec);
         given(putSpec.contentType(any())).willReturn(putSpec);
         given(putSpec.body(any(Object.class))).willReturn(putSpec);
 

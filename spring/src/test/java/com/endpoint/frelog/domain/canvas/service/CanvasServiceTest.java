@@ -1,19 +1,21 @@
 package com.endpoint.frelog.domain.canvas.service;
 
-import com.endpoint.frelog.domain.canvas.client.PythonServerClient;
+import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
-import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
-import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
+import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
+import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
+import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
+import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
+import com.endpoint.frelog.domain.loadbalancer.service.LoadBalancerService;
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
 import com.endpoint.frelog.domain.user.entity.UserStatus;
 import com.endpoint.frelog.domain.user.repository.UserRepository;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
+import com.endpoint.frelog.global.security.CustomUserDetails;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,7 +26,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,7 +33,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -48,489 +48,183 @@ class CanvasServiceTest {
     private CanvasElasticsearchService canvasElasticsearchService;
 
     @Mock
-    private PythonServerClient pythonServerClient;
+    private CanvasResourceService canvasResourceService;
+
+    @Mock
+    private LoadBalancerService loadBalancerService;
+
+    @Mock
+    private CppServerClient cppServerClient;
 
     @InjectMocks
     private CanvasService canvasService;
 
     private User testUser;
+    private CustomUserDetails userDetails;
 
     @BeforeEach
     void setUp() {
         testUser = new User("user@agora.com", "encodedPassword", "아고라유저", Role.ROLE_USER);
         testUser.setStatus(UserStatus.ACTIVE);
         ReflectionTestUtils.setField(testUser, "userId", 1L);
+        userDetails = new CustomUserDetails(testUser);
     }
 
     @Test
-    @DisplayName("캔버스 생성 시 redis와 server는 항상 none(null), is_cached는 false로 초기화되며 Elasticsearch에 저장됨")
-    void createCanvas_InitialCacheState_NoneAndFalse_WithUser() {
+    @DisplayName("캔버스 생성 시 MS SQL과 Elasticsearch에 각각 데이터가 저장된다")
+    void createCanvas_Success() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Agora Shared Canvas", "samplePass", "default");
-        given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
-        given(canvasInfoRepository.findMaxCanvasId()).willReturn(1000);
-        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
-
-        CanvasInfo savedEntity = new CanvasInfo(1001, "Agora Shared Canvas", testUser);
-        savedEntity.setRedisIp(null);
-        savedEntity.setRedisPort(null);
-        savedEntity.setServerIp(null);
-        savedEntity.setServerPort(null);
-        savedEntity.setIsCached(false);
-
-        given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedEntity);
+        given(canvasInfoRepository.findMaxCanvasId()).willReturn(100);
+        CanvasInfo savedInfo = new CanvasInfo(101);
+        given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedInfo);
+        given(canvasResourceService.saveRepresentativeImage(eq(101), any())).willReturn("/api/canvases/101/image");
 
         // when
-        CanvasResponse response = canvasService.createCanvas(request, 1L);
+        CanvasSummaryResponse response = canvasService.createCanvas("Test Canvas", "description", "pass123", null, userDetails);
 
         // then
         assertThat(response).isNotNull();
-        assertThat(response.canvasId()).isEqualTo(1001);
-        assertThat(response.canvasName()).isEqualTo("Agora Shared Canvas");
-        assertThat(response.userId()).isEqualTo(1L);
-        assertThat(response.userNickname()).isEqualTo("아고라유저");
-        assertThat(response.redisIp()).isNull();
-        assertThat(response.redisPort()).isNull();
-        assertThat(response.serverIp()).isNull();
-        assertThat(response.serverPort()).isNull();
-        assertThat(response.isCached()).isFalse();
+        assertThat(response.canvasId()).isEqualTo(101);
+        assertThat(response.canvasName()).isEqualTo("Test Canvas");
+        assertThat(response.description()).isEqualTo("description");
 
         verify(canvasInfoRepository).save(any(CanvasInfo.class));
         verify(canvasElasticsearchService).saveCanvas(any(CanvasDocument.class));
     }
 
     @Test
-    @DisplayName("캔버스 생성 시 유저가 존재하지 않으면 USER_NOT_FOUND 예외 발생")
-    void createCanvas_UserNotFound_ThrowsException() {
+    @DisplayName("캔버스 검색 시 Elasticsearch에서 조회하고 CanvasSummaryResponse 목록 반환")
+    void searchCanvases_Success() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("No User Canvas");
-        given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
-        given(userRepository.findById(999L)).willReturn(Optional.empty());
+        CanvasDocument doc = new CanvasDocument("Agora Canvas", 50, 1L, null, "default");
+        doc.setDescription("Agora canvas desc");
+        doc.setPeople(List.of(1L, 2L));
 
-        // when & then
-        assertThatThrownBy(() -> canvasService.createCanvas(request, 999L))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.USER_NOT_FOUND);
+        given(canvasElasticsearchService.searchCanvasesByName("Agora")).willReturn(List.of(doc));
+
+        // when
+        List<CanvasSummaryResponse> results = canvasService.searchCanvases("Agora", userDetails);
+
+        // then
+        assertThat(results).hasSize(1);
+        CanvasSummaryResponse summary = results.get(0);
+        assertThat(summary.canvasId()).isEqualTo(50);
+        assertThat(summary.canvasName()).isEqualTo("Agora Canvas");
+        assertThat(summary.description()).isEqualTo("Agora canvas desc");
+        assertThat(summary.userCount()).isEqualTo(2);
     }
 
     @Test
-    @DisplayName("캔버스 생성 시 로그인하지 않은 사용자(userId=null)인 경우 UNAUTHORIZED 예외 발생")
-    void createCanvas_WithoutLogin_ThrowsUnauthorized() {
+    @DisplayName("캔버스 단건 요약 조회 성공")
+    void getCanvasSummary_Success() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Unauthenticated Canvas");
+        CanvasDocument doc = new CanvasDocument("Solo Canvas", 10, 1L, null, "default");
+        doc.setDescription("Solo desc");
+        doc.setPeople(List.of(1L));
 
-        // when & then
-        assertThatThrownBy(() -> canvasService.createCanvas(request, null))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
+        given(canvasElasticsearchService.getCanvasDocumentById(10)).willReturn(Optional.of(doc));
+
+        // when
+        CanvasSummaryResponse summary = canvasService.getCanvasSummary(10, userDetails);
+
+        // then
+        assertThat(summary).isNotNull();
+        assertThat(summary.canvasId()).isEqualTo(10);
+        assertThat(summary.canvasName()).isEqualTo("Solo Canvas");
+        assertThat(summary.userCount()).isEqualTo(1);
     }
 
     @Test
-    @DisplayName("canvasId는 MS SQL에서 max(canvas_id) + 1로 항상 자동 채번")
-    void createCanvas_AutoGenerateId() {
+    @DisplayName("캔버스 이름 수정 시 Elasticsearch와 캐시된 경우 C++ 서버에 반영된다")
+    void updateCanvasName_Cached_CallsCppServer() {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Auto Id Canvas");
-        given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(false);
+        CanvasDocument doc = new CanvasDocument("Old Name", 100, 1L, null, "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(100)).willReturn(Optional.of(doc));
+
+        CanvasInfo info = new CanvasInfo(100);
+        info.setIsCached(true);
+        info.setServerIp("127.0.0.1");
+        info.setServerPort("8000");
+        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(info));
+
+        // when
+        CanvasSummaryResponse response = canvasService.updateCanvasName(100, "New Name", userDetails);
+
+        // then
+        assertThat(response.canvasName()).isEqualTo("New Name");
+        verify(canvasElasticsearchService).saveCanvas(doc);
+        verify(cppServerClient).reflectCanvasName("127.0.0.1", "8000", 100, "New Name");
+    }
+
+    @Test
+    @DisplayName("소유자나 관리자가 아닌 유저가 캔버스 수정 시 FORBIDDEN 예외 발생")
+    void updateCanvasName_NotOwner_ThrowsForbidden() {
+        // given
+        CanvasDocument doc = new CanvasDocument("Test Canvas", 100, 1L, null, "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(100)).willReturn(Optional.of(doc));
+
+        User otherUser = new User("other@agora.com", "pass", "다른유저", Role.ROLE_USER);
+        ReflectionTestUtils.setField(otherUser, "userId", 2L);
+        CustomUserDetails otherDetails = new CustomUserDetails(otherUser);
+
+        // when & then
+        assertThatThrownBy(() -> canvasService.updateCanvasName(100, "New Name", otherDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
+    }
+
+    @Test
+    @DisplayName("캔버스 삭제 시 Elasticsearch, MS SQL, 리소스 디렉토리 및 C++ 서버에서 삭제된다")
+    void deleteCanvas_Cached_Success() {
+        // given
+        CanvasDocument doc = new CanvasDocument("Delete Canvas", 200, 1L, null, "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(200)).willReturn(Optional.of(doc));
+
+        CanvasInfo info = new CanvasInfo(200);
+        info.setIsCached(true);
+        info.setServerIp("127.0.0.1");
+        info.setServerPort("8000");
+        info.setRedisIp("127.0.0.1");
+        info.setRedisPort("6379");
+        given(canvasInfoRepository.findById(200)).willReturn(Optional.of(info));
+
+        // when
+        canvasService.deleteCanvas(200, userDetails);
+
+        // then
+        verify(cppServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 200, "127.0.0.1", "6379");
+        verify(canvasElasticsearchService).deleteCanvas(200, "Delete Canvas");
+        verify(canvasInfoRepository).delete(info);
+        verify(canvasResourceService).deleteCanvasResourceDirectory(200);
+    }
+
+    @Test
+    @DisplayName("캔버스 접속 시 초대된 사용자인 경우 미캐시 상태면 P2C로 할당하고 JWT를 C++ 서버에 등록한다")
+    void accessCanvas_NotCached_AllocatesAndRegisters() {
+        // given
+        CanvasDocument doc = new CanvasDocument("Access Canvas", 300, 1L, "hashedPass", "default");
+        doc.getPeople().add(1L);
+        given(canvasElasticsearchService.getCanvasDocumentById(300)).willReturn(Optional.of(doc));
+
         given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
-        given(canvasInfoRepository.findMaxCanvasId()).willReturn(10);
 
-        CanvasInfo savedEntity = new CanvasInfo(11, "Auto Id Canvas", testUser);
-        given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedEntity);
+        CanvasInfo info = new CanvasInfo(300);
+        info.setIsCached(false);
+        given(canvasInfoRepository.findById(300)).willReturn(Optional.of(info));
 
-        // when
-        CanvasResponse response = canvasService.createCanvas(request, 1L);
-
-        // then
-        assertThat(response.canvasId()).isEqualTo(11);
-        assertThat(response.canvasName()).isEqualTo("Auto Id Canvas");
-        assertThat(response.userId()).isEqualTo(1L);
-        assertThat(response.isCached()).isFalse();
-
-        verify(canvasElasticsearchService).saveCanvas(any(CanvasDocument.class));
-    }
-
-    @Test
-    @DisplayName("중복된 캔버스 이름으로 생성 시 예외 발생")
-    void createCanvas_DuplicateName_ThrowsException() {
-        // given
-        CreateCanvasRequest request = new CreateCanvasRequest("Duplicate Canvas");
-        given(canvasInfoRepository.existsByCanvasName(request.canvasName())).willReturn(true);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.createCanvas(request, 1L))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_ALREADY_EXISTS);
-    }
-
-    @Test
-    @DisplayName("캔버스 단건 조회 성공")
-    void getCanvas_Success() {
-        // given
-        CanvasInfo entity = new CanvasInfo(500, "Test Canvas", testUser);
-        given(canvasInfoRepository.findById(500)).willReturn(Optional.of(entity));
+        given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000"));
+        given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));
 
         // when
-        CanvasResponse response = canvasService.getCanvas(500);
+        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, "jwt.token.here", userDetails);
 
         // then
-        assertThat(response.canvasId()).isEqualTo(500);
-        assertThat(response.canvasName()).isEqualTo("Test Canvas");
-        assertThat(response.userId()).isEqualTo(1L);
-        assertThat(response.userNickname()).isEqualTo("아고라유저");
-    }
-
-    @Test
-    @DisplayName("존재하지 않는 캔버스 조회 시 예외 발생")
-    void getCanvas_NotFound_ThrowsException() {
-        // given
-        given(canvasInfoRepository.findById(999)).willReturn(Optional.empty());
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.getCanvas(999))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_NOT_FOUND);
-    }
-
-    @Test
-    @DisplayName("전체 캔버스 목록 조회")
-    void listCanvases_Success() {
-        // given
-        CanvasInfo c1 = new CanvasInfo(1, "Canvas 1", testUser);
-        CanvasInfo c2 = new CanvasInfo(2, "Canvas 2", testUser);
-        given(canvasInfoRepository.findAll()).willReturn(List.of(c1, c2));
-
-        // when
-        List<CanvasResponse> list = canvasService.listCanvases();
-
-        // then
-        assertThat(list).hasSize(2);
-        assertThat(list.get(0).canvasName()).isEqualTo("Canvas 1");
-        assertThat(list.get(1).canvasName()).isEqualTo("Canvas 2");
-    }
-
-    @Test
-    @DisplayName("특정 유저의 캔버스 목록 조회")
-    void listCanvasesByUser_Success() {
-        // given
-        CanvasInfo c1 = new CanvasInfo(1, "User Canvas 1", testUser);
-        given(canvasInfoRepository.findByUser_UserId(1L)).willReturn(List.of(c1));
-
-        // when
-        List<CanvasResponse> list = canvasService.listCanvasesByUserId(1L);
-
-        // then
-        assertThat(list).hasSize(1);
-        assertThat(list.get(0).canvasName()).isEqualTo("User Canvas 1");
-        assertThat(list.get(0).userId()).isEqualTo(1L);
-    }
-
-    @Test
-    @DisplayName("Elasticsearch 캔버스 도큐먼트 단건 조회 성공")
-    void getCanvasDocument_Success() {
-        // given
-        CanvasInfo entity = new CanvasInfo(1001, "ES Canvas", testUser);
-        given(canvasInfoRepository.findById(1001)).willReturn(Optional.of(entity));
-
-        CanvasDocument document = new CanvasDocument("ES Canvas", 1001, 1L, null, "default");
-        given(canvasElasticsearchService.getCanvasDocumentById(1001)).willReturn(Optional.of(document));
-
-        // when
-        CanvasDocument result = canvasService.getCanvasDocument(1001);
-
-        // then
-        assertThat(result).isNotNull();
-        assertThat(result.getCanvasName()).isEqualTo("ES Canvas");
-        assertThat(result.getCanvasId()).isEqualTo(1001);
-        assertThat(result.getAdmin()).isEqualTo(1L);
-    }
-
-    @Test
-    @DisplayName("캔버스 소유자가 캐시 정보 업데이트 시 성공")
-    void updateCanvasCache_Success_ByOwner() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-        given(canvasInfoRepository.save(any(CanvasInfo.class))).willAnswer(invocation -> invocation.getArgument(0));
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-        UpdateCanvasCacheRequest updateReq = new UpdateCanvasCacheRequest(
-                true, "127.0.0.1", "6379", "127.0.0.1", "8000"
-        );
-
-        // when
-        CanvasResponse response = canvasService.updateCanvasCache(100, updateReq, ownerDetails);
-
-        // then
-        assertThat(response.isCached()).isTrue();
-        assertThat(response.redisIp()).isEqualTo("127.0.0.1");
-        assertThat(response.redisPort()).isEqualTo("6379");
-    }
-
-    @Test
-    @DisplayName("관리자(ROLE_ADMIN) 계정이 다른 사용자의 캔버스 캐시 정보 업데이트 시 성공")
-    void updateCanvasCache_Success_ByAdmin() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-        given(canvasInfoRepository.save(any(CanvasInfo.class))).willAnswer(invocation -> invocation.getArgument(0));
-
-        User adminUser = new User("admin@agora.com", "pass", "관리자", Role.ROLE_ADMIN);
-        ReflectionTestUtils.setField(adminUser, "userId", 99L);
-        com.endpoint.frelog.global.security.CustomUserDetails adminDetails = new com.endpoint.frelog.global.security.CustomUserDetails(adminUser);
-
-        UpdateCanvasCacheRequest updateReq = new UpdateCanvasCacheRequest(
-                true, "10.0.0.1", "6379", "10.0.0.1", "8000"
-        );
-
-        // when
-        CanvasResponse response = canvasService.updateCanvasCache(100, updateReq, adminDetails);
-
-        // then
-        assertThat(response.isCached()).isTrue();
-        assertThat(response.redisIp()).isEqualTo("10.0.0.1");
-    }
-
-    @Test
-    @DisplayName("소유자도 아니고 관리자도 아닌 일반 사용자가 캔버스 캐시 수정 시 ACCESS_DENIED 예외 발생")
-    void updateCanvasCache_AccessDenied_ByOtherUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser); // owner userId: 1
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        User otherUser = new User("other@agora.com", "pass", "타인", Role.ROLE_USER);
-        ReflectionTestUtils.setField(otherUser, "userId", 2L); // other userId: 2
-        com.endpoint.frelog.global.security.CustomUserDetails otherDetails = new com.endpoint.frelog.global.security.CustomUserDetails(otherUser);
-
-        UpdateCanvasCacheRequest updateReq = new UpdateCanvasCacheRequest(true, "127.0.0.1", "6379", null, null);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.updateCanvasCache(100, updateReq, otherDetails))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
-    }
-
-    @Test
-    @DisplayName("비로그인 상태에서 캔버스 캐시 수정 시 UNAUTHORIZED 예외 발생")
-    void updateCanvasCache_Unauthorized_WhenNoUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        UpdateCanvasCacheRequest updateReq = new UpdateCanvasCacheRequest(true, "127.0.0.1", "6379", null, null);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.updateCanvasCache(100, updateReq, null))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
-    }
-
-    @Test
-    @DisplayName("캔버스 소유자가 Elasticsearch 도큐먼트 업데이트 시 성공")
-    void updateCanvasDocument_Success_ByOwner() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        CanvasDocument updatedDoc = new CanvasDocument("ES Canvas", 100, 1L, "newPassword", "customGroup");
-        given(canvasElasticsearchService.updateCanvasDocument(eq(100), eq("ES Canvas"), eq(1L), any(UpdateCanvasDocumentRequest.class)))
-                .willReturn(Optional.of(updatedDoc));
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", List.of(1L, 2L), Map.of(), Map.of(), "customGroup");
-
-        // when
-        CanvasDocument result = canvasService.updateCanvasDocument(100, request, ownerDetails);
-
-        // then
-        assertThat(result).isNotNull();
-        assertThat(result.getCanvasPassword()).isEqualTo("newPassword");
-        assertThat(result.getInitGroup()).isEqualTo("customGroup");
-    }
-
-    @Test
-    @DisplayName("관리자(ROLE_ADMIN)가 다른 사람의 Elasticsearch 도큐먼트 업데이트 시 성공")
-    void updateCanvasDocument_Success_ByAdmin() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        CanvasDocument updatedDoc = new CanvasDocument("ES Canvas", 100, 1L, "adminChanged", "adminGroup");
-        given(canvasElasticsearchService.updateCanvasDocument(eq(100), eq("ES Canvas"), eq(1L), any(UpdateCanvasDocumentRequest.class)))
-                .willReturn(Optional.of(updatedDoc));
-
-        User adminUser = new User("admin@agora.com", "pass", "관리자", Role.ROLE_ADMIN);
-        ReflectionTestUtils.setField(adminUser, "userId", 99L);
-        com.endpoint.frelog.global.security.CustomUserDetails adminDetails = new com.endpoint.frelog.global.security.CustomUserDetails(adminUser);
-
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("adminChanged", null, null, null, "adminGroup");
-
-        // when
-        CanvasDocument result = canvasService.updateCanvasDocument(100, request, adminDetails);
-
-        // then
-        assertThat(result).isNotNull();
-        assertThat(result.getCanvasPassword()).isEqualTo("adminChanged");
-    }
-
-    @Test
-    @DisplayName("소유자도 관리자도 아닌 계정이 Elasticsearch 도큐먼트 업데이트 시 ACCESS_DENIED 발생")
-    void updateCanvasDocument_AccessDenied_ByOtherUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        User otherUser = new User("other@agora.com", "pass", "타인", Role.ROLE_USER);
-        ReflectionTestUtils.setField(otherUser, "userId", 2L);
-        com.endpoint.frelog.global.security.CustomUserDetails otherDetails = new com.endpoint.frelog.global.security.CustomUserDetails(otherUser);
-
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("pass", null, null, null, null);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.updateCanvasDocument(100, request, otherDetails))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
-    }
-
-    @Test
-    @DisplayName("비로그인 상태에서 Elasticsearch 도큐먼트 업데이트 시 UNAUTHORIZED 발생")
-    void updateCanvasDocument_Unauthorized_WhenNoUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "ES Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("pass", null, null, null, null);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.updateCanvasDocument(100, request, null))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
-    }
-
-    @Test
-    @DisplayName("캔버스 소유자가 삭제 시 RDBMS 및 Elasticsearch 모두 삭제 성공")
-    void deleteCanvas_Success_ByOwner() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-
-        // when
-        canvasService.deleteCanvas(100, ownerDetails);
-
-        // then
-        verify(canvasInfoRepository).delete(entity);
-        verify(canvasElasticsearchService).deleteCanvas(100, "Delete Canvas");
-    }
-
-    @Test
-    @DisplayName("관리자(ROLE_ADMIN)가 캔버스 삭제 시 RDBMS 및 Elasticsearch 모두 삭제 성공")
-    void deleteCanvas_Success_ByAdmin() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        User adminUser = new User("admin@agora.com", "pass", "관리자", Role.ROLE_ADMIN);
-        ReflectionTestUtils.setField(adminUser, "userId", 99L);
-        com.endpoint.frelog.global.security.CustomUserDetails adminDetails = new com.endpoint.frelog.global.security.CustomUserDetails(adminUser);
-
-        // when
-        canvasService.deleteCanvas(100, adminDetails);
-
-        // then
-        verify(canvasInfoRepository).delete(entity);
-        verify(canvasElasticsearchService).deleteCanvas(100, "Delete Canvas");
-    }
-
-    @Test
-    @DisplayName("소유자도 아니고 관리자도 아닌 일반 사용자가 캔버스 삭제 시 ACCESS_DENIED 예외 발생")
-    void deleteCanvas_AccessDenied_ByOtherUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        User otherUser = new User("other@agora.com", "pass", "타인", Role.ROLE_USER);
-        ReflectionTestUtils.setField(otherUser, "userId", 2L);
-        com.endpoint.frelog.global.security.CustomUserDetails otherDetails = new com.endpoint.frelog.global.security.CustomUserDetails(otherUser);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.deleteCanvas(100, otherDetails))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
-    }
-
-    @Test
-    @DisplayName("비로그인 상태에서 캔버스 삭제 시 UNAUTHORIZED 예외 발생")
-    void deleteCanvas_Unauthorized_WhenNoUser() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Delete Canvas", testUser);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.deleteCanvas(100, null))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.UNAUTHORIZED);
-    }
-
-    @Test
-    @DisplayName("서버 및 Redis에 할당된 캔버스 삭제 시 PythonServerClient를 호출하여 일괄 해제 요청")
-    void deleteCanvas_WhenAllocatedToServerAndRedis_InvokesPythonServerClient() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Cached Canvas", testUser);
-        entity.updateCacheState(true, "127.0.0.1", "6379", "127.0.0.1", "8000");
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-        given(pythonServerClient.deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379"))
-                .willReturn(true);
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-
-        // when
-        canvasService.deleteCanvas(100, ownerDetails);
-
-        // then
-        verify(pythonServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379");
-        verify(canvasInfoRepository).delete(entity);
-        verify(canvasElasticsearchService).deleteCanvas(100, "Cached Canvas");
-    }
-
-    @Test
-    @DisplayName("서버에 할당되지 않은 미캐시 캔버스 삭제 시 PythonServerClient를 호출하지 않음")
-    void deleteCanvas_WhenNotAllocated_DoesNotInvokePythonServerClient() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Uncached Canvas", testUser);
-        entity.updateCacheState(false, null, null, null, null);
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-
-        // when
-        canvasService.deleteCanvas(100, ownerDetails);
-
-        // then
-        verify(pythonServerClient, never()).deleteCanvasFromServerAndRedis(any(), any(), any(), any(), any());
-        verify(canvasInfoRepository).delete(entity);
-        verify(canvasElasticsearchService).deleteCanvas(100, "Uncached Canvas");
-    }
-
-    @Test
-    @DisplayName("Python 서버 호출이 실패하더라도 RDBMS 및 Elasticsearch 도큐먼트 삭제는 안정적으로 완료됨")
-    void deleteCanvas_WhenPythonServerClientFails_StillDeletesCanvasFromRdbmsAndElasticsearch() {
-        // given
-        CanvasInfo entity = new CanvasInfo(100, "Faulty Canvas", testUser);
-        entity.updateCacheState(true, "127.0.0.1", "6379", "127.0.0.1", "8000");
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(entity));
-        given(pythonServerClient.deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379"))
-                .willReturn(false);
-
-        com.endpoint.frelog.global.security.CustomUserDetails ownerDetails = new com.endpoint.frelog.global.security.CustomUserDetails(testUser);
-
-        // when
-        canvasService.deleteCanvas(100, ownerDetails);
-
-        // then
-        verify(pythonServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 100, "127.0.0.1", "6379");
-        verify(canvasInfoRepository).delete(entity);
-        verify(canvasElasticsearchService).deleteCanvas(100, "Faulty Canvas");
+        assertThat(response).isNotNull();
+        assertThat(response.serverIp()).isEqualTo("127.0.0.1");
+        assertThat(response.serverPort()).isEqualTo("8000");
+
+        verify(cppServerClient).registerJwtToken("127.0.0.1", "8000", 1L, "jwt.token.here");
+        assertThat(info.getIsCached()).isTrue();
+        assertThat(testUser.getIsAccessed()).isTrue();
     }
 }
-

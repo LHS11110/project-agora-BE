@@ -51,11 +51,11 @@ public class DataInitializer implements CommandLineRunner {
 
             log.info("초기 테스트 계정 3건 생성 완료: user@agora.com, admin@agora.com, suspended@agora.com");
 
-            // 초기 샘플 캔버스 생성 (소유자: user@agora.com, 초기 none / is_cached=false)
+            // 초기 샘플 캔버스 생성 (초기 is_cached=false)
             if (canvasInfoRepository.count() == 0) {
-                CanvasInfo sampleCanvas = new CanvasInfo(1, "아고라 메인 캔버스", user);
+                CanvasInfo sampleCanvas = new CanvasInfo(1);
                 canvasInfoRepository.save(sampleCanvas);
-                log.info("초기 테스트 캔버스 1건 생성 완료: #1 '아고라 메인 캔버스' (소유자: user_id={})", user.getUserId());
+                log.info("초기 테스트 캔버스 1건 생성 완료: #1 (is_cached=false)");
             }
         }
     }

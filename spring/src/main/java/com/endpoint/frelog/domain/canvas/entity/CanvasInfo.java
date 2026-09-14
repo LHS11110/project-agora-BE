@@ -1,12 +1,8 @@
 package com.endpoint.frelog.domain.canvas.entity;
 
-import com.endpoint.frelog.domain.user.entity.User;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -21,9 +17,6 @@ public class CanvasInfo {
     @Column(name = "canvas_id", nullable = false)
     private Integer canvasId;
 
-    @Column(name = "canvas_name", nullable = false, length = 255)
-    private String canvasName;
-
     @Column(name = "redis_ip", length = 45)
     private String redisIp;
 
@@ -35,10 +28,6 @@ public class CanvasInfo {
 
     @Column(name = "server_port", length = 10)
     private String serverPort;
-
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "user_id", nullable = false)
-    private User user;
 
     @Column(name = "is_cached", nullable = false)
     private Boolean isCached = false;
@@ -52,11 +41,8 @@ public class CanvasInfo {
     public CanvasInfo() {
     }
 
-    public CanvasInfo(Integer canvasId, String canvasName, User user) {
+    public CanvasInfo(Integer canvasId) {
         this.canvasId = canvasId;
-        this.canvasName = canvasName;
-        this.user = user;
-        // 요구사항: 처음에 cache에 redis 및 server는 항상 none(null)으로 시작하고 is_cached는 false
         this.redisIp = null;
         this.redisPort = null;
         this.serverIp = null;
@@ -102,14 +88,6 @@ public class CanvasInfo {
         this.canvasId = canvasId;
     }
 
-    public String getCanvasName() {
-        return canvasName;
-    }
-
-    public void setCanvasName(String canvasName) {
-        this.canvasName = canvasName;
-    }
-
     public String getRedisIp() {
         return redisIp;
     }
@@ -140,14 +118,6 @@ public class CanvasInfo {
 
     public void setServerPort(String serverPort) {
         this.serverPort = serverPort;
-    }
-
-    public User getUser() {
-        return user;
-    }
-
-    public void setUser(User user) {
-        this.user = user;
     }
 
     public Boolean getIsCached() {

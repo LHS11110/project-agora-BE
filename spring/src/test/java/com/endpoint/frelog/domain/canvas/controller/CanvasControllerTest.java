@@ -1,13 +1,8 @@
 package com.endpoint.frelog.domain.canvas.controller;
 
-import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
-import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
-import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
+import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
+import com.endpoint.frelog.domain.canvas.service.CanvasResourceService;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
-import com.endpoint.frelog.global.exception.CustomException;
-import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.exception.GlobalExceptionHandler;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,8 +16,8 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -31,7 +26,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -44,6 +38,9 @@ class CanvasControllerTest {
     @Mock
     private CanvasService canvasService;
 
+    @Mock
+    private CanvasResourceService canvasResourceService;
+
     @InjectMocks
     private CanvasController canvasController;
 
@@ -55,182 +52,67 @@ class CanvasControllerTest {
     }
 
     @Test
-    @DisplayName("캔버스 생성 API 성공 시 201 Created 및 userId, 초기 none/false 캐시 응답")
-    void createCanvasApi_Success() throws Exception {
+    @DisplayName("JSON 바디로 캔버스 생성 API 성공 시 201 Created")
+    void createCanvasJson_Success() throws Exception {
         // given
-        CreateCanvasRequest request = new CreateCanvasRequest("New Canvas");
-        CanvasResponse response = new CanvasResponse(
-                100, "New Canvas", 1L, "아고라유저", null, null, null, null, false, LocalDateTime.now(), LocalDateTime.now()
+        Map<String, Object> body = Map.of(
+                "canvasName", "New Canvas",
+                "description", "My description"
         );
-        given(canvasService.createCanvas(any(CreateCanvasRequest.class), any())).willReturn(response);
+        CanvasSummaryResponse response = new CanvasSummaryResponse(
+                100, "/api/canvases/100/image", "My description", "New Canvas", 1
+        );
+        given(canvasService.createCanvas(eq("New Canvas"), eq("My description"), any(), any(), any())).willReturn(response);
 
         // when & then
         mockMvc.perform(post("/api/canvases")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
+                        .content(objectMapper.writeValueAsString(body)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.canvasId").value(100))
-                .andExpect(jsonPath("$.canvasName").value("New Canvas"))
-                .andExpect(jsonPath("$.userId").value(1))
-                .andExpect(jsonPath("$.userNickname").value("아고라유저"))
-                .andExpect(jsonPath("$.redisIp").doesNotExist())
-                .andExpect(jsonPath("$.serverIp").doesNotExist())
-                .andExpect(jsonPath("$.isCached").value(false));
+                .andExpect(jsonPath("$.canvas_id").value(100))
+                .andExpect(jsonPath("$.canvas_name").value("New Canvas"))
+                .andExpect(jsonPath("$.description").value("My description"))
+                .andExpect(jsonPath("$.user_count").value(1));
     }
 
     @Test
-    @DisplayName("캔버스 목록 조회 API 성공 시 200 OK")
-    void listCanvasesApi_Success() throws Exception {
+    @DisplayName("캔버스 목록/검색 API 성공 시 200 OK")
+    void searchCanvases_Success() throws Exception {
         // given
-        CanvasResponse response1 = new CanvasResponse(1, "C1", 1L, "아고라유저", null, null, null, null, false, LocalDateTime.now(), LocalDateTime.now());
-        CanvasResponse response2 = new CanvasResponse(2, "C2", 2L, "관리자", "127.0.0.1", "6379", "127.0.0.1", "8000", true, LocalDateTime.now(), LocalDateTime.now());
-        given(canvasService.listCanvases()).willReturn(List.of(response1, response2));
+        CanvasSummaryResponse r1 = new CanvasSummaryResponse(1, "/image1", "desc1", "Canvas 1", 2);
+        CanvasSummaryResponse r2 = new CanvasSummaryResponse(2, "/image2", "desc2", "Canvas 2", 5);
+        given(canvasService.searchCanvases(eq("Canvas"), any())).willReturn(List.of(r1, r2));
 
         // when & then
-        mockMvc.perform(get("/api/canvases"))
+        mockMvc.perform(get("/api/canvases")
+                        .param("name", "Canvas"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2))
-                .andExpect(jsonPath("$[0].canvasName").value("C1"))
-                .andExpect(jsonPath("$[0].userId").value(1))
-                .andExpect(jsonPath("$[1].isCached").value(true));
+                .andExpect(jsonPath("$[0].canvas_name").value("Canvas 1"))
+                .andExpect(jsonPath("$[1].canvas_name").value("Canvas 2"));
     }
 
     @Test
     @DisplayName("캔버스 단건 조회 API 성공 시 200 OK")
-    void getCanvasApi_Success() throws Exception {
+    void getCanvas_Success() throws Exception {
         // given
-        CanvasResponse response = new CanvasResponse(1, "C1", 1L, "아고라유저", null, null, null, null, false, LocalDateTime.now(), LocalDateTime.now());
-        given(canvasService.getCanvas(1)).willReturn(response);
+        CanvasSummaryResponse r1 = new CanvasSummaryResponse(10, "/image10", "desc10", "Canvas 10", 3);
+        given(canvasService.getCanvasSummary(eq(10), any())).willReturn(r1);
 
         // when & then
-        mockMvc.perform(get("/api/canvases/1"))
+        mockMvc.perform(get("/api/canvases/10"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.canvasId").value(1))
-                .andExpect(jsonPath("$.canvasName").value("C1"))
-                .andExpect(jsonPath("$.userId").value(1));
-    }
-
-    @Test
-    @DisplayName("존재하지 않는 캔버스 조회 시 404 NOT_FOUND")
-    void getCanvasApi_NotFound() throws Exception {
-        given(canvasService.getCanvas(999)).willThrow(new CustomException(ErrorCode.CANVAS_NOT_FOUND));
-
-        mockMvc.perform(get("/api/canvases/999"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.code").value("CANVAS_001"));
-    }
-
-    @Test
-    @DisplayName("Elasticsearch 캔버스 도큐먼트 단건 조회 API 성공 시 200 OK")
-    void getCanvasDocumentApi_Success() throws Exception {
-        // given
-        CanvasDocument document = new CanvasDocument("Agora Doc", 1, 100L, null, "default");
-        given(canvasService.getCanvasDocument(1)).willReturn(document);
-
-        // when & then
-        mockMvc.perform(get("/api/canvases/1/document"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.['canvas-name']").value("Agora Doc"))
-                .andExpect(jsonPath("$.['canvas-id']").value(1))
-                .andExpect(jsonPath("$.admin").value(100));
-    }
-
-    @Test
-    @DisplayName("Elasticsearch 캔버스 도큐먼트 이름으로 단건 조회 API 성공 시 200 OK")
-    void getCanvasDocumentByNameApi_Success() throws Exception {
-        // given
-        CanvasDocument document = new CanvasDocument("Agora Doc", 1, 100L, null, "default");
-        given(canvasService.getCanvasDocumentByName("Agora Doc")).willReturn(document);
-
-        // when & then
-        mockMvc.perform(get("/api/canvases/name/Agora Doc/document"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.['canvas-name']").value("Agora Doc"))
-                .andExpect(jsonPath("$.['canvas-id']").value(1));
-    }
-
-    @Test
-    @DisplayName("캔버스 캐시 상태 수정 API 성공 시 200 OK")
-    void updateCanvasCacheApi_Success() throws Exception {
-        // given
-        UpdateCanvasCacheRequest request = new UpdateCanvasCacheRequest(true, "127.0.0.1", "6379", "127.0.0.1", "8000");
-        CanvasResponse response = new CanvasResponse(1, "C1", 1L, "아고라유저", "127.0.0.1", "6379", "127.0.0.1", "8000", true, LocalDateTime.now(), LocalDateTime.now());
-        given(canvasService.updateCanvasCache(eq(1), any(UpdateCanvasCacheRequest.class), any())).willReturn(response);
-
-        // when & then
-        mockMvc.perform(patch("/api/canvases/1/cache")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.isCached").value(true))
-                .andExpect(jsonPath("$.userId").value(1))
-                .andExpect(jsonPath("$.redisIp").value("127.0.0.1"));
-    }
-
-    @Test
-    @DisplayName("권한 없는 계정이 캔버스 수정 시 403 FORBIDDEN")
-    void updateCanvasCacheApi_AccessDenied() throws Exception {
-        // given
-        UpdateCanvasCacheRequest request = new UpdateCanvasCacheRequest(true, "127.0.0.1", "6379", null, null);
-        given(canvasService.updateCanvasCache(eq(1), any(UpdateCanvasCacheRequest.class), any()))
-                .willThrow(new CustomException(ErrorCode.ACCESS_DENIED));
-
-        // when & then
-        mockMvc.perform(patch("/api/canvases/1/cache")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTH_006"));
-    }
-
-    @Test
-    @DisplayName("Elasticsearch 도큐먼트 수정 API 성공 시 200 OK")
-    void updateCanvasDocumentApi_Success() throws Exception {
-        // given
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", null, null, null, "newGroup");
-        CanvasDocument responseDoc = new CanvasDocument("Agora Doc", 1, 100L, "newPassword", "newGroup");
-        given(canvasService.updateCanvasDocument(eq(1), any(UpdateCanvasDocumentRequest.class), any())).willReturn(responseDoc);
-
-        // when & then
-        mockMvc.perform(put("/api/canvases/1/document")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.['canvas-password']").value("newPassword"))
-                .andExpect(jsonPath("$.['init-group']").value("newGroup"));
-    }
-
-    @Test
-    @DisplayName("권한 없는 사용자가 Elasticsearch 도큐먼트 수정 시 403 FORBIDDEN")
-    void updateCanvasDocumentApi_AccessDenied() throws Exception {
-        // given
-        UpdateCanvasDocumentRequest request = new UpdateCanvasDocumentRequest("newPassword", null, null, null, null);
-        given(canvasService.updateCanvasDocument(eq(1), any(UpdateCanvasDocumentRequest.class), any()))
-                .willThrow(new CustomException(ErrorCode.ACCESS_DENIED));
-
-        // when & then
-        mockMvc.perform(put("/api/canvases/1/document")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTH_006"));
+                .andExpect(jsonPath("$.canvas_id").value(10))
+                .andExpect(jsonPath("$.canvas_name").value("Canvas 10"))
+                .andExpect(jsonPath("$.description").value("desc10"))
+                .andExpect(jsonPath("$.user_count").value(3));
     }
 
     @Test
     @DisplayName("캔버스 삭제 API 성공 시 204 No Content")
-    void deleteCanvasApi_Success() throws Exception {
-        mockMvc.perform(delete("/api/canvases/1"))
+    void deleteCanvas_Success() throws Exception {
+        // when & then
+        mockMvc.perform(delete("/api/canvases/10"))
                 .andExpect(status().isNoContent());
-    }
-
-    @Test
-    @DisplayName("권한 없는 계정이 캔버스 삭제 시 403 FORBIDDEN")
-    void deleteCanvasApi_AccessDenied() throws Exception {
-        org.mockito.BDDMockito.willThrow(new CustomException(ErrorCode.ACCESS_DENIED))
-                .given(canvasService).deleteCanvas(eq(1), any());
-
-        mockMvc.perform(delete("/api/canvases/1"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("AUTH_006"));
     }
 }

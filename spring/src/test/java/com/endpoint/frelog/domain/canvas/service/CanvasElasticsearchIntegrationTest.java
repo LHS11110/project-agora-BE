@@ -72,7 +72,7 @@ class CanvasElasticsearchIntegrationTest {
                         "item-id", 1,
                         "type", 10,
                         "pos", List.of(120.5, 340.0),
-                        "permission", Map.of("admin-group", 7, "default", 3)
+                        "permission", List.of("admin-group", "default")
                 )
         ));
 

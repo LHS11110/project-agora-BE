@@ -18,13 +18,11 @@ public record CanvasResponse(
         LocalDateTime updatedAt
 ) {
     public static CanvasResponse from(CanvasInfo entity) {
-        Long ownerId = entity.getUser() != null ? entity.getUser().getUserId() : null;
-        String ownerNickname = entity.getUser() != null ? entity.getUser().getNickname() : null;
         return new CanvasResponse(
                 entity.getCanvasId(),
-                entity.getCanvasName(),
-                ownerId,
-                ownerNickname,
+                null,
+                null,
+                null,
                 entity.getRedisIp(),
                 entity.getRedisPort(),
                 entity.getServerIp(),

@@ -51,6 +51,15 @@ public class User {
     @Column(name = "password_changed_at")
     private LocalDateTime passwordChangedAt;
 
+    @Column(name = "is_accessed", nullable = false)
+    private Boolean isAccessed = false;
+
+    @Column(name = "server_ip", length = 45)
+    private String serverIp;
+
+    @Column(name = "server_port", length = 10)
+    private String serverPort;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
@@ -82,6 +91,9 @@ public class User {
         }
         if (this.status == null) {
             this.status = UserStatus.ACTIVE;
+        }
+        if (this.isAccessed == null) {
+            this.isAccessed = false;
         }
     }
 
@@ -198,5 +210,29 @@ public class User {
 
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public Boolean getIsAccessed() {
+        return isAccessed;
+    }
+
+    public void setIsAccessed(Boolean accessed) {
+        isAccessed = accessed;
+    }
+
+    public String getServerIp() {
+        return serverIp;
+    }
+
+    public void setServerIp(String serverIp) {
+        this.serverIp = serverIp;
+    }
+
+    public String getServerPort() {
+        return serverPort;
+    }
+
+    public void setServerPort(String serverPort) {
+        this.serverPort = serverPort;
     }
 }

@@ -176,6 +176,143 @@
       </div>
     </div>
 
+    <!-- Load Balancer Section -->
+    <div class="card" id="loadBalancerCard" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); padding: 24px; box-shadow: var(--shadow-card);">
+      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+        <div class="card-title" style="display: flex; align-items: center; gap: 10px; font-family: var(--font-title); font-size: 1.25rem; font-weight: 700; color: var(--text-main);">
+          <span style="font-size: 1.5rem;">⚖️</span>
+          로드 밸런서 관리 & 할당 (Server / Redis / Database)
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #10b981, #059669);" onclick="callAllocateServer()">
+            ⚡ Server 할당 (Python P2C)
+          </button>
+          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #ef4444, #dc2626);" onclick="callAllocateRedis()">
+            🔥 Redis 할당 (Java P2C)
+          </button>
+          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #0284c7, #0369a1);" onclick="callGetDatabaseAddress()">
+            🗄️ DB 주소 조회
+          </button>
+          <button class="btn-secondary" style="padding: 8px 14px; font-size: 0.82rem;" onclick="loadLoadBalancerData()">
+            🔄 현황 새로고침
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Allocation Result Banner -->
+      <div id="allocationResultBanner" style="display: none; padding: 14px 18px; border-radius: var(--radius-md); margin-bottom: 20px; font-family: var(--font-mono); font-size: 0.88rem; align-items: center; justify-content: space-between; border: 1px solid rgba(255,255,255,0.15);">
+        <div id="allocationResultText"></div>
+        <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="document.getElementById('allocationResultBanner').style.display='none'">닫기</button>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
+        <!-- Server Instances Box -->
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h4 style="font-size: 0.95rem; font-weight: 600; color: #34d399; display: flex; align-items: center; gap: 6px;">
+              <span>🐍</span> Python Server 목록 (<span id="serverCountBadge">0</span>)
+            </h4>
+            <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="toggleAddServerForm()">+ 서버 등록</button>
+          </div>
+
+          <div id="addServerForm" style="display: none; margin-bottom: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px dashed rgba(255,255,255,0.15);">
+            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+              <input type="text" id="newServerIp" placeholder="IP (127.0.0.1)" value="127.0.0.1" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+              <input type="text" id="newServerPort" placeholder="Port (8000)" value="8000" style="flex: 1; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="newServerName" placeholder="서버 이름 (선택)" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+              <button class="btn-primary" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" onclick="submitRegisterServer()">등록</button>
+            </div>
+          </div>
+
+          <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
+            <table class="canvas-table" style="font-size: 0.82rem;">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>IP:Port</th>
+                  <th>이름</th>
+                  <th>부하(캔버스)</th>
+                  <th>삭제</th>
+                </tr>
+              </thead>
+              <tbody id="serverTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">조회 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Redis Instances Box -->
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h4 style="font-size: 0.95rem; font-weight: 600; color: #f87171; display: flex; align-items: center; gap: 6px;">
+              <span>🔥</span> Redis 인스턴스 (<span id="redisCountBadge">0</span>)
+            </h4>
+            <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="toggleAddRedisForm()">+ Redis 등록</button>
+          </div>
+
+          <div id="addRedisForm" style="display: none; margin-bottom: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px dashed rgba(255,255,255,0.15);">
+            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+              <input type="text" id="newRedisIp" placeholder="IP (127.0.0.1)" value="127.0.0.1" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+              <input type="text" id="newRedisPort" placeholder="Port (6379)" value="6379" style="flex: 1; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <input type="text" id="newRedisName" placeholder="Redis 이름 (선택)" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
+              <button class="btn-primary" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" onclick="submitRegisterRedis()">등록</button>
+            </div>
+          </div>
+
+          <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
+            <table class="canvas-table" style="font-size: 0.82rem;">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>IP:Port</th>
+                  <th>이름</th>
+                  <th>Java 부하</th>
+                  <th>삭제</th>
+                </tr>
+              </thead>
+              <tbody id="redisTableBody">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">조회 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Database Info Box -->
+        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h4 style="font-size: 0.95rem; font-weight: 600; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+              <span>🗄️</span> Database 접속 주소 정보
+            </h4>
+            <span class="badge" style="background: rgba(14, 165, 233, 0.2); color: #38bdf8; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">MSSQL</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+              <span style="color: var(--text-muted);">Database 주소:</span>
+              <strong id="dbAddressVal" style="color: #38bdf8; font-family: var(--font-mono);">-</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+              <span style="color: var(--text-muted);">Host (IP):</span>
+              <span id="dbHostVal" style="font-family: var(--font-mono);">-</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+              <span style="color: var(--text-muted);">Port:</span>
+              <span id="dbPortVal" style="font-family: var(--font-mono);">-</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+              <span style="color: var(--text-muted);">Database Name:</span>
+              <span id="dbNameVal" style="font-family: var(--font-mono);">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Canvas Management Section -->
     <div class="card canvas-card">
       <div class="card-header">

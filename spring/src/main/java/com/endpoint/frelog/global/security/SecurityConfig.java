@@ -62,17 +62,15 @@ public class SecurityConfig {
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/health",
-                                "/api/auth/users",
-                                "/api/users",
-                                "/api/users/**",
+                                "/api/canvases/*/image",
+                                "/api/database/**",
                                 "/error"
                         ).permitAll()
-
-                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/canvases/**").permitAll()
-                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/canvases/**").authenticated()
-                        .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/canvases/**").authenticated()
-                        .requestMatchers(org.springframework.http.HttpMethod.PATCH, "/api/canvases/**").authenticated()
-                        .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/canvases/**").authenticated()
+                        .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
+                        .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**").hasRole("ADMIN")
+                        .requestMatchers("/api/users/**").authenticated()
+                        .requestMatchers("/api/canvases/**").authenticated()
+                        .requestMatchers("/api/access/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

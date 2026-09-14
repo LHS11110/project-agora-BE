@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   loadCanvases();
+  loadLoadBalancerData();
 });
 
 // Toast notification
@@ -747,6 +748,284 @@ async function loadAllElasticsearchDocuments() {
     }
   } catch (err) {
     showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
+// =========================================================================
+// Load Balancer (Server / Redis / Database) Management Functions
+// =========================================================================
+
+async function loadLoadBalancerData() {
+  loadServerList();
+  loadRedisList();
+  loadDatabaseInfo();
+}
+
+// Load Server List (GET /api/servers)
+async function loadServerList() {
+  const tbody = document.getElementById('serverTableBody');
+  const countBadge = document.getElementById('serverCountBadge');
+  try {
+    const res = await fetch('/api/servers');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const servers = await res.json();
+    countBadge.textContent = servers.length;
+
+    if (servers.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">등록된 서버가 없습니다.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = servers.map(s => `
+      <tr>
+        <td>#${s.serverId}</td>
+        <td><strong style="color: #34d399;">${escapeHtml(s.serverIp)}:${escapeHtml(s.serverPort)}</strong></td>
+        <td>${escapeHtml(s.serverName || '-')}</td>
+        <td><span class="badge" style="background: rgba(16, 185, 129, 0.2); color: #34d399; padding: 2px 6px; border-radius: 4px;">${s.canvasCount}</span></td>
+        <td>
+          <button class="btn-secondary" style="padding: 2px 6px; font-size: 0.72rem; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" onclick="deleteServerInstance(${s.serverId})">삭제</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #f87171; padding: 12px;">서버 목록 조회 실패: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+// Load Redis List (GET /api/redis)
+async function loadRedisList() {
+  const tbody = document.getElementById('redisTableBody');
+  const countBadge = document.getElementById('redisCountBadge');
+  try {
+    const res = await fetch('/api/redis');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const redisList = await res.json();
+    countBadge.textContent = redisList.length;
+
+    if (redisList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">등록된 Redis가 없습니다.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = redisList.map(r => `
+      <tr>
+        <td>#${r.redisId}</td>
+        <td><strong style="color: #f87171;">${escapeHtml(r.redisIp)}:${escapeHtml(r.redisPort)}</strong></td>
+        <td>${escapeHtml(r.redisName || '-')}</td>
+        <td><span class="badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; padding: 2px 6px; border-radius: 4px;">${r.canvasCount}</span></td>
+        <td>
+          <button class="btn-secondary" style="padding: 2px 6px; font-size: 0.72rem; color: #f87171; border-color: rgba(239, 68, 68, 0.3);" onclick="deleteRedisInstance(${r.redisId})">삭제</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: #f87171; padding: 12px;">Redis 목록 조회 실패: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+// Load Database Info (GET /api/load-balancer/database)
+async function loadDatabaseInfo() {
+  try {
+    const res = await fetch('/api/load-balancer/database');
+    if (!res.ok) return;
+    const db = await res.json();
+    document.getElementById('dbAddressVal').textContent = db.address || `${db.dbHost}:${db.dbPort}`;
+    document.getElementById('dbHostVal').textContent = db.dbHost || db.ip;
+    document.getElementById('dbPortVal').textContent = db.dbPort || db.port;
+    document.getElementById('dbNameVal').textContent = db.dbName || '-';
+  } catch (err) {
+    console.error('Failed to load DB info:', err);
+  }
+}
+
+// Power of Two Choices Server Allocation (POST /api/load-balancer/allocate/server)
+async function callAllocateServer() {
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/load-balancer/allocate/server', { method: 'POST' });
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('POST', '/api/load-balancer/allocate/server', res.status, duration, data);
+
+    const banner = document.getElementById('allocationResultBanner');
+    const text = document.getElementById('allocationResultText');
+    banner.style.display = 'flex';
+
+    if (res.ok) {
+      banner.style.background = 'rgba(16, 185, 129, 0.15)';
+      banner.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+      text.innerHTML = `✅ <strong>Server 할당 완료 (P2C)</strong>: IP = <code style="color: #34d399;">${data.ip}</code>, Port = <code style="color: #34d399;">${data.port}</code>`;
+      showToast(`Server 할당 성공: ${data.ip}:${data.port}`, 'success');
+      loadServerList();
+    } else {
+      banner.style.background = 'rgba(239, 68, 68, 0.15)';
+      banner.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+      text.innerHTML = `❌ <strong>Server 할당 실패 [${data.code || res.status}]</strong>: ${escapeHtml(data.message || '오류가 발생했습니다.')}`;
+      showToast(data.message || '서버 할당 실패', 'error');
+    }
+  } catch (err) {
+    showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
+// Power of Two Choices Redis Allocation (POST /api/load-balancer/allocate/redis) - Java 기반
+async function callAllocateRedis() {
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/load-balancer/allocate/redis', { method: 'POST' });
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('POST', '/api/load-balancer/allocate/redis', res.status, duration, data);
+
+    const banner = document.getElementById('allocationResultBanner');
+    const text = document.getElementById('allocationResultText');
+    banner.style.display = 'flex';
+
+    if (res.ok) {
+      banner.style.background = 'rgba(239, 68, 68, 0.15)';
+      banner.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+      text.innerHTML = `🔥 <strong>Redis 할당 완료 (Java P2C)</strong>: IP = <code style="color: #f87171;">${data.ip}</code>, Port = <code style="color: #f87171;">${data.port}</code>`;
+      showToast(`Redis 할당 성공: ${data.ip}:${data.port}`, 'success');
+      loadRedisList();
+    } else {
+      banner.style.background = 'rgba(239, 68, 68, 0.15)';
+      banner.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+      text.innerHTML = `❌ <strong>Redis 할당 실패 [${data.code || res.status}]</strong>: ${escapeHtml(data.message || '오류가 발생했습니다.')}`;
+      showToast(data.message || 'Redis 할당 실패', 'error');
+    }
+  } catch (err) {
+    showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
+// Database Address Query (GET /api/load-balancer/database)
+async function callGetDatabaseAddress() {
+  const startTime = performance.now();
+  try {
+    const res = await fetch('/api/load-balancer/database');
+    const duration = Math.round(performance.now() - startTime);
+    const data = await res.json();
+    logConsole('GET', '/api/load-balancer/database', res.status, duration, data);
+
+    const banner = document.getElementById('allocationResultBanner');
+    const text = document.getElementById('allocationResultText');
+    banner.style.display = 'flex';
+
+    if (res.ok) {
+      banner.style.background = 'rgba(14, 165, 233, 0.15)';
+      banner.style.borderColor = 'rgba(14, 165, 233, 0.4)';
+      text.innerHTML = `🗄️ <strong>Database 주소 정보</strong>: Address = <code style="color: #38bdf8;">${data.address}</code> (Host: ${data.dbHost}, Port: ${data.dbPort}, DB: ${data.dbName})`;
+      showToast(`DB 주소 조회 성공: ${data.address}`, 'info');
+      loadDatabaseInfo();
+    } else {
+      showToast('DB 주소 조회 실패', 'error');
+    }
+  } catch (err) {
+    showToast(`요청 실패: ${err.message}`, 'error');
+  }
+}
+
+// Toggle Server Register Form
+function toggleAddServerForm() {
+  const form = document.getElementById('addServerForm');
+  form.style.display = (form.style.display === 'none' || !form.style.display) ? 'block' : 'none';
+}
+
+// Submit Register Server
+async function submitRegisterServer() {
+  const ip = document.getElementById('newServerIp').value.trim();
+  const port = document.getElementById('newServerPort').value.trim();
+  const name = document.getElementById('newServerName').value.trim();
+
+  if (!ip || !port) {
+    showToast('IP와 Port를 모두 입력하세요.', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverIp: ip, serverPort: port, serverName: name || null })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`서버 등록 성공: ${ip}:${port}`, 'success');
+      toggleAddServerForm();
+      loadServerList();
+    } else {
+      showToast(`서버 등록 실패: ${data.message || '오류'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`서버 등록 오류: ${err.message}`, 'error');
+  }
+}
+
+// Delete Server Instance
+async function deleteServerInstance(id) {
+  if (!confirm(`서버 #${id} 인스턴스를 삭제하시겠습니까?`)) return;
+  try {
+    const res = await fetch(`/api/servers/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast(`서버 #${id} 삭제 완료`, 'info');
+      loadServerList();
+    } else {
+      showToast(`서버 삭제 실패: HTTP ${res.status}`, 'error');
+    }
+  } catch (err) {
+    showToast(`서버 삭제 오류: ${err.message}`, 'error');
+  }
+}
+
+// Toggle Redis Register Form
+function toggleAddRedisForm() {
+  const form = document.getElementById('addRedisForm');
+  form.style.display = (form.style.display === 'none' || !form.style.display) ? 'block' : 'none';
+}
+
+// Submit Register Redis
+async function submitRegisterRedis() {
+  const ip = document.getElementById('newRedisIp').value.trim();
+  const port = document.getElementById('newRedisPort').value.trim();
+  const name = document.getElementById('newRedisName').value.trim();
+
+  if (!ip || !port) {
+    showToast('IP와 Port를 모두 입력하세요.', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/redis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ redisIp: ip, redisPort: port, redisName: name || null })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`Redis 등록 성공: ${ip}:${port}`, 'success');
+      toggleAddRedisForm();
+      loadRedisList();
+    } else {
+      showToast(`Redis 등록 실패: ${data.message || '오류'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Redis 등록 오류: ${err.message}`, 'error');
+  }
+}
+
+// Delete Redis Instance
+async function deleteRedisInstance(id) {
+  if (!confirm(`Redis #${id} 인스턴스를 삭제하시겠습니까?`)) return;
+  try {
+    const res = await fetch(`/api/redis/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast(`Redis #${id} 삭제 완료`, 'info');
+      loadRedisList();
+    } else {
+      showToast(`Redis 삭제 실패: HTTP ${res.status}`, 'error');
+    }
+  } catch (err) {
+    showToast(`Redis 삭제 오류: ${err.message}`, 'error');
   }
 }
 

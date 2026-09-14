@@ -39,9 +39,6 @@ public class CanvasElasticsearchService {
         this.objectMapper = objectMapper;
     }
 
-    /**
-     * Elasticsearch 서버 핑 및 가용성 확인
-     */
     public boolean isAvailable() {
         try {
             restClient.get()
@@ -55,9 +52,6 @@ public class CanvasElasticsearchService {
         }
     }
 
-    /**
-     * Elasticsearch 인덱스 존재 여부 확인 (HEAD /{index})
-     */
     public boolean isIndexExists() {
         try {
             restClient.head()
@@ -73,9 +67,6 @@ public class CanvasElasticsearchService {
         }
     }
 
-    /**
-     * 예외가 Elasticsearch 인덱스 부재(index_not_found_exception / 404)로 인한 것인지 판별
-     */
     public boolean isIndexNotFoundException(Exception e) {
         if (e instanceof RestClientResponseException rre) {
             if (rre.getStatusCode().value() == 404) {
@@ -88,9 +79,6 @@ public class CanvasElasticsearchService {
         return false;
     }
 
-    /**
-     * 인덱스 부재 에러 공통 로깅 및 설정에 따른 예외 처리
-     */
     private void handleIndexNotFound(String operation, Exception e) {
         log.error("Elasticsearch 인덱스 '{}'가 존재하지 않습니다 (index_not_found_exception). {} 실패: {}",
                 properties.getIndex(), operation, e.getMessage());
@@ -103,11 +91,11 @@ public class CanvasElasticsearchService {
     }
 
     /**
-     * 캔버스 도큐먼트 저장 (기본키: canvas-name)
+     * 캔버스 도큐먼트 저장 (docId: canvasId)
      */
     public boolean saveCanvas(CanvasDocument document) {
         try {
-            String docId = document.getCanvasName();
+            String docId = String.valueOf(document.getCanvasId());
             String docJson = objectMapper.writeValueAsString(document);
             restClient.put()
                     .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), docId)
@@ -135,8 +123,101 @@ public class CanvasElasticsearchService {
      */
     public Optional<CanvasDocument> getCanvasDocumentByName(String canvasName) {
         try {
-            String rawJson = restClient.get()
+            Map<String, Object> queryBody = Map.of(
+                    "query", Map.of("term", Map.of("canvas-name.keyword", canvasName)),
+                    "size", 1
+            );
+            String queryJson = objectMapper.writeValueAsString(queryBody);
+
+            String rawJson = restClient.post()
+                    .uri("/{index}/_search", properties.getIndex())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(queryJson)
+                    .retrieve()
+                    .body(String.class);
+
+            if (rawJson != null) {
+                JsonNode resp = objectMapper.readTree(rawJson);
+                if (resp != null && resp.has("hits") && resp.get("hits").has("hits")) {
+                    JsonNode hits = resp.get("hits").get("hits");
+                    if (hits.isArray() && !hits.isEmpty()) {
+                        JsonNode source = hits.get(0).get("_source");
+                        return Optional.of(objectMapper.treeToValue(source, CanvasDocument.class));
+                    }
+                }
+            }
+
+            // Fallback: search by ID or direct ID lookup
+            String directJson = restClient.get()
                     .uri("/{index}/_doc/{id}", properties.getIndex(), canvasName)
+                    .retrieve()
+                    .body(String.class);
+            if (directJson != null) {
+                JsonNode resp = objectMapper.readTree(directJson);
+                if (resp != null && resp.has("_source")) {
+                    return Optional.of(objectMapper.treeToValue(resp.get("_source"), CanvasDocument.class));
+                }
+            }
+            return Optional.empty();
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 캔버스 이름 기반 검색 (요구사항 4.2)
+     */
+    public List<CanvasDocument> searchCanvasesByName(String canvasName) {
+        try {
+            Map<String, Object> queryBody;
+            if (canvasName == null || canvasName.isBlank()) {
+                queryBody = Map.of(
+                        "query", Map.of("match_all", Map.of()),
+                        "size", 1000
+                );
+            } else {
+                queryBody = Map.of(
+                        "query", Map.of("match", Map.of("canvas-name", canvasName)),
+                        "size", 1000
+                );
+            }
+            String queryJson = objectMapper.writeValueAsString(queryBody);
+
+            String rawJson = restClient.post()
+                    .uri("/{index}/_search", properties.getIndex())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(queryJson)
+                    .retrieve()
+                    .body(String.class);
+
+            if (rawJson != null) {
+                JsonNode resp = objectMapper.readTree(rawJson);
+                if (resp != null && resp.has("hits") && resp.get("hits").has("hits")) {
+                    JsonNode hits = resp.get("hits").get("hits");
+                    List<CanvasDocument> docs = new java.util.ArrayList<>();
+                    for (JsonNode hit : hits) {
+                        if (hit.has("_source")) {
+                            docs.add(objectMapper.treeToValue(hit.get("_source"), CanvasDocument.class));
+                        }
+                    }
+                    return docs;
+                }
+            }
+            return Collections.emptyList();
+        } catch (Exception e) {
+            log.warn("Elasticsearch 캔버스 이름 검색 실패 ('{}'): {}", canvasName, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * canvas-id 필드로 검색하여 단건 조회
+     */
+    public Optional<CanvasDocument> getCanvasDocumentById(Integer canvasId) {
+        try {
+            // 1. Direct doc lookup by ID
+            String rawJson = restClient.get()
+                    .uri("/{index}/_doc/{id}", properties.getIndex(), String.valueOf(canvasId))
                     .retrieve()
                     .body(String.class);
 
@@ -146,31 +227,11 @@ public class CanvasElasticsearchService {
                     return Optional.of(objectMapper.treeToValue(resp.get("_source"), CanvasDocument.class));
                 }
             }
-            return Optional.empty();
-        } catch (HttpClientErrorException.NotFound e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 이름 조회 (getCanvasDocumentByName)", e);
-                return Optional.empty();
-            }
-            return Optional.empty();
-        } catch (Exception e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 이름 조회 (getCanvasDocumentByName)", e);
-                return Optional.empty();
-            }
-            log.warn("Elasticsearch 캔버스 이름 '{}' 조회 실패: {}", canvasName, e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 조회 실패: " + e.getMessage());
-            }
-            return Optional.empty();
+        } catch (Exception ignored) {
         }
-    }
 
-    /**
-     * canvas-id 필드로 검색하여 단건 조회
-     */
-    public Optional<CanvasDocument> getCanvasDocumentById(Integer canvasId) {
         try {
+            // 2. Term query search
             Map<String, Object> queryBody = Map.of(
                     "query", Map.of("term", Map.of("canvas-id", canvasId)),
                     "size", 1
@@ -196,7 +257,6 @@ public class CanvasElasticsearchService {
             }
             return Optional.empty();
         } catch (HttpClientErrorException.NotFound e) {
-            // Elasticsearch에서 _search의 404는 인덱스 부재를 의미함
             handleIndexNotFound("도큐먼트 ID 검색 (getCanvasDocumentById)", e);
             return Optional.empty();
         } catch (Exception e) {
@@ -216,49 +276,7 @@ public class CanvasElasticsearchService {
      * Elasticsearch 내 전체 캔버스 도큐먼트 목록 조회 (match_all)
      */
     public List<CanvasDocument> listCanvasDocuments() {
-        try {
-            Map<String, Object> queryBody = Map.of(
-                    "query", Map.of("match_all", Map.of()),
-                    "size", 1000
-            );
-            String queryJson = objectMapper.writeValueAsString(queryBody);
-
-            String rawJson = restClient.post()
-                    .uri("/{index}/_search", properties.getIndex())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(queryJson)
-                    .retrieve()
-                    .body(String.class);
-
-            if (rawJson != null) {
-                JsonNode resp = objectMapper.readTree(rawJson);
-                if (resp != null && resp.has("hits") && resp.get("hits").has("hits")) {
-                    JsonNode hits = resp.get("hits").get("hits");
-                    java.util.List<CanvasDocument> docs = new java.util.ArrayList<>();
-                    for (JsonNode hit : hits) {
-                        if (hit.has("_source")) {
-                            docs.add(objectMapper.treeToValue(hit.get("_source"), CanvasDocument.class));
-                        }
-                    }
-                    return docs;
-                }
-            }
-            return Collections.emptyList();
-        } catch (HttpClientErrorException.NotFound e) {
-            // Elasticsearch에서 _search의 404는 인덱스 부재를 의미함
-            handleIndexNotFound("도큐먼트 전체 목록 조회 (listCanvasDocuments)", e);
-            return Collections.emptyList();
-        } catch (Exception e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 전체 목록 조회 (listCanvasDocuments)", e);
-                return Collections.emptyList();
-            }
-            log.warn("Elasticsearch 캔버스 목록 조회 실패: {}", e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 목록 조회 실패: " + e.getMessage());
-            }
-            return Collections.emptyList();
-        }
+        return searchCanvasesByName(null);
     }
 
     /**
@@ -274,16 +292,14 @@ public class CanvasElasticsearchService {
         if (existingOpt.isPresent()) {
             doc = existingOpt.get();
         } else {
-            // 아직 ES에 도큐먼트가 색인되지 않은 경우 새 도큐먼트 생성
             doc = new CanvasDocument(fallbackCanvasName, canvasId, ownerId, request.canvasPassword(), request.initGroup());
         }
 
-        // 요청 데이터 적용
         if (request.canvasPassword() != null) {
-            doc.setCanvasPassword(request.canvasPassword().equals("null") ? null : request.canvasPassword());
+            doc.setCanvasPasswordHash(request.canvasPassword().equals("null") ? null : request.canvasPassword());
         }
         if (request.peoples() != null) {
-            doc.setPeoples(request.peoples());
+            doc.setPeople(request.peoples());
         }
         if (request.innerGroup() != null) {
             doc.setInnerGroup(request.innerGroup());
@@ -303,42 +319,30 @@ public class CanvasElasticsearchService {
      * 캔버스 도큐먼트 삭제
      */
     public boolean deleteCanvas(Integer canvasId, String canvasName) {
-        String targetName = canvasName;
-        if (targetName == null && canvasId != null) {
-            Optional<CanvasDocument> doc = getCanvasDocumentById(canvasId);
-            if (doc.isPresent()) {
-                targetName = doc.get().getCanvasName();
+        boolean deleted = false;
+        if (canvasId != null) {
+            try {
+                restClient.delete()
+                        .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), String.valueOf(canvasId))
+                        .retrieve()
+                        .toBodilessEntity();
+                log.info("캔버스 #{} Elasticsearch 문서 삭제 완료", canvasId);
+                deleted = true;
+            } catch (Exception ignored) {
             }
         }
 
-        if (targetName == null) {
-            return false;
+        if (canvasName != null) {
+            try {
+                restClient.delete()
+                        .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), canvasName)
+                        .retrieve()
+                        .toBodilessEntity();
+                deleted = true;
+            } catch (Exception ignored) {
+            }
         }
 
-        try {
-            restClient.delete()
-                    .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), targetName)
-                    .retrieve()
-                    .toBodilessEntity();
-            log.info("캔버스 '{}' Elasticsearch 문서 삭제 완료", targetName);
-            return true;
-        } catch (HttpClientErrorException.NotFound e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 삭제 (deleteCanvas)", e);
-                return false;
-            }
-            // 인덱스는 있으나 문서가 없는 정상 삭제 완료 간주
-            return false;
-        } catch (Exception e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 삭제 (deleteCanvas)", e);
-                return false;
-            }
-            log.warn("캔버스 '{}' Elasticsearch 삭제 실패: {}", targetName, e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 삭제 실패: " + e.getMessage());
-            }
-            return false;
-        }
+        return deleted;
     }
 }
