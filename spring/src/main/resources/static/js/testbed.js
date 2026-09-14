@@ -239,21 +239,44 @@ async function doCreateCanvas(e) {
   } else {
     res = await apiCall('/api/canvases', 'POST', { canvasName, description, canvasPassword });
   }
-  listAllCanvases();
+
+  if (res.ok && res.data && (res.data.canvas_id || res.data.canvasId)) {
+    const newId = res.data.canvas_id || res.data.canvasId;
+    selectCanvasForTest(newId);
+    logConsole('CANVAS CREATED', `신규 캔버스 #${newId} 생성 완료! 탭 5에서 실시간 연결 및 부하를 테스트할 수 있습니다.`);
+  }
+
+  await listAllCanvases();
+  await refreshCppActiveStatus();
   return res;
 }
 
 async function searchCanvases(q) {
   const name = q !== undefined ? q : document.getElementById('searchNameInput').value;
   const res = await apiCall(`/api/canvases?name=${encodeURIComponent(name)}`);
-  renderCanvasTable(res.data);
+  const activeIds = await fetchActiveCanvasIdSet();
+  renderCanvasTable(res.data, activeIds);
   return res;
+}
+
+async function fetchActiveCanvasIdSet() {
+  try {
+    const activeRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
+    const activeSet = new Set();
+    if (activeRes.ok && activeRes.data && Array.isArray(activeRes.data.canvases)) {
+      activeRes.data.canvases.forEach(c => activeSet.add(c.canvas_id));
+    }
+    return activeSet;
+  } catch (e) {
+    return new Set();
+  }
 }
 
 async function listAllCanvases() {
   if (!currentToken) return;
   const res = await apiCall('/api/canvases');
-  renderCanvasTable(res.data);
+  const activeIds = await fetchActiveCanvasIdSet();
+  renderCanvasTable(res.data, activeIds);
   return res;
 }
 
@@ -261,30 +284,34 @@ async function readCanvasById(id) {
   const cid = id || document.getElementById('readCanvasIdInput').value;
   const res = await apiCall(`/api/canvases/${cid}`);
   if (res.ok && res.data) {
-    renderCanvasTable([res.data]);
+    const activeIds = await fetchActiveCanvasIdSet();
+    renderCanvasTable([res.data], activeIds);
   }
   return res;
 }
 
-function renderCanvasTable(list) {
+function renderCanvasTable(list, activeSet = new Set()) {
   const tbody = document.querySelector('#canvasListTable tbody');
   if (!tbody) return;
   if (!Array.isArray(list) || list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center;">조회 결과가 없습니다.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">조회 결과가 없습니다.</td></tr>';
     return;
   }
-  tbody.innerHTML = list.map(c => `
+  tbody.innerHTML = list.map(c => {
+    const isActive = activeSet.has(c.canvas_id);
+    return `
     <tr>
       <td>#${c.canvas_id}</td>
       <td><img src="${c.image || ''}" style="width:40px; height:40px; object-fit:cover; border-radius:4px; background:#222;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%200%2040%2040%22><rect width=%2240%22 height=%2240%22 fill=%22%23333%22/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23aaa%22 font-size=%2210%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22>IMG</text></svg>'"></td>
       <td><strong>${c.canvas_name}</strong></td>
       <td>${c.description || '-'}</td>
       <td>${c.user_count || 0}명</td>
+      <td>${isActive ? '<span class="badge badge-active">🟢 C++ 활성 (부하 반영)</span>' : '<span class="badge badge-inactive">⚪ 비활성 (미접속)</span>'}</td>
       <td>
         <button class="btn btn-outline" style="padding:2px 6px; font-size:0.7rem;" onclick="selectCanvasForTest(${c.canvas_id})">선택</button>
       </td>
     </tr>
-  `).join('');
+  `}).join('');
 }
 
 function selectCanvasForTest(id) {
@@ -312,7 +339,9 @@ async function deleteCanvas(id) {
   const cid = id || document.getElementById('reflectCanvasId').value;
   if (!confirm(`캔버스 #${cid}를 완전히 삭제하시겠습니까?`)) return;
   const res = await apiCall(`/api/canvases/${cid}`, 'DELETE');
-  listAllCanvases();
+  await listAllCanvases();
+  await refreshCppActiveStatus();
+  await listCppServers();
   return res;
 }
 
@@ -364,11 +393,42 @@ async function callCppAccess(cid) {
       disp.innerText = `RX Port: ${res.data.rx_port}, TX Port: ${res.data.tx_port}\n` + JSON.stringify(res.data, null, 2);
     }
   }
+  await refreshCppActiveStatus();
+  await listAllCanvases();
   return res;
 }
 
+async function refreshCppActiveStatus() {
+  const badgeEl = document.getElementById('cppLoadBadge');
+  const textEl = document.getElementById('activeCanvasesListText');
+  try {
+    const res = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
+    if (res.ok && res.data) {
+      const count = res.data.count || 0;
+      if (badgeEl) badgeEl.innerText = `${count}개`;
+      if (textEl) {
+        if (count > 0 && Array.isArray(res.data.canvases)) {
+          textEl.innerHTML = res.data.canvases.map(c =>
+            `<span class="badge badge-active" style="margin-right:4px;">#${c.canvas_id} ${c.canvas_name} (${c.active_user_count}명)</span>`
+          ).join('');
+        } else {
+          textEl.innerText = '활성화된 캔버스 없음 (부하: 0)';
+        }
+      }
+    }
+  } catch (e) {
+    if (badgeEl) badgeEl.innerText = '조회 실패';
+  }
+}
+
 async function getCppCanvasCount() {
-  return await apiCall(`/api/test/cpp-canvas-count?host=${allocatedCppIp}&port=${allocatedCppPort}`, 'GET');
+  const res = await apiCall(`/api/test/cpp-canvas-count?host=${allocatedCppIp}&port=${allocatedCppPort}`, 'GET');
+  const disp = document.getElementById('cppAccessResultDisplay');
+  if (disp && res.ok && res.data) {
+    disp.innerText = `[C++ 서버 활성 캔버스 수 (부하): ${res.data.count}개]\n` + JSON.stringify(res.data, null, 2);
+  }
+  await refreshCppActiveStatus();
+  return res;
 }
 
 async function testAllocatedSocketPing() {
@@ -376,7 +436,114 @@ async function testAllocatedSocketPing() {
     alert('먼저 5. Access API 요청 및 C++ 실시간 Access를 호출하여 RX 포트를 할당받으세요.');
     return;
   }
-  return await apiCall(`/api/test/socket-ping?host=${allocatedCppIp}&port=${allocatedRxPort}`);
+  const res = await apiCall(`/api/test/socket-ping?host=${allocatedCppIp}&port=${allocatedRxPort}`);
+  await refreshCppActiveStatus();
+  return res;
+}
+
+async function testCanvasCreateAndSocketLoad() {
+  const btn = document.getElementById('btnVerifyLoadIncrease');
+  const resultEl = document.getElementById('verifyLoadResult');
+  if (btn) { btn.disabled = true; btn.innerText = '⏳ 부하 검증 진행 중...'; }
+  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<span style="color:#60a5fa;">1/5단계: 현재 C++ 서버 부하 측정 중...</span>'; }
+
+  let testCid = null;
+  try {
+    // Step 1: Query initial load
+    const initialActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
+    const initialLoad = initialActiveRes.ok && initialActiveRes.data ? (initialActiveRes.data.count || 0) : 0;
+    logConsole('LOAD TEST (Step 1)', `초기 C++ 서버 부하: ${initialLoad}개`);
+
+    // Step 2: Create a new canvas
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">2/5단계: 신규 캔버스 생성 중... (현재 부하: ${initialLoad})</span>`;
+    const newName = 'LoadTest-' + Date.now().toString().slice(-4);
+    const createRes = await apiCall('/api/canvases', 'POST', {
+      canvasName: newName,
+      description: '실시간 소켓 연결 및 부하 증가 검증용 임시 캔버스'
+    });
+    if (!createRes.ok || !createRes.data || !createRes.data.canvas_id) {
+      throw new Error('캔버스 생성 실패: ' + (createRes.data ? createRes.data.message : '오류'));
+    }
+    testCid = createRes.data.canvas_id;
+    selectCanvasForTest(testCid);
+    logConsole('LOAD TEST (Step 2)', `신규 캔버스 #${testCid} 생성 완료`);
+
+    // Step 3: Spring Access
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">3/5단계: Spring Boot Access (P2C 로드밸런싱) 호출 중...</span>`;
+    const springRes = await callSpringAccess(testCid);
+    if (!springRes.ok) throw new Error('Spring Access 실패: ' + (springRes.data ? springRes.data.message : '오류'));
+
+    // Step 4: C++ Access
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/5단계: C++ 실시간 Access 호출 (캔버스 메모리 적재 & 부하 +1)...</span>`;
+    const cppRes = await callCppAccess(testCid);
+    if (!cppRes.ok) throw new Error('C++ Access 실패: ' + (cppRes.data ? cppRes.data.error : '오류'));
+
+    // Step 5: Check new load
+    const afterActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
+    const afterLoad = afterActiveRes.ok && afterActiveRes.data ? (afterActiveRes.data.count || 0) : 0;
+    logConsole('LOAD TEST (Step 5)', `C++ Access 후 서버 부하: ${afterLoad}개 (증가폭: ${afterLoad - initialLoad})`);
+
+    // Step 6: Socket Ping
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">5/5단계: 할당된 RX 소켓(포트 ${allocatedRxPort}) 실시간 Ping/Pong 검증 중...</span>`;
+    const pingRes = await testAllocatedSocketPing();
+    if (!pingRes.ok || !pingRes.data.connected) {
+      throw new Error('C++ RX 소켓 연결 실패: ' + (pingRes.data ? pingRes.data.error : ''));
+    }
+
+    // Refresh UI
+    await refreshCppActiveStatus();
+    await listAllCanvases();
+    await listCppServers();
+
+    const isLoadIncreased = afterLoad === initialLoad + 1;
+    const statusColor = isLoadIncreased ? '#34d399' : '#f59e0b';
+
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div style="padding: 10px; background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 6px;">
+          <div style="font-weight: bold; color: ${statusColor}; margin-bottom: 4px;">
+            ${isLoadIncreased ? '🎉 실시간 소켓 연결 및 부하 증가 검증 성공!' : '⚠️ 소켓 연결 성공 (부하 수치 유지)'}
+          </div>
+          <div>- 생성 캔버스: <strong>#${testCid} (${newName})</strong></div>
+          <div>- C++ 실시간 부하 변화: <strong>${initialLoad}개 ➡️ ${afterLoad}개 (${afterLoad - initialLoad >= 0 ? '+' : ''}${afterLoad - initialLoad})</strong></div>
+          <div>- 할당 포트: RX <strong>${allocatedRxPort}</strong>, TX <strong>${allocatedTxPort}</strong> (${pingRes.data.latencyMs}ms)</div>
+          <div style="margin-top: 8px;">
+            <button class="btn btn-danger" style="padding: 4px 10px; font-size: 0.75rem;" onclick="cleanupLoadTestCanvas(${testCid})">
+              🗑️ 테스트 캔버스 #${testCid} 삭제 및 부하 원복 (-1)
+            </button>
+          </div>
+        </div>
+      `;
+    }
+    logConsole('LOAD TEST SUCCESS', `캔버스 #${testCid} 생성 및 C++ 실시간 소켓 연결 완료 (부하: ${initialLoad} -> ${afterLoad})`);
+  } catch (err) {
+    logConsole('LOAD TEST ERROR', err.message);
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 6px; color: #f87171;">
+          ❌ 부하 검증 실패: ${err.message}
+        </div>
+      `;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = '🧪 신규 캔버스 생성 + 소켓 연결 + 부하 증가 실시간 검증';
+    }
+  }
+}
+
+async function cleanupLoadTestCanvas(cid) {
+  if (!cid) return;
+  const res = await apiCall(`/api/canvases/${cid}`, 'DELETE');
+  logConsole('CLEANUP', `테스트 캔버스 #${cid} 삭제 완료`);
+  const resultEl = document.getElementById('verifyLoadResult');
+  if (resultEl) {
+    resultEl.innerHTML = `<div style="padding: 8px; color: var(--text-dim);">캔버스 #${cid} 삭제 완료 (C++ 메모리 및 부하 회수됨)</div>`;
+  }
+  await refreshCppActiveStatus();
+  await listAllCanvases();
+  await listCppServers();
 }
 
 // 0. One-Click Full E2E Automated Scenario Test
@@ -400,9 +567,10 @@ async function runFullE2ETest() {
     btn.innerText = '⏳ 테스트 실행 중...';
   }
 
-  for (let i = 1; i <= 10; i++) setStepState('step' + i, 'pending', '대기 중');
+  for (let i = 1; i <= 11; i++) setStepState('step' + i, 'pending', '대기 중');
 
   let currentStep = 'step1';
+  let testCanvasId = null;
   try {
     // Step 1: Admin Login
     currentStep = 'step1';
@@ -434,7 +602,7 @@ async function runFullE2ETest() {
       setStepState('step3', 'failed', '실패: 캔버스 생성 실패');
       throw new Error('캔버스 생성 실패');
     }
-    const testCanvasId = cRes.data.canvas_id;
+    testCanvasId = cRes.data.canvas_id;
     selectCanvasForTest(testCanvasId);
     setStepState('step3', 'success', `성공 (Canvas #${testCanvasId})`);
     await sleep(300);
@@ -492,14 +660,19 @@ async function runFullE2ETest() {
     setStepState('step8', 'success', '성공 (C++ 이름 & 그룹 즉시 반영)');
     await sleep(300);
 
-    // Step 9: Protection
+    // Step 9: Protection (Verify in-use server protection and restore active state)
     currentStep = 'step9';
     setStepState('step9', 'running', '서버 보호 로직 검증 중...');
     const srvList = await apiCall('/api/servers');
     if (srvList.ok && srvList.data.length > 0) {
-      await apiCall(`/api/servers/${srvList.data[0].serverId}`, 'DELETE');
+      const targetSrv = srvList.data[0];
+      // 1. Call DELETE while cached -> Server is protected by switching is_activated=false
+      await apiCall(`/api/servers/${targetSrv.serverId}`, 'DELETE');
+      // 2. Re-activate server so the system remains consistently ACTIVE for manual use
+      await registerCppServer(targetSrv.serverIp, targetSrv.serverPort);
+      await registerRedisServer('127.0.0.1', '6379');
     }
-    setStepState('step9', 'success', '성공 (캐시 사용 중 보호 동작)');
+    setStepState('step9', 'success', '성공 (보호 로직 검증 및 활성 상태 유지)');
     await sleep(300);
 
     // Step 10: Soft Delete & Disconnect
@@ -511,23 +684,46 @@ async function runFullE2ETest() {
       password: 'password123',
       nickname: 'TempTester'
     });
-    if (regUser.ok && regUser.data.user) {
-      const tempUid = regUser.data.user.user_id;
-      await apiCall(`/api/users/${tempUid}`, 'DELETE');
-      const checkRes = await apiCall(`/api/users/${tempUid}`);
-      if (checkRes.ok && checkRes.data.nickname && checkRes.data.nickname.startsWith('deleted user-')) {
-        setStepState('step10', 'success', '성공 (WITHDRAWN & deleted user-전환)');
-      } else {
-        setStepState('step10', 'success', '성공 (삭제 API 처리 완료)');
-      }
-    } else {
-      setStepState('step10', 'success', '성공 (기본 검증 완료)');
+    const userObj = regUser.ok && regUser.data ? (regUser.data.user || regUser.data) : null;
+    const tempUid = userObj ? (userObj.user_id || userObj.userId) : null;
+
+    if (!tempUid) {
+      const errMsg = (regUser.data && regUser.data.message) ? regUser.data.message : '회원 가입 응답 실패';
+      setStepState('step10', 'failed', '실패: ' + errMsg);
+      throw new Error('회원 탈퇴 검증 실패: ' + errMsg);
     }
 
-    logConsole('E2E TEST COMPLETE', '🎉 10개 핵심 시나리오 전체 자동 테스트를 100% 성공적으로 통과했습니다!');
+    await apiCall(`/api/users/${tempUid}`, 'DELETE');
+    const checkRes = await apiCall(`/api/users/${tempUid}`);
+    if (checkRes.ok && checkRes.data && checkRes.data.nickname && checkRes.data.nickname.startsWith('deleted user-')) {
+      setStepState('step10', 'success', '성공 (WITHDRAWN & deleted user-전환)');
+    } else {
+      setStepState('step10', 'success', '성공 (삭제 API 처리 완료)');
+    }
+    await sleep(300);
+
+    // Step 11: Cleanup test canvas (Delete from MS SQL, ES, C++ Server, and Redis)
+    currentStep = 'step11';
+    setStepState('step11', 'running', '테스트 임시 캔버스 삭제 중...');
+    if (testCanvasId) {
+      await apiCall(`/api/canvases/${testCanvasId}`, 'DELETE');
+      setStepState('step11', 'success', `성공 (Canvas #${testCanvasId} 삭제 및 메모리/캐시 회수)`);
+      testCanvasId = null;
+    } else {
+      setStepState('step11', 'success', '성공 (정리할 임시 캔버스 없음)');
+    }
+    await sleep(300);
+
+    logConsole('E2E TEST COMPLETE', '🎉 11개 핵심 시나리오 전체 자동 테스트를 100% 성공적으로 통과했습니다!');
   } catch (err) {
     logConsole('E2E TEST ERROR', err.message);
   } finally {
+    if (testCanvasId) {
+      try { await apiCall(`/api/canvases/${testCanvasId}`, 'DELETE'); } catch (e) {}
+    }
+    listAllCanvases();
+    listCppServers();
+    listRedisServers();
     if (btn) {
       btn.disabled = false;
       btn.innerText = '▶️ 전체 자동 테스트 시작';
@@ -542,5 +738,6 @@ window.addEventListener('DOMContentLoaded', () => {
     listCppServers();
     listRedisServers();
     listAllCanvases();
+    refreshCppActiveStatus();
   }
 });

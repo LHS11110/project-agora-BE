@@ -127,6 +127,16 @@ int CanvasPool::getActiveCanvasCount() {
     return (int)canvases_.size();
 }
 
+std::vector<int> CanvasPool::getActiveCanvasIds() {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    std::vector<int> ids;
+    ids.reserve(canvases_.size());
+    for (const auto& [id, canvas] : canvases_) {
+        ids.push_back(id);
+    }
+    return ids;
+}
+
 std::pair<int, int> CanvasPool::allocatePortPair() {
     int rx = next_port_.fetch_add(2);
     if (rx > 30000) {

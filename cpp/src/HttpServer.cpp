@@ -539,6 +539,31 @@ void HttpServer::setupRoutes() {
         res.set_content(r.dump(), "application/json");
     });
 
+    // 활성 캔버스 상세 목록 및 수 조회 API
+    server_.Get("/api/canvas/active", [this](const httplib::Request& req, httplib::Response& res) {
+        auto ids = canvas_pool_.getActiveCanvasIds();
+        nlohmann::json canvas_list = nlohmann::json::array();
+        for (int cid : ids) {
+            auto c = canvas_pool_.getCanvas(cid);
+            if (c) {
+                canvas_list.push_back({
+                    {"canvas_id", cid},
+                    {"canvas_name", c->getCanvasName()},
+                    {"admin_user_id", c->getAdminUserId()},
+                    {"active_user_count", c->getActiveUsers().size()},
+                    {"active_users", c->getActiveUsers()}
+                });
+            }
+        }
+        nlohmann::json r = {
+            {"status", "success"},
+            {"count", (int)ids.size()},
+            {"canvases", canvas_list}
+        };
+        res.status = 200;
+        res.set_content(r.dump(), "application/json");
+    });
+
     // 헬스체크
     server_.Get("/health", [](const httplib::Request& req, httplib::Response& res) {
         res.status = 200;

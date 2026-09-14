@@ -101,6 +101,34 @@ public class TestPageController {
     }
 
     /**
+     * Proxy endpoint for browser to get active canvases detail list from C++ server.
+     */
+    @GetMapping("/api/test/cpp-active-canvases")
+    @ResponseBody
+    public ResponseEntity<?> proxyCppActiveCanvases(
+            @RequestParam(defaultValue = "127.0.0.1") String host,
+            @RequestParam(defaultValue = "8000") int port
+    ) {
+        String cppUrl = "http://" + host + ":" + port + "/api/canvas/active";
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(cppUrl))
+                    .timeout(Duration.ofSeconds(3))
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return ResponseEntity.status(response.statusCode())
+                    .header("Content-Type", "application/json")
+                    .body(response.body());
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "C++ 서버 통신 실패: " + e.getMessage());
+            return ResponseEntity.status(502).body(error);
+        }
+    }
+
+    /**
      * Helper endpoint for JSP browser to test raw TCP connection to C++ allocated RX/TX sockets.
      */
     @GetMapping("/api/test/socket-ping")

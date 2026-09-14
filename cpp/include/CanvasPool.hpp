@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_map>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <atomic>
@@ -26,6 +27,7 @@ public:
     void disconnectUserFromAll(int user_id);
 
     int getActiveCanvasCount();
+    std::vector<int> getActiveCanvasIds();
 
     // Port allocation for RX and TX sockets
     std::pair<int, int> allocatePortPair();

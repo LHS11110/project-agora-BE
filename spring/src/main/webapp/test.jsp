@@ -360,6 +360,10 @@
           <div><strong>10. 회원 탈퇴 시 C++ 연결 해제 & 소프트 삭제 확인</strong> <span style="font-size:0.75rem; color:var(--text-muted);">(DELETE /api/users/{id})</span></div>
           <span class="step-badge badge-pending">대기 중</span>
         </div>
+        <div class="e2e-step" id="step11">
+          <div><strong>11. 테스트 임시 캔버스 삭제 및 C++/Redis 자원 회수</strong> <span style="font-size:0.75rem; color:var(--text-muted);">(DELETE /api/canvases/{id})</span></div>
+          <span class="step-badge badge-pending">대기 중</span>
+        </div>
       </div>
     </div>
   </div>
@@ -490,8 +494,8 @@
           <button class="btn btn-purple" onclick="readCanvasById()">단건 조회 (GET /{id})</button>
         </div>
         <table id="canvasListTable">
-          <thead><tr><th>ID</th><th>대표이미지</th><th>캔버스명</th><th>설명</th><th>인원수</th><th>관리</th></tr></thead>
-          <tbody><tr><td colspan="6" style="text-align: center;">검색 또는 목록을 갱신하세요.</td></tr></tbody>
+          <thead><tr><th>ID</th><th>대표이미지</th><th>캔버스명</th><th>설명</th><th>인원수</th><th>C++ 활성 상태</th><th>관리</th></tr></thead>
+          <tbody><tr><td colspan="7" style="text-align: center;">검색 또는 목록을 갱신하세요.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -557,25 +561,51 @@
 
   <!-- TAB 5: Access API & 실시간 C++ 소켓 -->
   <div id="accessTab" class="tab-pane">
+    <div style="margin-bottom: 16px; padding: 16px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <div>
+          <strong style="font-size: 1.05rem; color: #fff;">📊 C++ 실시간 서버 현재 부하: </strong>
+          <span id="cppLoadBadge" class="badge badge-active" style="font-size: 1rem; padding: 4px 12px;">0개</span>
+          <span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 8px;">(현재 메모리 풀에 로드된 활성 캔버스 수)</span>
+        </div>
+        <button class="btn btn-outline" style="padding: 6px 12px; font-size: 0.8rem;" onclick="refreshCppActiveStatus()">🔄 부하 및 활성 목록 새로고침</button>
+      </div>
+      <div style="margin-top: 10px; font-size: 0.85rem; color: var(--text-dim);">
+        <strong>현재 C++ 풀 활성 캔버스: </strong>
+        <span id="activeCanvasesListText" style="color: #60a5fa;">확인 중...</span>
+      </div>
+    </div>
+
     <div class="card-grid">
       <div class="card">
         <div class="card-title">🚀 Spring Boot Access API (P2C 로드밸런싱 & 토큰 등록)</div>
         <div class="form-group">
           <label>접속 대상 Canvas ID</label>
-          <input type="number" id="accessCanvasId" value="1">
+          <input type="number" id="accessCanvasId" value="2">
         </div>
-        <button class="btn btn-primary btn-block" onclick="callSpringAccess()">Access 요청 (POST /api/access)</button>
+        <button class="btn btn-primary btn-block" onclick="callSpringAccess()">1단계: Spring Access 요청 (POST /api/access)</button>
         <div style="margin-top: 14px;">
           <label>할당된 C++ 실시간 서버:</label>
           <div class="token-text" id="allocatedServerDisplay">아직 할당되지 않음</div>
+        </div>
+
+        <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08);">
+          <div class="card-title" style="font-size: 0.95rem;">⚡ 1-Click 실시간 연결 & 부하 증가 자동 검증</div>
+          <p style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 10px;">
+            새 캔버스를 즉시 생성하여 C++ Access 및 소켓에 연결하고 부하가 실시간으로 +1 증가하는 과정을 한 번에 검증합니다.
+          </p>
+          <button class="btn btn-purple btn-block" id="btnVerifyLoadIncrease" onclick="testCanvasCreateAndSocketLoad()">
+            🧪 신규 캔버스 생성 + 소켓 연결 + 부하 증가 실시간 검증
+          </button>
+          <div id="verifyLoadResult" style="margin-top: 10px; font-size: 0.8rem; display: none;"></div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-title">📡 C++ 실시간 서버 Access & 소켓 포트 / 아이템 수신</div>
-        <button class="btn btn-purple btn-block" onclick="callCppAccess()">C++ 실시간 Access (POST /api/access)</button>
+        <button class="btn btn-purple btn-block" onclick="callCppAccess()">2단계: C++ 실시간 Access (메모리 적재 & 부하 +1)</button>
+        <button class="btn btn-success btn-block" style="margin-top: 8px;" onclick="testAllocatedSocketPing()">3단계: 🔌 할당된 RX 소켓 통신 테스트 (Ping/Pong)</button>
         <button class="btn btn-outline btn-block" style="margin-top: 8px;" onclick="getCppCanvasCount()">C++ 활성 캔버스 수 확인 (GET /api/canvas/count)</button>
-        <button class="btn btn-success btn-block" style="margin-top: 8px;" onclick="testAllocatedSocketPing()">🔌 할당된 RX 소켓 통신 테스트 (Ping/Pong)</button>
         <div style="margin-top: 14px;">
           <label>C++ 실시간 서버 응답 (할당 포트 & 권한 필터링 아이템):</label>
           <div class="token-text" id="cppAccessResultDisplay">대기 중...</div>
