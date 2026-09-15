@@ -384,7 +384,7 @@ async function callSpringAccess(cid) {
   if (res.ok && res.data.server_ip) {
     allocatedCppIp = res.data.server_ip;
     allocatedCppPort = res.data.server_port;
-    allocatedWsPort = res.data.ws_port || (Number(res.data.server_port) + 1).toString();
+    allocatedWsPort = res.data.ws_port || '8002';
     const disp = document.getElementById('allocatedServerDisplay');
     if (disp) disp.innerText = `REST: ${allocatedCppIp}:${allocatedCppPort} | WebSocket: ${allocatedCppIp}:${allocatedWsPort}`;
   }

@@ -25,6 +25,11 @@ public class ServerInfo {
     @Column(name = "server_port", nullable = false, length = 10)
     private String serverPort;
 
+
+
+    @Column(name = "ws_port", nullable = false, length = 10)
+    private String wsPort;
+
     @Column(name = "is_activated", nullable = false)
     private Boolean isActivated = true;
 
@@ -34,15 +39,17 @@ public class ServerInfo {
     public ServerInfo() {
     }
 
-    public ServerInfo(String serverIp, String serverPort) {
+    public ServerInfo(String serverIp, String serverPort, String wsPort) {
         this.serverIp = serverIp;
         this.serverPort = serverPort;
+        this.wsPort = wsPort;
         this.isActivated = true;
     }
 
-    public ServerInfo(String serverIp, String serverPort, String serverName) {
+    public ServerInfo(String serverIp, String serverPort, String wsPort, String serverName) {
         this.serverIp = serverIp;
         this.serverPort = serverPort;
+        this.wsPort = wsPort;
         this.isActivated = true;
     }
 
@@ -78,6 +85,14 @@ public class ServerInfo {
 
     public void setServerPort(String serverPort) {
         this.serverPort = serverPort;
+    }
+
+    public String getWsPort() {
+        return wsPort;
+    }
+
+    public void setWsPort(String wsPort) {
+        this.wsPort = wsPort;
     }
 
     public Boolean getIsActivated() {

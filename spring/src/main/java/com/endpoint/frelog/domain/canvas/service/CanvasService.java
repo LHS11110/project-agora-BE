@@ -34,6 +34,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 @Service
 public class CanvasService {
 
@@ -530,7 +535,8 @@ public class CanvasService {
         userSessionRepository.save(session);
 
         // 5. C++ 실시간 서버의 IP와 Port 반환
-        return new CanvasUpdateDtos.AccessResponse(serverIp, serverPort);
+        String wsPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getWsPort() : "none";
+        return new CanvasUpdateDtos.AccessResponse(serverIp, serverPort, wsPort);
     }
 
     /**

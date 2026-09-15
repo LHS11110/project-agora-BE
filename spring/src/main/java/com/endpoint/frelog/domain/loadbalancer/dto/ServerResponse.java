@@ -6,6 +6,7 @@ public record ServerResponse(
         Integer serverId,
         String serverIp,
         String serverPort,
+        String wsPort,
         String serverName,
         Boolean isActive,
         Integer currentLoad
@@ -15,6 +16,7 @@ public record ServerResponse(
                 server.getServerId(),
                 server.getServerIp(),
                 server.getServerPort(),
+                server.getWsPort(),
                 server.getServerName(),
                 server.getIsActive(),
                 currentLoad

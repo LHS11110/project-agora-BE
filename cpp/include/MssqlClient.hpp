@@ -11,6 +11,9 @@ public:
                 const std::string& db = "agora_db");
     ~MssqlClient();
 
+    // Register this server to DB (cpp_server table)
+    bool registerServer(const std::string& ip, int rest_port, int ws_port);
+
     // Returns pair of <redis_ip, redis_port>
     std::pair<std::string, int> getAssignedRedis(int canvasId);
 

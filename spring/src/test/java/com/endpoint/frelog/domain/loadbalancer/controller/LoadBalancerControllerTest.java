@@ -104,8 +104,8 @@ class LoadBalancerControllerTest {
     @Test
     @DisplayName("Server 신규 등록 API 성공 시 201 Created")
     void registerServer_Success() throws Exception {
-        RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "Python-1");
-        ServerResponse response = new ServerResponse(1L, "127.0.0.1", "8000", "Python-1", true, 0);
+        RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "8002", "Python-1");
+        ServerResponse response = new ServerResponse(1, "127.0.0.1", "8000", "8002", "Python-1", true, 0);
         given(loadBalancerService.registerServer(any(RegisterServerRequest.class))).willReturn(response);
 
         mockMvc.perform(post("/api/servers")

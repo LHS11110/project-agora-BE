@@ -15,6 +15,52 @@ MssqlClient::MssqlClient(const std::string& host, int port,
 MssqlClient::~MssqlClient() {
 }
 
+bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_port) {
+    static bool dbinit_done = false;
+    if (!dbinit_done) {
+        dbinit();
+        dbinit_done = true;
+    }
+
+    LOGINREC *login = dblogin();
+    if (!login) return false;
+
+    DBSETLUSER(login, user_.c_str());
+    DBSETLPWD(login, pass_.c_str());
+    DBSETLAPP(login, "AgoraCppServer");
+
+    std::string server_str = host_ + ":" + std::to_string(port_);
+    DBPROCESS *dbproc = dbopen(login, server_str.c_str());
+    dbloginfree(login);
+
+    if (!dbproc) return false;
+
+    if (dbuse(dbproc, db_.c_str()) == FAIL) {
+        dbclose(dbproc);
+        return false;
+    }
+
+    std::string sql = 
+        "IF EXISTS (SELECT 1 FROM cpp_server WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "') "
+        "BEGIN "
+        "   UPDATE cpp_server SET ws_port = '" + std::to_string(ws_port) + "', is_activated = 1 WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
+        "END "
+        "ELSE "
+        "BEGIN "
+        "   INSERT INTO cpp_server (server_ip, server_port, ws_port, is_activated) VALUES ('" + ip + "', '" + std::to_string(rest_port) + "', '" + std::to_string(ws_port) + "', 1); "
+        "END";
+
+    dbcmd(dbproc, sql.c_str());
+
+    if (dbsqlexec(dbproc) == FAIL || dbresults(dbproc) == FAIL) {
+        dbclose(dbproc);
+        return false;
+    }
+
+    dbclose(dbproc);
+    return true;
+}
+
 std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
     static bool dbinit_done = false;
     if (!dbinit_done) {

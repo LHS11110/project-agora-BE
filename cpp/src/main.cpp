@@ -2,9 +2,12 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <thread>
+#include <chrono>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
+#include "MssqlClient.hpp"
 
 static HttpServer* g_server = nullptr;
 static WebSocketServer* g_ws_server = nullptr;
@@ -57,6 +60,13 @@ int main(int argc, char* argv[]) {
     std::cout << " ES:                     " << es_host << ":" << es_port << std::endl;
     std::cout << " Java API:               " << java_host << ":" << java_port << std::endl;
     std::cout << "========================================" << std::endl;
+
+    MssqlClient dbClient(db_host, db_port);
+    if (dbClient.registerServer(host == "0.0.0.0" ? "127.0.0.1" : host, port, ws_port)) {
+        std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << (host == "0.0.0.0" ? "127.0.0.1" : host) << ", REST: " << port << ", WS: " << ws_port << ")\n";
+    } else {
+        std::cerr << "[MssqlClient] Failed to register server to DB!\n";
+    }
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);

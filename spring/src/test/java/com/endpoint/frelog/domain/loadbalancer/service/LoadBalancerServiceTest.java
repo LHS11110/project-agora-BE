@@ -72,7 +72,7 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("서버가 1대만 활성화되어 있으면 해당 서버 IP와 Port를 바로 반환")
     void allocateServer_SingleServer_ReturnsDirectly() {
-        ServerInfo single = new ServerInfo("127.0.0.1", "8000", "Main-Cpp");
+        ServerInfo single = new ServerInfo("127.0.0.1", "8000", "8002", "Main-Cpp");
         single.setIsActivated(true);
         given(serverInfoRepository.findAll()).willReturn(List.of(single));
 
@@ -102,9 +102,10 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("서버가 2대일 때 Power of Two Choices 알고리즘으로 부하(캔버스 수)가 더 적은 서버 선택")
     void allocateServer_P2C_PicksLowerLoad() {
-        ServerInfo s1 = new ServerInfo("127.0.0.1", "8000", "Server-1");
+        RegisterServerRequest request = new RegisterServerRequest("192.168.1.10", "8080", "8082", "TestServer");
+        ServerInfo s1 = new ServerInfo(request);
         s1.setIsActivated(true);
-        ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "Server-2");
+        ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "8003", "Server-2");
         s2.setIsActivated(true);
         given(serverInfoRepository.findAll()).willReturn(List.of(s1, s2));
 

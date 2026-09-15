@@ -226,11 +226,13 @@ public class LoadBalancerService {
     public ServerResponse registerServer(RegisterServerRequest request) {
         String ip = request.serverIp().trim();
         String port = request.serverPort().trim();
+        String wsPort = request.wsPort().trim();
         String name = request.serverName() != null ? request.serverName().trim() : ("Server-" + port);
 
         ServerInfo server = serverInfoRepository.findByServerIpAndServerPort(ip, port)
-                .orElseGet(() -> new ServerInfo(ip, port, name));
+                .orElseGet(() -> new ServerInfo(ip, port, wsPort, name));
 
+        server.setWsPort(wsPort);
         server.setIsActivated(true);
         ServerInfo saved = serverInfoRepository.save(server);
 
