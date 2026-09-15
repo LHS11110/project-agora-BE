@@ -34,7 +34,7 @@ void WebSocketServer::start() {
 void WebSocketServer::stop() {
     if (!running_.exchange(false)) return;
     if (loop_) {
-        uWS::Loop::get()->defer([this]() {
+        ((uWS::Loop*)loop_)->defer([this]() {
             if (listen_socket_) {
                 us_listen_socket_close(0, (struct us_listen_socket_t*)listen_socket_);
                 listen_socket_ = nullptr;
