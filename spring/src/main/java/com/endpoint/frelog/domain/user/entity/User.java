@@ -34,17 +34,21 @@ public class User {
     @Column(name = "nickname", nullable = false, length = 100)
     private String nickname;
 
+    @org.hibernate.annotations.Nationalized
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
     private Role role = Role.ROLE_USER;
 
+    @org.hibernate.annotations.Nationalized
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private UserStatus status = UserStatus.ACTIVE;
 
+    @org.hibernate.annotations.Nationalized
     @Column(name = "oauth_provider", length = 50)
     private String oauthProvider;
 
+    @org.hibernate.annotations.Nationalized
     @Column(name = "oauth_id", length = 255)
     private String oauthId;
 
