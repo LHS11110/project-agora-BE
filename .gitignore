@@ -197,3 +197,5 @@ bin/
 *.txt
 !requirements.txt
 !**/requirements.txt
+!CMakeLists.txt
+!**/CMakeLists.txt

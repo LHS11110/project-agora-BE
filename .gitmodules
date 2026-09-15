@@ -1,0 +1,4 @@
+[submodule "cpp/third_party/uWebSockets"]
+	path = cpp/third_party/uWebSockets
+	url = https://github.com/uNetworking/uWebSockets.git
+	ignore = dirty
