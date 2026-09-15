@@ -4,6 +4,7 @@
 #include <iostream>
 #include <ctime>
 #include <nlohmann/json.hpp>
+#include <httplib.h>
 
 static std::string getQueryParam(std::string_view query, const std::string& key) {
     std::string q(query);
@@ -15,8 +16,10 @@ static std::string getQueryParam(std::string_view query, const std::string& key)
     return q.substr(pos + pattern.length(), end - (pos + pattern.length()));
 }
 
-WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int ws_port, TokenValidator validator)
-    : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(validator) {
+WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int ws_port, TokenValidator validator,
+                                 const std::string& java_host, int java_port)
+    : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(validator),
+      java_host_(java_host), java_port_(java_port) {
 }
 
 WebSocketServer::~WebSocketServer() {
@@ -171,11 +174,39 @@ void WebSocketServer::runServer() {
 
         .close = [this](auto* ws, int code, std::string_view /*message*/) {
             PerSocketData* data = (PerSocketData*)ws->getUserData();
-            std::cout << "[uWebSockets] WebSocket client disconnected: User #" << data->user_id
-                      << " from Canvas #" << data->canvas_id << " (close code: " << code << ")" << std::endl;
+            int canvas_id = data->canvas_id;
+            int user_id = data->user_id;
 
-            // Disconnect user from canvas in pool; unloads canvas if 0 active users remain (load -1)
-            pool_.disconnectUser(data->canvas_id, data->user_id);
+            std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
+                      << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
+
+            // 1. Disconnect user from canvas in pool; unloads canvas if 0 active users remain (load -1)
+            pool_.disconnectUser(canvas_id, user_id);
+
+            // 2. Notify Java API to reflect user disconnect & session release
+            std::string j_host = java_host_;
+            int j_port = java_port_;
+            std::thread([j_host, j_port, canvas_id, user_id]() {
+                try {
+                    httplib::Client cli(j_host, j_port);
+                    cli.set_connection_timeout(2, 0);
+                    cli.set_read_timeout(2, 0);
+                    nlohmann::json body = {
+                        {"canvas_id", canvas_id},
+                        {"user_id", user_id}
+                    };
+                    auto res = cli.Post("/api/access/internal/disconnect", body.dump(), "application/json");
+                    if (res && res->status == 200) {
+                        std::cout << "[uWebSockets] Successfully reflected disconnect to Java API for User #"
+                                  << user_id << " on Canvas #" << canvas_id << "\n";
+                    } else {
+                        std::cerr << "[uWebSockets] Java API disconnect reflection responded with status "
+                                  << (res ? std::to_string(res->status) : "connection error") << "\n";
+                    }
+                } catch (const std::exception& e) {
+                    std::cerr << "[uWebSockets] Failed to notify Java API of disconnect: " << e.what() << "\n";
+                }
+            }).detach();
         }
     };
 };

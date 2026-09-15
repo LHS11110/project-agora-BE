@@ -2,8 +2,10 @@ package com.endpoint.frelog.domain.canvas.service;
 
 import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
+import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
+import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
@@ -553,6 +555,74 @@ public class CanvasService {
         user.setServerPort(null);
         userRepository.save(user);
         log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
+    }
+
+    /**
+     * C++ 실시간 서버에서 웹소켓이 닫혔을 때 호출되는 내부 세션 해제 처리 API
+     * - user 테이블: is_accessed=false, server_ip=null, server_port=null
+     * - activeUsersCount가 0이거나 활성 사용자가 없는 경우:
+     *   canvas_info 테이블의 is_cached=false, redis_ip/port=none(null), server_ip/port=none(null) 반영
+     */
+    @Transactional
+    public void handleInternalDisconnect(Integer canvasId, Long userId, Integer activeUsersCount) {
+        if (userId != null) {
+            userRepository.findById(userId).ifPresent(user -> {
+                user.setIsAccessed(false);
+                user.setServerIp(null);
+                user.setServerPort(null);
+                userRepository.save(user);
+                log.info("[InternalDisconnect] C++ 웹소켓 종료 반영: 사용자 #{} isAccessed=false 설정 완료", userId);
+            });
+        }
+
+        if (canvasId != null && activeUsersCount != null && activeUsersCount <= 0) {
+            canvasInfoRepository.findById(canvasId).ifPresent(canvasInfo -> {
+                canvasInfo.setIsCached(false);
+                canvasInfo.setRedisIp(null);
+                canvasInfo.setRedisPort(null);
+                canvasInfo.setServerIp(null);
+                canvasInfo.setServerPort(null);
+                canvasInfoRepository.save(canvasInfo);
+                log.info("[InternalDisconnect] 캔버스 #{} 활성 사용자 0명 감지: is_cached=false 및 ip/port=none(null) 반영 완료", canvasId);
+            });
+        }
+    }
+
+    @Transactional
+    public void handleInternalDisconnect(Integer canvasId, Long userId) {
+        handleInternalDisconnect(canvasId, userId, null);
+    }
+
+    /**
+     * 캔버스 캐시 상태 및 할당 정보 업데이트 (PATCH /api/canvases/{canvasId}/cache)
+     */
+    @Transactional
+    public CanvasResponse updateCanvasCache(Integer canvasId, UpdateCanvasCacheRequest request, CustomUserDetails currentUser) {
+        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+        validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
+
+        CanvasInfo canvasInfo = getCanvasInfoOrThrow(canvasId);
+        Boolean isCached = request != null ? request.isCached() : null;
+        String redisIp = request != null ? request.redisIp() : null;
+        String redisPort = request != null ? request.redisPort() : null;
+        String serverIp = request != null ? request.serverIp() : null;
+        String serverPort = request != null ? request.serverPort() : null;
+
+        if (Boolean.FALSE.equals(isCached) || "none".equalsIgnoreCase(redisIp) || "none".equalsIgnoreCase(serverIp)) {
+            canvasInfo.setIsCached(false);
+            canvasInfo.setRedisIp(null);
+            canvasInfo.setRedisPort(null);
+            canvasInfo.setServerIp(null);
+            canvasInfo.setServerPort(null);
+        } else {
+            canvasInfo.updateCacheState(isCached, redisIp, redisPort, serverIp, serverPort);
+        }
+
+        CanvasInfo saved = canvasInfoRepository.save(canvasInfo);
+        log.info("캔버스 #{} 캐시 상태 갱신 완료: isCached={}, Server={}:{}, Redis={}:{}",
+                canvasId, saved.getIsCached(), saved.getServerIp(), saved.getServerPort(), saved.getRedisIp(), saved.getRedisPort());
+
+        return CanvasResponse.from(saved);
     }
 
     // =========================================================================

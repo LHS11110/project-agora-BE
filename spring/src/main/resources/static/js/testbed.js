@@ -894,6 +894,406 @@ async function runFullE2ETest() {
   }
 }
 
+// 6. WebSocket Broadcast Test (Multi-Client)
+let bcClients = []; // { id, userId, ws, messages: [], status }
+let bcNextId = 1;
+
+function bcAddClient(customUserId) {
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  const host = document.getElementById('bcWsHost').value || '127.0.0.1';
+  const port = document.getElementById('bcWsPort').value || '8001';
+  const userId = customUserId || Number(document.getElementById('bcUserId').value);
+
+  const clientId = bcNextId++;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?userId=${userId}`;
+
+  const client = {
+    id: clientId,
+    userId: userId,
+    canvasId: canvasId,
+    ws: null,
+    messages: [],
+    status: 'connecting',
+    wsUrl: wsUrl
+  };
+
+  bcClients.push(client);
+  bcRenderClients();
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    client.ws = ws;
+
+    ws.onopen = () => {
+      client.status = 'connected';
+      bcRenderClients();
+      bcUpdateSenderSelect();
+      logConsole('BROADCAST', `Client #${clientId} (User ${userId}) connected to Canvas #${canvasId}`);
+      const dcBtn = document.getElementById('bcDisconnectAllBtn');
+      if (dcBtn) dcBtn.disabled = false;
+    };
+
+    ws.onmessage = (event) => {
+      const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+      let parsed;
+      try { parsed = JSON.parse(event.data); } catch (_) { parsed = event.data; }
+      const entry = { time: timestamp, data: parsed, raw: event.data };
+      client.messages.push(entry);
+      // Keep only last 50 messages
+      if (client.messages.length > 50) client.messages.shift();
+      bcRenderClientMessages(clientId);
+    };
+
+    ws.onclose = (event) => {
+      client.status = 'closed';
+      client.closeCode = event.code;
+      bcRenderClients();
+      bcUpdateSenderSelect();
+      logConsole('BROADCAST', `Client #${clientId} disconnected (code: ${event.code})`);
+    };
+
+    ws.onerror = () => {
+      client.status = 'error';
+      bcRenderClients();
+      bcUpdateSenderSelect();
+    };
+  } catch (err) {
+    client.status = 'error';
+    bcRenderClients();
+    logConsole('BROADCAST ERROR', err.message);
+  }
+
+  // Auto-increment userId for next client
+  document.getElementById('bcUserId').value = userId + 1;
+
+  return client;
+}
+
+function bcRemoveClient(clientId) {
+  const idx = bcClients.findIndex(c => c.id === clientId);
+  if (idx < 0) return;
+  const client = bcClients[idx];
+  if (client.ws && client.ws.readyState === WebSocket.OPEN) {
+    client.ws.close(1000, 'User closed from testbed');
+  }
+  bcClients.splice(idx, 1);
+  bcRenderClients();
+  bcUpdateSenderSelect();
+  if (bcClients.length === 0) {
+    const dcBtn = document.getElementById('bcDisconnectAllBtn');
+    if (dcBtn) dcBtn.disabled = true;
+  }
+}
+
+function bcDisconnectAll() {
+  [...bcClients].forEach(c => {
+    if (c.ws && c.ws.readyState === WebSocket.OPEN) {
+      c.ws.close(1000, 'Disconnect all from testbed');
+    }
+  });
+  bcClients = [];
+  bcNextId = 1;
+  bcRenderClients();
+  bcUpdateSenderSelect();
+  const dcBtn = document.getElementById('bcDisconnectAllBtn');
+  if (dcBtn) dcBtn.disabled = true;
+  logConsole('BROADCAST', 'All broadcast test clients disconnected.');
+}
+
+function bcSendMessage(senderId, messageText) {
+  const sId = senderId || document.getElementById('bcSenderSelect').value;
+  const msg = messageText || document.getElementById('bcMessageInput').value;
+  if (!sId) { alert('보내는 클라이언트를 선택하세요.'); return false; }
+  if (!msg) { alert('메시지를 입력하세요.'); return false; }
+
+  const client = bcClients.find(c => c.id === Number(sId));
+  if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
+    alert('선택한 클라이언트가 연결되어 있지 않습니다.');
+    return false;
+  }
+
+  client.ws.send(msg);
+  // Add to sender's log as "sent"
+  const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+  let parsed;
+  try { parsed = JSON.parse(msg); } catch (_) { parsed = msg; }
+  client.messages.push({ time: timestamp, data: parsed, raw: msg, sent: true });
+  if (client.messages.length > 50) client.messages.shift();
+  bcRenderClientMessages(client.id);
+
+  logConsole('BROADCAST SEND', `Client #${client.id} (User ${client.userId}) sent: ${msg}`);
+  return true;
+}
+
+function bcSendPing(senderId) {
+  const sId = senderId || document.getElementById('bcSenderSelect').value;
+  if (!sId) { alert('보내는 클라이언트를 선택하세요.'); return; }
+  const msg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+  document.getElementById('bcMessageInput').value = msg;
+  bcSendMessage(sId, msg);
+}
+
+function bcUpdateSenderSelect() {
+  const sel = document.getElementById('bcSenderSelect');
+  if (!sel) return;
+  const prevVal = sel.value;
+  sel.innerHTML = '<option value="" disabled>클라이언트 선택</option>';
+  bcClients.filter(c => c.status === 'connected').forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `Client #${c.id} (User ${c.userId})`;
+    sel.appendChild(opt);
+  });
+  if (prevVal) sel.value = prevVal;
+}
+
+function bcRenderClients() {
+  const grid = document.getElementById('bcClientsGrid');
+  if (!grid) return;
+
+  if (bcClients.length === 0) {
+    grid.innerHTML = `
+      <div class="card" style="border-style: dashed; border-color: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; min-height: 200px;">
+        <div style="text-align: center; color: var(--text-dim);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">📡</div>
+          <p>위의 "클라이언트 추가 연결" 버튼으로 WebSocket 클라이언트를 2개 이상 추가하세요.</p>
+          <p style="font-size: 0.78rem; margin-top: 4px;">또는 "자동 브로드캐스트 테스트"로 전체 흐름을 한 번에 검증할 수 있습니다.</p>
+        </div>
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = bcClients.map(c => {
+    const statusColors = {
+      connecting: { bg: 'rgba(245, 158, 11, 0.1)', border: '#f59e0b', icon: '🟡', text: '연결 중...' },
+      connected: { bg: 'rgba(16, 185, 129, 0.1)', border: '#10b981', icon: '🟢', text: '연결됨' },
+      closed: { bg: 'rgba(107, 114, 128, 0.1)', border: '#6b7280', icon: '⚪', text: `종료 (${c.closeCode || ''})` },
+      error: { bg: 'rgba(239, 68, 68, 0.1)', border: '#ef4444', icon: '🔴', text: '오류' }
+    };
+    const s = statusColors[c.status] || statusColors.error;
+
+    return `
+      <div class="card" style="border-color: ${s.border}; position: relative;">
+        <button onclick="bcRemoveClient(${c.id})" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1rem; padding: 4px;" title="연결 종료">✕</button>
+        <div class="card-title" style="font-size: 0.95rem;">
+          ${s.icon} Client #${c.id}
+          <span style="font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-left: auto; margin-right: 20px;">User ${c.userId} · Canvas #${c.canvasId}</span>
+        </div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">
+          <span style="padding: 2px 8px; border-radius: 10px; background: ${s.bg}; border: 1px solid ${s.border}; font-weight: 600;">${s.text}</span>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 8px; word-break: break-all;">
+          ${c.wsUrl}
+        </div>
+        <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto; font-family: var(--font-mono); font-size: 0.78rem;" id="bcLog_${c.id}">
+          ${bcRenderMessagesHtml(c)}
+        </div>
+        <div style="margin-top: 8px; display: flex; gap: 6px;">
+          <button class="btn btn-outline" style="flex: 1; padding: 4px 8px; font-size: 0.72rem;" onclick="bcClearMessages(${c.id})">로그 지우기</button>
+          <button class="btn btn-outline" style="flex: 1; padding: 4px 8px; font-size: 0.72rem;" onclick="bcSendPing(${c.id})">Ping 전송</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function bcRenderMessagesHtml(client) {
+  if (client.messages.length === 0) {
+    return '<span style="color: #6b7280;">수신된 메시지 없음</span>';
+  }
+  return client.messages.map(m => {
+    if (m.sent) {
+      return `<div style="color: #a78bfa; margin-bottom: 3px;"><span style="color: #6b7280;">[${m.time}]</span> <span style="color: #c084fc; font-weight: 600;">📤 SENT:</span> ${typeof m.data === 'object' ? JSON.stringify(m.data) : m.raw}</div>`;
+    }
+    const typeStr = (typeof m.data === 'object' && m.data.type) ? m.data.type : 'message';
+    const isInitItems = typeStr === 'init_items';
+    const isPong = typeStr === 'pong';
+    const color = isInitItems ? '#60a5fa' : isPong ? '#34d399' : '#f59e0b';
+    return `<div style="color: ${color}; margin-bottom: 3px;"><span style="color: #6b7280;">[${m.time}]</span> <span style="font-weight: 600;">📥 ${typeStr}:</span> ${typeof m.data === 'object' ? JSON.stringify(m.data) : m.raw}</div>`;
+  }).join('');
+}
+
+function bcRenderClientMessages(clientId) {
+  const logEl = document.getElementById(`bcLog_${clientId}`);
+  const client = bcClients.find(c => c.id === clientId);
+  if (!logEl || !client) return;
+  logEl.innerHTML = bcRenderMessagesHtml(client);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function bcClearMessages(clientId) {
+  const client = bcClients.find(c => c.id === clientId);
+  if (client) {
+    client.messages = [];
+    bcRenderClientMessages(clientId);
+  }
+}
+
+// Automated Broadcast Test
+async function bcRunAutoTest() {
+  const btn = document.getElementById('bcAutoTestBtn');
+  const resultEl = document.getElementById('bcAutoTestResult');
+  if (btn) { btn.disabled = true; btn.innerText = '⏳ 테스트 실행 중...'; }
+  if (resultEl) { resultEl.style.display = 'block'; }
+
+  // Disconnect existing clients
+  bcDisconnectAll();
+  await sleep(300);
+
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  const results = [];
+
+  try {
+    // Step 1: Connect 3 clients
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">1/5단계: 3개 클라이언트 연결 중...</p></div>';
+
+    const c1 = bcAddClient(25);
+    await sleep(200);
+    const c2 = bcAddClient(26);
+    await sleep(200);
+    const c3 = bcAddClient(27);
+
+    // Wait for all to connect
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('클라이언트 연결 시간 초과 (5초)')), 5000);
+      const check = setInterval(() => {
+        const allConnected = [c1, c2, c3].every(c => c.status === 'connected');
+        const anyError = [c1, c2, c3].some(c => c.status === 'error');
+        if (allConnected) { clearInterval(check); clearTimeout(timeout); resolve(); }
+        if (anyError) { clearInterval(check); clearTimeout(timeout); reject(new Error('클라이언트 연결 실패')); }
+      }, 100);
+    });
+
+    results.push({ step: '1. 3개 클라이언트 연결', status: 'success', detail: `Client #${c1.id}, #${c2.id}, #${c3.id} 연결 완료` });
+
+    // Step 2: Verify init_items received by all
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">2/5단계: init_items 수신 확인 중...</p></div>';
+    await sleep(500);
+
+    const allReceivedInit = [c1, c2, c3].every(c =>
+      c.messages.some(m => typeof m.data === 'object' && m.data.type === 'init_items')
+    );
+    results.push({
+      step: '2. init_items 초기 메시지 수신',
+      status: allReceivedInit ? 'success' : 'warning',
+      detail: allReceivedInit ? '3개 클라이언트 모두 init_items 수신 ✓' : '일부 클라이언트가 init_items를 수신하지 못함'
+    });
+
+    // Step 3: Client 1 sends a broadcast message
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">3/5단계: Client #' + c1.id + '에서 브로드캐스트 메시지 전송 중...</p></div>';
+
+    const testMsg = JSON.stringify({
+      type: 'draw',
+      action: 'broadcast_test',
+      shape: 'circle',
+      x: 150,
+      y: 250,
+      color: '#ff6600',
+      timestamp: Date.now(),
+      sender_client: c1.id
+    });
+
+    // Clear previous messages to only check broadcast
+    c2.messages = [];
+    c3.messages = [];
+
+    c1.ws.send(testMsg);
+    const sendTs = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    c1.messages.push({ time: sendTs, data: JSON.parse(testMsg), raw: testMsg, sent: true });
+    bcRenderClientMessages(c1.id);
+
+    results.push({ step: '3. Client #' + c1.id + ' 브로드캐스트 전송', status: 'success', detail: `draw 타입 메시지 전송: ${testMsg.substring(0, 80)}...` });
+
+    // Step 4: Verify Client 2 & 3 received the broadcast
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/5단계: Client #' + c2.id + ', #' + c3.id + '에서 브로드캐스트 수신 확인 중...</p></div>';
+
+    await sleep(800);
+
+    const c2Received = c2.messages.some(m =>
+      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
+    );
+    const c3Received = c3.messages.some(m =>
+      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
+    );
+    // Sender should NOT receive their own broadcast (uWebSockets publish excludes sender)
+    const c1NotReceived = !c1.messages.some(m =>
+      !m.sent && typeof m.data === 'object' && m.data.action === 'broadcast_test'
+    );
+
+    const broadcastOk = c2Received && c3Received;
+    results.push({
+      step: '4. 브로드캐스트 수신 검증',
+      status: broadcastOk ? 'success' : 'failed',
+      detail: [
+        `Client #${c2.id}: ${c2Received ? '✅ 수신 성공' : '❌ 미수신'}`,
+        `Client #${c3.id}: ${c3Received ? '✅ 수신 성공' : '❌ 미수신'}`,
+        `Client #${c1.id} (발신자): ${c1NotReceived ? '✅ 자기 메시지 미수신 (정상)' : '⚠️ 자기 메시지 수신됨'}`
+      ].join(' | ')
+    });
+
+    // Step 5: Ping/Pong test
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">5/5단계: Ping/Pong 응답 검증 중...</p></div>';
+
+    c2.messages = [];
+    const pingMsg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+    c2.ws.send(pingMsg);
+    c2.messages.push({ time: sendTs, data: JSON.parse(pingMsg), raw: pingMsg, sent: true });
+    bcRenderClientMessages(c2.id);
+
+    await sleep(500);
+
+    const pongReceived = c2.messages.some(m =>
+      typeof m.data === 'object' && m.data.type === 'pong'
+    );
+    results.push({
+      step: '5. Ping/Pong 응답',
+      status: pongReceived ? 'success' : 'failed',
+      detail: pongReceived ? `Client #${c2.id}에서 pong 응답 수신 ✓` : `Client #${c2.id}에서 pong 미수신`
+    });
+
+    // Render final results
+    const allPassed = results.every(r => r.status === 'success');
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="card" style="border-color: ${allPassed ? '#10b981' : '#f59e0b'};">
+          <div class="card-title" style="color: ${allPassed ? '#34d399' : '#f59e0b'};">
+            ${allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 브로드캐스트 테스트 결과'}
+          </div>
+          <table>
+            <thead><tr><th>단계</th><th>결과</th><th>상세</th></tr></thead>
+            <tbody>
+              ${results.map(r => `
+                <tr>
+                  <td style="white-space: nowrap;">${r.step}</td>
+                  <td><span class="step-badge badge-${r.status}" style="font-size: 0.72rem;">${r.status === 'success' ? '✅ 성공' : r.status === 'warning' ? '⚠️ 경고' : '❌ 실패'}</span></td>
+                  <td style="font-size: 0.78rem; color: var(--text-muted);">${r.detail}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <button class="btn btn-danger" style="font-size: 0.78rem;" onclick="bcDisconnectAll()">⛔ 전체 연결 종료</button>
+            <button class="btn btn-outline" style="font-size: 0.78rem;" onclick="bcRunAutoTest()">🔄 재실행</button>
+          </div>
+        </div>`;
+    }
+
+    logConsole('BROADCAST TEST', allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 일부 단계 실패');
+
+  } catch (err) {
+    logConsole('BROADCAST TEST ERROR', err.message);
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="card" style="border-color: #ef4444;">
+          <div class="card-title" style="color: #f87171;">❌ 브로드캐스트 테스트 실패</div>
+          <p style="color: var(--text-muted);">${err.message}</p>
+          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버가 포트 8001에서 실행 중인지 확인하세요.</p>
+        </div>`;
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = '🧪 자동 브로드캐스트 테스트'; }
+  }
+}
+
 // Initial setup on load
 window.addEventListener('DOMContentLoaded', () => {
   updateAuthState();

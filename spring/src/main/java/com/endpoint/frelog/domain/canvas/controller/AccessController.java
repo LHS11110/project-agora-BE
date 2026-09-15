@@ -60,4 +60,47 @@ public class AccessController {
         if (canvasId != null) resp.put("canvas_id", canvasId);
         return ResponseEntity.ok(resp);
     }
+
+    /**
+     * 5-2. Internal Disconnect Notification API (POST /api/access/internal/disconnect)
+     * - C++ 실시간 서버에서 웹소켓이 닫혔을 때 서버 간 통신으로 호출됨
+     * - 인증 토큰 없이 호출 허용 (SecurityConfig permitAll)
+     */
+    @PostMapping("/internal/disconnect")
+    public ResponseEntity<?> internalDisconnect(
+            @RequestBody(required = false) java.util.Map<String, Object> request) {
+        Integer canvasId = null;
+        Long userId = null;
+        Integer activeUsersCount = null;
+
+        if (request != null) {
+            if (request.containsKey("canvas_id")) {
+                try { canvasId = Integer.parseInt(request.get("canvas_id").toString()); } catch (Exception ignored) {}
+            } else if (request.containsKey("canvasId")) {
+                try { canvasId = Integer.parseInt(request.get("canvasId").toString()); } catch (Exception ignored) {}
+            }
+
+            if (request.containsKey("user_id")) {
+                try { userId = Long.parseLong(request.get("user_id").toString()); } catch (Exception ignored) {}
+            } else if (request.containsKey("userId")) {
+                try { userId = Long.parseLong(request.get("userId").toString()); } catch (Exception ignored) {}
+            }
+
+            if (request.containsKey("active_users_count")) {
+                try { activeUsersCount = Integer.parseInt(request.get("active_users_count").toString()); } catch (Exception ignored) {}
+            } else if (request.containsKey("activeUsersCount")) {
+                try { activeUsersCount = Integer.parseInt(request.get("activeUsersCount").toString()); } catch (Exception ignored) {}
+            }
+        }
+
+        canvasService.handleInternalDisconnect(canvasId, userId, activeUsersCount);
+
+        java.util.Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("status", "success");
+        resp.put("message", "C++ 웹소켓 종료 상태가 성공적으로 반영되었습니다.");
+        if (canvasId != null) resp.put("canvas_id", canvasId);
+        if (userId != null) resp.put("user_id", userId);
+        if (activeUsersCount != null) resp.put("active_users_count", activeUsersCount);
+        return ResponseEntity.ok(resp);
+    }
 }

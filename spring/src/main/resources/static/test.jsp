@@ -306,6 +306,7 @@
     <div class="tab-item" onclick="switchTab(event, 'canvasTab')">🎨 3. 캔버스 생성 & ES 검색/조회</div>
     <div class="tab-item" onclick="switchTab(event, 'reflectTab')">⚡ 4. 캔버스 세분화 수정 (C++ 반영)</div>
     <div class="tab-item" onclick="switchTab(event, 'accessTab')">🚀 5. Access API & 실시간 소켓 통신</div>
+    <div class="tab-item" onclick="switchTab(event, 'broadcastTab')">📡 6. WebSocket 브로드캐스트 테스트</div>
   </div>
 
   <!-- TAB 0: 원클릭 자동 E2E 테스트 -->
@@ -602,16 +603,103 @@
       </div>
 
       <div class="card">
-        <div class="card-title">📡 C++ 실시간 서버 Access & 소켓 포트 / 아이템 수신</div>
-        <button class="btn btn-purple btn-block" onclick="callCppAccess()">2단계: C++ 실시간 Access (메모리 적재 & 부하 +1)</button>
-        <button class="btn btn-success btn-block" style="margin-top: 8px;" onclick="testAllocatedSocketPing()">3단계: 🔌 할당된 RX 소켓 통신 테스트 (Ping/Pong)</button>
-        <button class="btn btn-outline btn-block" style="margin-top: 8px;" onclick="getCppCanvasCount()">C++ 활성 캔버스 수 확인 (GET /api/canvas/count)</button>
+        <div class="card-title">🌐 브라우저 WebSocket 실시간 연결 (uWebSockets)</div>
+        <div style="margin-bottom: 10px;">
+          <label>WebSocket 연결 상태:</label>
+          <span id="wsStatusBadge" class="badge badge-inactive" style="margin-left: 6px;">⚪ 미연결</span>
+        </div>
+        <button class="btn btn-purple btn-block" onclick="connectCanvasWebSocket()">🌐 브라우저 WebSocket 실시간 연결 (ws://)</button>
+        <button class="btn btn-success btn-block" style="margin-top: 8px;" onclick="sendWebSocketPing()">📡 WebSocket Ping/Pong 테스트</button>
+        <button class="btn btn-danger btn-block" style="margin-top: 8px;" onclick="callDisconnectAccess()">🔴 실시간 접속 중단 (WebSocket 종료 & 부하 -1)</button>
+        <div style="margin-top: 8px;">
+          <button class="btn btn-outline btn-block" onclick="callCppAccess()">C++ REST Access (레거시 Raw TCP 소켓)</button>
+          <button class="btn btn-outline btn-block" style="margin-top: 4px;" onclick="testAllocatedSocketPing()">🔌 할당된 RX 소켓 TCP Ping (레거시)</button>
+          <button class="btn btn-outline btn-block" style="margin-top: 4px;" onclick="getCppCanvasCount()">C++ 활성 캔버스 수 확인</button>
+        </div>
         <div style="margin-top: 14px;">
           <label>C++ 실시간 서버 응답 (할당 포트 & 권한 필터링 아이템):</label>
           <div class="token-text" id="cppAccessResultDisplay">대기 중...</div>
         </div>
+        <div style="margin-top: 14px;">
+          <label>WebSocket 실시간 수신 메시지:</label>
+          <div class="token-text" id="wsMessageDisplay" style="max-height: 200px; overflow-y: auto;">웹소켓 연결 대기 중...</div>
+        </div>
       </div>
     </div>
+  </div>
+
+  <!-- TAB 6: WebSocket 브로드캐스트 테스트 -->
+  <div id="broadcastTab" class="tab-pane">
+    <div class="card" style="margin-bottom: 20px;">
+      <div class="card-title" style="justify-content: space-between;">
+        <span>📡 WebSocket 멀티 클라이언트 브로드캐스트 테스트</span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-danger" onclick="bcDisconnectAll()" id="bcDisconnectAllBtn" disabled>⛔ 전체 연결 종료</button>
+          <button class="btn btn-primary" onclick="bcRunAutoTest()" id="bcAutoTestBtn">🧪 자동 브로드캐스트 테스트</button>
+        </div>
+      </div>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px;">
+        동일한 캔버스에 여러 WebSocket 클라이언트를 연결하고, 한 클라이언트에서 전송한 메시지가 다른 클라이언트들에게 실시간으로 브로드캐스트되는지 검증합니다.
+        C++ uWebSockets 서버의 <code>ws->publish()</code> pub/sub 로직을 테스트합니다.
+      </p>
+    </div>
+
+    <!-- Connection Settings -->
+    <div class="card" style="margin-bottom: 20px;">
+      <div class="card-title">🔌 연결 설정</div>
+      <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+        <div class="form-group" style="flex: 1; min-width: 120px; margin-bottom: 0;">
+          <label>Canvas ID</label>
+          <input type="number" id="bcCanvasId" value="2">
+        </div>
+        <div class="form-group" style="flex: 1; min-width: 120px; margin-bottom: 0;">
+          <label>WebSocket Host</label>
+          <input type="text" id="bcWsHost" value="127.0.0.1">
+        </div>
+        <div class="form-group" style="flex: 1; min-width: 100px; margin-bottom: 0;">
+          <label>WebSocket Port</label>
+          <input type="text" id="bcWsPort" value="8001">
+        </div>
+        <div class="form-group" style="flex: 1; min-width: 100px; margin-bottom: 0;">
+          <label>클라이언트 User ID</label>
+          <input type="number" id="bcUserId" value="25">
+        </div>
+        <button class="btn btn-success" onclick="bcAddClient()" style="margin-bottom: 0; height: 42px;">➕ 클라이언트 추가 연결</button>
+      </div>
+    </div>
+
+    <!-- Connected Clients Grid -->
+    <div id="bcClientsGrid" class="card-grid" style="margin-bottom: 20px;">
+      <div class="card" style="border-style: dashed; border-color: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; min-height: 200px;">
+        <div style="text-align: center; color: var(--text-dim);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">📡</div>
+          <p>위의 "클라이언트 추가 연결" 버튼으로 WebSocket 클라이언트를 2개 이상 추가하세요.</p>
+          <p style="font-size: 0.78rem; margin-top: 4px;">또는 "자동 브로드캐스트 테스트"로 전체 흐름을 한 번에 검증할 수 있습니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Broadcast Message Sender -->
+    <div class="card" style="margin-bottom: 20px;">
+      <div class="card-title">✉️ 메시지 전송 (브로드캐스트)</div>
+      <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
+        <div class="form-group" style="flex: 0 0 160px; margin-bottom: 0;">
+          <label>보내는 클라이언트</label>
+          <select id="bcSenderSelect">
+            <option value="" disabled selected>클라이언트 선택</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 2; min-width: 200px; margin-bottom: 0;">
+          <label>메시지 (JSON 또는 텍스트)</label>
+          <input type="text" id="bcMessageInput" placeholder='{"type": "draw", "shape": "circle", "x": 100, "y": 200}' value='{"type": "draw", "shape": "circle", "x": 100, "y": 200}'>
+        </div>
+        <button class="btn btn-purple" onclick="bcSendMessage()" style="margin-bottom: 0; height: 42px;">📤 전송</button>
+        <button class="btn btn-outline" onclick="bcSendPing()" style="margin-bottom: 0; height: 42px;">🏓 Ping</button>
+      </div>
+    </div>
+
+    <!-- Auto Test Result -->
+    <div id="bcAutoTestResult" style="display: none; margin-bottom: 20px;"></div>
   </div>
 
   <!-- Realtime API Response Console -->

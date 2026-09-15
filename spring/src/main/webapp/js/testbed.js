@@ -373,10 +373,146 @@ async function callSpringAccess(cid) {
   if (res.ok && res.data.server_ip) {
     allocatedCppIp = res.data.server_ip;
     allocatedCppPort = res.data.server_port;
+    allocatedWsPort = res.data.ws_port || (Number(res.data.server_port) + 1).toString();
     const disp = document.getElementById('allocatedServerDisplay');
-    if (disp) disp.innerText = `${allocatedCppIp}:${allocatedCppPort}`;
+    if (disp) disp.innerText = `REST: ${allocatedCppIp}:${allocatedCppPort} | WebSocket: ${allocatedCppIp}:${allocatedWsPort}`;
   }
   return res;
+}
+
+// Native HTML5 WebSocket connection to C++ uWebSockets server
+function connectCanvasWebSocket(cid) {
+  const canvas_id = Number(cid || document.getElementById('accessCanvasId').value);
+  const statusEl = document.getElementById('wsStatusBadge');
+  const msgEl = document.getElementById('wsMessageDisplay');
+
+  if (activeWebSocket && activeWebSocket.readyState === WebSocket.OPEN) {
+    logConsole('WEBSOCKET', '이미 활성화된 웹소켓 연결이 존재합니다.');
+    return;
+  }
+
+  const wsHost = allocatedCppIp || '127.0.0.1';
+  const wsPort = allocatedWsPort || '8001';
+  const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${canvas_id}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
+
+  logConsole('WEBSOCKET CONNECT', `uWebSockets 서버로 실제 웹소켓 연결 시도: ${wsUrl}`);
+  if (statusEl) {
+    statusEl.innerText = '🟡 WebSocket 연결 중...';
+    statusEl.className = 'badge badge-warning';
+  }
+
+  try {
+    activeWebSocket = new WebSocket(wsUrl);
+
+    activeWebSocket.onopen = async () => {
+      logConsole('WEBSOCKET OPEN', `uWebSockets 연결 성공! (Canvas #${canvas_id})`);
+      if (statusEl) {
+        statusEl.innerText = `🟢 WebSocket 연결됨 (${wsHost}:${wsPort})`;
+        statusEl.className = 'badge badge-active';
+      }
+      if (msgEl) {
+        msgEl.innerText = `[WebSocket OPEN] uWebSockets 서버에 연결되었습니다. (Topic: canvas/${canvas_id})`;
+      }
+      await refreshCppActiveStatus();
+      await listAllCanvases();
+      await listCppServers();
+    };
+
+    activeWebSocket.onmessage = (event) => {
+      logConsole('WEBSOCKET MSG', event.data);
+      if (msgEl) {
+        try {
+          const parsed = JSON.parse(event.data);
+          msgEl.innerText = `[수신 프레임: ${parsed.type || 'message'}]\n` + JSON.stringify(parsed, null, 2);
+        } catch (_) {
+          msgEl.innerText = event.data;
+        }
+      }
+    };
+
+    activeWebSocket.onclose = async (event) => {
+      logConsole('WEBSOCKET CLOSE', `uWebSockets 연결 종료됨 (code: ${event.code})`);
+      if (statusEl) {
+        statusEl.innerText = '⚪ WebSocket 종료됨';
+        statusEl.className = 'badge badge-inactive';
+      }
+      await refreshCppActiveStatus();
+      await listAllCanvases();
+      await listCppServers();
+    };
+
+    activeWebSocket.onerror = (error) => {
+      logConsole('WEBSOCKET ERROR', error.message || '웹소켓 연결 오류');
+      if (statusEl) {
+        statusEl.innerText = '🔴 WebSocket 오류';
+        statusEl.className = 'badge badge-danger';
+      }
+    };
+  } catch (err) {
+    logConsole('WEBSOCKET ERROR', err.message);
+  }
+}
+
+function sendWebSocketPing() {
+  if (!activeWebSocket || activeWebSocket.readyState !== WebSocket.OPEN) {
+    alert('먼저 웹소켓을 연결하세요.');
+    return;
+  }
+  const pingPayload = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+  activeWebSocket.send(pingPayload);
+  logConsole('WEBSOCKET SEND', pingPayload);
+}
+
+async function callDisconnectAccess() {
+  const canvas_id = Number(document.getElementById('accessCanvasId').value);
+  logConsole('DISCONNECT START', `캔버스 #${canvas_id} 실시간 접속 중단 요청...`);
+
+  // 1. Close active WebSocket if open
+  if (activeWebSocket) {
+    try {
+      activeWebSocket.close(1000, "User requested disconnect");
+    } catch (_) {}
+    activeWebSocket = null;
+  }
+
+  // 2. Call Spring Boot Disconnect API (updates DB is_accessed=false, calls C++)
+  const springRes = await apiCall('/api/access/disconnect', 'POST', { canvas_id });
+
+  // 3. Also call C++ Disconnect proxy
+  if (allocatedCppIp && allocatedCppPort) {
+    await apiCall('/api/test/cpp-disconnect', 'POST', {
+      canvas_id: canvas_id,
+      server_ip: allocatedCppIp,
+      server_port: allocatedCppPort,
+      user_id: currentUser ? currentUser.user_id : 1
+    });
+  }
+
+  allocatedRxPort = 0;
+  allocatedTxPort = 0;
+
+  const statusEl = document.getElementById('wsStatusBadge');
+  if (statusEl) {
+    statusEl.innerText = '⚪ 접속 종료됨 (Disconnected)';
+    statusEl.className = 'badge badge-inactive';
+  }
+
+  const disp = document.getElementById('cppAccessResultDisplay');
+  if (disp) {
+    disp.innerText = `🔴 실시간 접속 중단 완료 (Disconnected)\n- C++ 소켓 FD 및 uWebSockets 연결 회수\n- 활성 사용자 0인 경우 캔버스 풀에서 언로드되어 서버 부하(-1) 감소`;
+  }
+
+  const msgEl = document.getElementById('wsMessageDisplay');
+  if (msgEl) {
+    msgEl.innerText = '웹소켓 연결이 종료되었습니다.';
+  }
+
+  await refreshCppActiveStatus();
+  await listAllCanvases();
+  await listCppServers();
+
+  logConsole('DISCONNECT SUCCESS', `캔버스 #${canvas_id} 실시간 접속 중단 완료 (부하 원복)`);
+  return springRes;
 }
 
 async function callCppAccess(cid) {
@@ -390,9 +526,10 @@ async function callCppAccess(cid) {
   if (res.ok) {
     allocatedRxPort = res.data.rx_port;
     allocatedTxPort = res.data.tx_port;
+    if (res.data.ws_port) allocatedWsPort = res.data.ws_port;
     const disp = document.getElementById('cppAccessResultDisplay');
     if (disp) {
-      disp.innerText = `RX Port: ${res.data.rx_port}, TX Port: ${res.data.tx_port}\n` + JSON.stringify(res.data, null, 2);
+      disp.innerText = `RX Port: ${res.data.rx_port}, TX Port: ${res.data.tx_port}, WS Port: ${allocatedWsPort}\n` + JSON.stringify(res.data, null, 2);
     }
   }
   await refreshCppActiveStatus();
@@ -446,10 +583,11 @@ async function testAllocatedSocketPing() {
 async function testCanvasCreateAndSocketLoad() {
   const btn = document.getElementById('btnVerifyLoadIncrease');
   const resultEl = document.getElementById('verifyLoadResult');
-  if (btn) { btn.disabled = true; btn.innerText = '⏳ 부하 검증 진행 중...'; }
-  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<span style="color:#60a5fa;">1/5단계: 현재 C++ 서버 부하 측정 중...</span>'; }
+  if (btn) { btn.disabled = true; btn.innerText = '⏳ 웹소켓 부하 검증 진행 중...'; }
+  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<span style="color:#60a5fa;">1/6단계: 현재 C++ 서버 부하 측정 중...</span>'; }
 
   let testCid = null;
+  let testWs = null;
   try {
     // Step 1: Query initial load
     const initialActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
@@ -457,11 +595,11 @@ async function testCanvasCreateAndSocketLoad() {
     logConsole('LOAD TEST (Step 1)', `초기 C++ 서버 부하: ${initialLoad}개`);
 
     // Step 2: Create a new canvas
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">2/5단계: 신규 캔버스 생성 중... (현재 부하: ${initialLoad})</span>`;
-    const newName = 'LoadTest-' + Date.now().toString().slice(-4);
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">2/6단계: 신규 캔버스 생성 중... (현재 부하: ${initialLoad})</span>`;
+    const newName = 'WsLoadTest-' + Date.now().toString().slice(-4);
     const createRes = await apiCall('/api/canvases', 'POST', {
       canvasName: newName,
-      description: '실시간 소켓 연결 및 부하 증가 검증용 임시 캔버스'
+      description: 'uWebSockets 브라우저 웹소켓 및 실시간 부하 검증용 임시 캔버스'
     });
     if (!createRes.ok || !createRes.data || !createRes.data.canvas_id) {
       throw new Error('캔버스 생성 실패: ' + (createRes.data ? createRes.data.message : '오류'));
@@ -471,26 +609,43 @@ async function testCanvasCreateAndSocketLoad() {
     logConsole('LOAD TEST (Step 2)', `신규 캔버스 #${testCid} 생성 완료`);
 
     // Step 3: Spring Access
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">3/5단계: Spring Boot Access (P2C 로드밸런싱) 호출 중...</span>`;
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">3/6단계: Spring Boot Access (P2C 로드밸런싱) 호출 중...</span>`;
     const springRes = await callSpringAccess(testCid);
     if (!springRes.ok) throw new Error('Spring Access 실패: ' + (springRes.data ? springRes.data.message : '오류'));
 
-    // Step 4: C++ Access
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/5단계: C++ 실시간 Access 호출 (캔버스 메모리 적재 & 부하 +1)...</span>`;
-    const cppRes = await callCppAccess(testCid);
-    if (!cppRes.ok) throw new Error('C++ Access 실패: ' + (cppRes.data ? cppRes.data.error : '오류'));
+    // Step 4: Connect via HTML5 WebSocket to C++ uWebSockets server
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/6단계: uWebSockets(포트 ${allocatedWsPort}) 브라우저 웹소켓 실시간 연결 중...</span>`;
+    const wsHost = allocatedCppIp || '127.0.0.1';
+    const wsPort = allocatedWsPort || '8001';
+    const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${testCid}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
-    // Step 5: Check new load
+    const wsConnectPromise = new Promise((resolve, reject) => {
+      const ws = new WebSocket(wsUrl);
+      const timer = setTimeout(() => {
+        ws.close();
+        reject(new Error('uWebSockets 연결 시간 초과 (3초)'));
+      }, 3000);
+
+      ws.onopen = () => {
+        clearTimeout(timer);
+        resolve(ws);
+      };
+      ws.onerror = (e) => {
+        clearTimeout(timer);
+        reject(new Error('uWebSockets 연결 실패'));
+      };
+    });
+
+    testWs = await wsConnectPromise;
+    activeWebSocket = testWs;
+    logConsole('LOAD TEST (Step 4)', `uWebSockets 연결 완료!`);
+
+    // Step 5: Check load increase (+1)
+    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">5/6단계: 실시간 C++ 서버 부하 증가 (+1) 확인 중...</span>`;
+    await new Promise(r => setTimeout(r, 400));
     const afterActiveRes = await apiCall(`/api/test/cpp-active-canvases?host=${allocatedCppIp}&port=${allocatedCppPort}`);
     const afterLoad = afterActiveRes.ok && afterActiveRes.data ? (afterActiveRes.data.count || 0) : 0;
-    logConsole('LOAD TEST (Step 5)', `C++ Access 후 서버 부하: ${afterLoad}개 (증가폭: ${afterLoad - initialLoad})`);
-
-    // Step 6: Socket Ping
-    if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">5/5단계: 할당된 RX 소켓(포트 ${allocatedRxPort}) 실시간 Ping/Pong 검증 중...</span>`;
-    const pingRes = await testAllocatedSocketPing();
-    if (!pingRes.ok || !pingRes.data.connected) {
-      throw new Error('C++ RX 소켓 연결 실패: ' + (pingRes.data ? pingRes.data.error : ''));
-    }
+    logConsole('LOAD TEST (Step 5)', `uWebSockets 연결 후 서버 부하: ${afterLoad}개 (초기 ${initialLoad} -> 현재 ${afterLoad})`);
 
     // Refresh UI
     await refreshCppActiveStatus();
@@ -504,22 +659,28 @@ async function testCanvasCreateAndSocketLoad() {
       resultEl.innerHTML = `
         <div style="padding: 10px; background: rgba(16, 185, 129, 0.1); border: 1px solid #10b981; border-radius: 6px;">
           <div style="font-weight: bold; color: ${statusColor}; margin-bottom: 4px;">
-            ${isLoadIncreased ? '🎉 실시간 소켓 연결 및 부하 증가 검증 성공!' : '⚠️ 소켓 연결 성공 (부하 수치 유지)'}
+            ${isLoadIncreased ? '🎉 uWebSockets 브라우저 웹소켓 연결 및 부하 +1 검증 성공!' : '⚠️ 웹소켓 연결 성공 (부하 수치 유지)'}
           </div>
           <div>- 생성 캔버스: <strong>#${testCid} (${newName})</strong></div>
+          <div>- C++ uWebSockets 포트: <strong>${wsPort}</strong> (ws://${wsHost}:${wsPort}/ws/canvas/${testCid})</div>
           <div>- C++ 실시간 부하 변화: <strong>${initialLoad}개 ➡️ ${afterLoad}개 (${afterLoad - initialLoad >= 0 ? '+' : ''}${afterLoad - initialLoad})</strong></div>
-          <div>- 할당 포트: RX <strong>${allocatedRxPort}</strong>, TX <strong>${allocatedTxPort}</strong> (${pingRes.data.latencyMs}ms)</div>
-          <div style="margin-top: 8px;">
+          <div style="margin-top: 8px; display: flex; gap: 6px;">
+            <button class="btn btn-warning" style="padding: 4px 10px; font-size: 0.75rem;" onclick="callDisconnectAccess()">
+              🔴 실시간 접속 중단 (WebSocket 종료 & 부하 -1)
+            </button>
             <button class="btn btn-danger" style="padding: 4px 10px; font-size: 0.75rem;" onclick="cleanupLoadTestCanvas(${testCid})">
-              🗑️ 테스트 캔버스 #${testCid} 삭제 및 부하 원복 (-1)
+              🗑️ 테스트 캔버스 #${testCid} 영구 삭제
             </button>
           </div>
         </div>
       `;
     }
-    logConsole('LOAD TEST SUCCESS', `캔버스 #${testCid} 생성 및 C++ 실시간 소켓 연결 완료 (부하: ${initialLoad} -> ${afterLoad})`);
+    logConsole('LOAD TEST SUCCESS', `캔버스 #${testCid} uWebSockets 연결 및 부하 증가 검증 완료 (${initialLoad} -> ${afterLoad})`);
   } catch (err) {
     logConsole('LOAD TEST ERROR', err.message);
+    if (testWs) {
+      try { testWs.close(); } catch (_) {}
+    }
     if (resultEl) {
       resultEl.innerHTML = `
         <div style="padding: 10px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 6px; color: #f87171;">
@@ -730,6 +891,406 @@ async function runFullE2ETest() {
       btn.disabled = false;
       btn.innerText = '▶️ 전체 자동 테스트 시작';
     }
+  }
+}
+
+// 6. WebSocket Broadcast Test (Multi-Client)
+let bcClients = []; // { id, userId, ws, messages: [], status }
+let bcNextId = 1;
+
+function bcAddClient(customUserId) {
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  const host = document.getElementById('bcWsHost').value || '127.0.0.1';
+  const port = document.getElementById('bcWsPort').value || '8001';
+  const userId = customUserId || Number(document.getElementById('bcUserId').value);
+
+  const clientId = bcNextId++;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?userId=${userId}`;
+
+  const client = {
+    id: clientId,
+    userId: userId,
+    canvasId: canvasId,
+    ws: null,
+    messages: [],
+    status: 'connecting',
+    wsUrl: wsUrl
+  };
+
+  bcClients.push(client);
+  bcRenderClients();
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    client.ws = ws;
+
+    ws.onopen = () => {
+      client.status = 'connected';
+      bcRenderClients();
+      bcUpdateSenderSelect();
+      logConsole('BROADCAST', `Client #${clientId} (User ${userId}) connected to Canvas #${canvasId}`);
+      const dcBtn = document.getElementById('bcDisconnectAllBtn');
+      if (dcBtn) dcBtn.disabled = false;
+    };
+
+    ws.onmessage = (event) => {
+      const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+      let parsed;
+      try { parsed = JSON.parse(event.data); } catch (_) { parsed = event.data; }
+      const entry = { time: timestamp, data: parsed, raw: event.data };
+      client.messages.push(entry);
+      // Keep only last 50 messages
+      if (client.messages.length > 50) client.messages.shift();
+      bcRenderClientMessages(clientId);
+    };
+
+    ws.onclose = (event) => {
+      client.status = 'closed';
+      client.closeCode = event.code;
+      bcRenderClients();
+      bcUpdateSenderSelect();
+      logConsole('BROADCAST', `Client #${clientId} disconnected (code: ${event.code})`);
+    };
+
+    ws.onerror = () => {
+      client.status = 'error';
+      bcRenderClients();
+      bcUpdateSenderSelect();
+    };
+  } catch (err) {
+    client.status = 'error';
+    bcRenderClients();
+    logConsole('BROADCAST ERROR', err.message);
+  }
+
+  // Auto-increment userId for next client
+  document.getElementById('bcUserId').value = userId + 1;
+
+  return client;
+}
+
+function bcRemoveClient(clientId) {
+  const idx = bcClients.findIndex(c => c.id === clientId);
+  if (idx < 0) return;
+  const client = bcClients[idx];
+  if (client.ws && client.ws.readyState === WebSocket.OPEN) {
+    client.ws.close(1000, 'User closed from testbed');
+  }
+  bcClients.splice(idx, 1);
+  bcRenderClients();
+  bcUpdateSenderSelect();
+  if (bcClients.length === 0) {
+    const dcBtn = document.getElementById('bcDisconnectAllBtn');
+    if (dcBtn) dcBtn.disabled = true;
+  }
+}
+
+function bcDisconnectAll() {
+  [...bcClients].forEach(c => {
+    if (c.ws && c.ws.readyState === WebSocket.OPEN) {
+      c.ws.close(1000, 'Disconnect all from testbed');
+    }
+  });
+  bcClients = [];
+  bcNextId = 1;
+  bcRenderClients();
+  bcUpdateSenderSelect();
+  const dcBtn = document.getElementById('bcDisconnectAllBtn');
+  if (dcBtn) dcBtn.disabled = true;
+  logConsole('BROADCAST', 'All broadcast test clients disconnected.');
+}
+
+function bcSendMessage(senderId, messageText) {
+  const sId = senderId || document.getElementById('bcSenderSelect').value;
+  const msg = messageText || document.getElementById('bcMessageInput').value;
+  if (!sId) { alert('보내는 클라이언트를 선택하세요.'); return false; }
+  if (!msg) { alert('메시지를 입력하세요.'); return false; }
+
+  const client = bcClients.find(c => c.id === Number(sId));
+  if (!client || !client.ws || client.ws.readyState !== WebSocket.OPEN) {
+    alert('선택한 클라이언트가 연결되어 있지 않습니다.');
+    return false;
+  }
+
+  client.ws.send(msg);
+  // Add to sender's log as "sent"
+  const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+  let parsed;
+  try { parsed = JSON.parse(msg); } catch (_) { parsed = msg; }
+  client.messages.push({ time: timestamp, data: parsed, raw: msg, sent: true });
+  if (client.messages.length > 50) client.messages.shift();
+  bcRenderClientMessages(client.id);
+
+  logConsole('BROADCAST SEND', `Client #${client.id} (User ${client.userId}) sent: ${msg}`);
+  return true;
+}
+
+function bcSendPing(senderId) {
+  const sId = senderId || document.getElementById('bcSenderSelect').value;
+  if (!sId) { alert('보내는 클라이언트를 선택하세요.'); return; }
+  const msg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+  document.getElementById('bcMessageInput').value = msg;
+  bcSendMessage(sId, msg);
+}
+
+function bcUpdateSenderSelect() {
+  const sel = document.getElementById('bcSenderSelect');
+  if (!sel) return;
+  const prevVal = sel.value;
+  sel.innerHTML = '<option value="" disabled>클라이언트 선택</option>';
+  bcClients.filter(c => c.status === 'connected').forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = `Client #${c.id} (User ${c.userId})`;
+    sel.appendChild(opt);
+  });
+  if (prevVal) sel.value = prevVal;
+}
+
+function bcRenderClients() {
+  const grid = document.getElementById('bcClientsGrid');
+  if (!grid) return;
+
+  if (bcClients.length === 0) {
+    grid.innerHTML = `
+      <div class="card" style="border-style: dashed; border-color: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; min-height: 200px;">
+        <div style="text-align: center; color: var(--text-dim);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">📡</div>
+          <p>위의 "클라이언트 추가 연결" 버튼으로 WebSocket 클라이언트를 2개 이상 추가하세요.</p>
+          <p style="font-size: 0.78rem; margin-top: 4px;">또는 "자동 브로드캐스트 테스트"로 전체 흐름을 한 번에 검증할 수 있습니다.</p>
+        </div>
+      </div>`;
+    return;
+  }
+
+  grid.innerHTML = bcClients.map(c => {
+    const statusColors = {
+      connecting: { bg: 'rgba(245, 158, 11, 0.1)', border: '#f59e0b', icon: '🟡', text: '연결 중...' },
+      connected: { bg: 'rgba(16, 185, 129, 0.1)', border: '#10b981', icon: '🟢', text: '연결됨' },
+      closed: { bg: 'rgba(107, 114, 128, 0.1)', border: '#6b7280', icon: '⚪', text: `종료 (${c.closeCode || ''})` },
+      error: { bg: 'rgba(239, 68, 68, 0.1)', border: '#ef4444', icon: '🔴', text: '오류' }
+    };
+    const s = statusColors[c.status] || statusColors.error;
+
+    return `
+      <div class="card" style="border-color: ${s.border}; position: relative;">
+        <button onclick="bcRemoveClient(${c.id})" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1rem; padding: 4px;" title="연결 종료">✕</button>
+        <div class="card-title" style="font-size: 0.95rem;">
+          ${s.icon} Client #${c.id}
+          <span style="font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-left: auto; margin-right: 20px;">User ${c.userId} · Canvas #${c.canvasId}</span>
+        </div>
+        <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">
+          <span style="padding: 2px 8px; border-radius: 10px; background: ${s.bg}; border: 1px solid ${s.border}; font-weight: 600;">${s.text}</span>
+        </div>
+        <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 8px; word-break: break-all;">
+          ${c.wsUrl}
+        </div>
+        <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto; font-family: var(--font-mono); font-size: 0.78rem;" id="bcLog_${c.id}">
+          ${bcRenderMessagesHtml(c)}
+        </div>
+        <div style="margin-top: 8px; display: flex; gap: 6px;">
+          <button class="btn btn-outline" style="flex: 1; padding: 4px 8px; font-size: 0.72rem;" onclick="bcClearMessages(${c.id})">로그 지우기</button>
+          <button class="btn btn-outline" style="flex: 1; padding: 4px 8px; font-size: 0.72rem;" onclick="bcSendPing(${c.id})">Ping 전송</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function bcRenderMessagesHtml(client) {
+  if (client.messages.length === 0) {
+    return '<span style="color: #6b7280;">수신된 메시지 없음</span>';
+  }
+  return client.messages.map(m => {
+    if (m.sent) {
+      return `<div style="color: #a78bfa; margin-bottom: 3px;"><span style="color: #6b7280;">[${m.time}]</span> <span style="color: #c084fc; font-weight: 600;">📤 SENT:</span> ${typeof m.data === 'object' ? JSON.stringify(m.data) : m.raw}</div>`;
+    }
+    const typeStr = (typeof m.data === 'object' && m.data.type) ? m.data.type : 'message';
+    const isInitItems = typeStr === 'init_items';
+    const isPong = typeStr === 'pong';
+    const color = isInitItems ? '#60a5fa' : isPong ? '#34d399' : '#f59e0b';
+    return `<div style="color: ${color}; margin-bottom: 3px;"><span style="color: #6b7280;">[${m.time}]</span> <span style="font-weight: 600;">📥 ${typeStr}:</span> ${typeof m.data === 'object' ? JSON.stringify(m.data) : m.raw}</div>`;
+  }).join('');
+}
+
+function bcRenderClientMessages(clientId) {
+  const logEl = document.getElementById(`bcLog_${clientId}`);
+  const client = bcClients.find(c => c.id === clientId);
+  if (!logEl || !client) return;
+  logEl.innerHTML = bcRenderMessagesHtml(client);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function bcClearMessages(clientId) {
+  const client = bcClients.find(c => c.id === clientId);
+  if (client) {
+    client.messages = [];
+    bcRenderClientMessages(clientId);
+  }
+}
+
+// Automated Broadcast Test
+async function bcRunAutoTest() {
+  const btn = document.getElementById('bcAutoTestBtn');
+  const resultEl = document.getElementById('bcAutoTestResult');
+  if (btn) { btn.disabled = true; btn.innerText = '⏳ 테스트 실행 중...'; }
+  if (resultEl) { resultEl.style.display = 'block'; }
+
+  // Disconnect existing clients
+  bcDisconnectAll();
+  await sleep(300);
+
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  const results = [];
+
+  try {
+    // Step 1: Connect 3 clients
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">1/5단계: 3개 클라이언트 연결 중...</p></div>';
+
+    const c1 = bcAddClient(25);
+    await sleep(200);
+    const c2 = bcAddClient(26);
+    await sleep(200);
+    const c3 = bcAddClient(27);
+
+    // Wait for all to connect
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('클라이언트 연결 시간 초과 (5초)')), 5000);
+      const check = setInterval(() => {
+        const allConnected = [c1, c2, c3].every(c => c.status === 'connected');
+        const anyError = [c1, c2, c3].some(c => c.status === 'error');
+        if (allConnected) { clearInterval(check); clearTimeout(timeout); resolve(); }
+        if (anyError) { clearInterval(check); clearTimeout(timeout); reject(new Error('클라이언트 연결 실패')); }
+      }, 100);
+    });
+
+    results.push({ step: '1. 3개 클라이언트 연결', status: 'success', detail: `Client #${c1.id}, #${c2.id}, #${c3.id} 연결 완료` });
+
+    // Step 2: Verify init_items received by all
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">2/5단계: init_items 수신 확인 중...</p></div>';
+    await sleep(500);
+
+    const allReceivedInit = [c1, c2, c3].every(c =>
+      c.messages.some(m => typeof m.data === 'object' && m.data.type === 'init_items')
+    );
+    results.push({
+      step: '2. init_items 초기 메시지 수신',
+      status: allReceivedInit ? 'success' : 'warning',
+      detail: allReceivedInit ? '3개 클라이언트 모두 init_items 수신 ✓' : '일부 클라이언트가 init_items를 수신하지 못함'
+    });
+
+    // Step 3: Client 1 sends a broadcast message
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">3/5단계: Client #' + c1.id + '에서 브로드캐스트 메시지 전송 중...</p></div>';
+
+    const testMsg = JSON.stringify({
+      type: 'draw',
+      action: 'broadcast_test',
+      shape: 'circle',
+      x: 150,
+      y: 250,
+      color: '#ff6600',
+      timestamp: Date.now(),
+      sender_client: c1.id
+    });
+
+    // Clear previous messages to only check broadcast
+    c2.messages = [];
+    c3.messages = [];
+
+    c1.ws.send(testMsg);
+    const sendTs = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    c1.messages.push({ time: sendTs, data: JSON.parse(testMsg), raw: testMsg, sent: true });
+    bcRenderClientMessages(c1.id);
+
+    results.push({ step: '3. Client #' + c1.id + ' 브로드캐스트 전송', status: 'success', detail: `draw 타입 메시지 전송: ${testMsg.substring(0, 80)}...` });
+
+    // Step 4: Verify Client 2 & 3 received the broadcast
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/5단계: Client #' + c2.id + ', #' + c3.id + '에서 브로드캐스트 수신 확인 중...</p></div>';
+
+    await sleep(800);
+
+    const c2Received = c2.messages.some(m =>
+      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
+    );
+    const c3Received = c3.messages.some(m =>
+      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
+    );
+    // Sender should NOT receive their own broadcast (uWebSockets publish excludes sender)
+    const c1NotReceived = !c1.messages.some(m =>
+      !m.sent && typeof m.data === 'object' && m.data.action === 'broadcast_test'
+    );
+
+    const broadcastOk = c2Received && c3Received;
+    results.push({
+      step: '4. 브로드캐스트 수신 검증',
+      status: broadcastOk ? 'success' : 'failed',
+      detail: [
+        `Client #${c2.id}: ${c2Received ? '✅ 수신 성공' : '❌ 미수신'}`,
+        `Client #${c3.id}: ${c3Received ? '✅ 수신 성공' : '❌ 미수신'}`,
+        `Client #${c1.id} (발신자): ${c1NotReceived ? '✅ 자기 메시지 미수신 (정상)' : '⚠️ 자기 메시지 수신됨'}`
+      ].join(' | ')
+    });
+
+    // Step 5: Ping/Pong test
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">5/5단계: Ping/Pong 응답 검증 중...</p></div>';
+
+    c2.messages = [];
+    const pingMsg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+    c2.ws.send(pingMsg);
+    c2.messages.push({ time: sendTs, data: JSON.parse(pingMsg), raw: pingMsg, sent: true });
+    bcRenderClientMessages(c2.id);
+
+    await sleep(500);
+
+    const pongReceived = c2.messages.some(m =>
+      typeof m.data === 'object' && m.data.type === 'pong'
+    );
+    results.push({
+      step: '5. Ping/Pong 응답',
+      status: pongReceived ? 'success' : 'failed',
+      detail: pongReceived ? `Client #${c2.id}에서 pong 응답 수신 ✓` : `Client #${c2.id}에서 pong 미수신`
+    });
+
+    // Render final results
+    const allPassed = results.every(r => r.status === 'success');
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="card" style="border-color: ${allPassed ? '#10b981' : '#f59e0b'};">
+          <div class="card-title" style="color: ${allPassed ? '#34d399' : '#f59e0b'};">
+            ${allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 브로드캐스트 테스트 결과'}
+          </div>
+          <table>
+            <thead><tr><th>단계</th><th>결과</th><th>상세</th></tr></thead>
+            <tbody>
+              ${results.map(r => `
+                <tr>
+                  <td style="white-space: nowrap;">${r.step}</td>
+                  <td><span class="step-badge badge-${r.status}" style="font-size: 0.72rem;">${r.status === 'success' ? '✅ 성공' : r.status === 'warning' ? '⚠️ 경고' : '❌ 실패'}</span></td>
+                  <td style="font-size: 0.78rem; color: var(--text-muted);">${r.detail}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <button class="btn btn-danger" style="font-size: 0.78rem;" onclick="bcDisconnectAll()">⛔ 전체 연결 종료</button>
+            <button class="btn btn-outline" style="font-size: 0.78rem;" onclick="bcRunAutoTest()">🔄 재실행</button>
+          </div>
+        </div>`;
+    }
+
+    logConsole('BROADCAST TEST', allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 일부 단계 실패');
+
+  } catch (err) {
+    logConsole('BROADCAST TEST ERROR', err.message);
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="card" style="border-color: #ef4444;">
+          <div class="card-title" style="color: #f87171;">❌ 브로드캐스트 테스트 실패</div>
+          <p style="color: var(--text-muted);">${err.message}</p>
+          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버가 포트 8001에서 실행 중인지 확인하세요.</p>
+        </div>`;
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = '🧪 자동 브로드캐스트 테스트'; }
   }
 }
 

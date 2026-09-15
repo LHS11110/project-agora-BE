@@ -14,6 +14,9 @@ public:
     // Returns pair of <redis_ip, redis_port>
     std::pair<std::string, int> getAssignedRedis(int canvasId);
 
+    // Updates canvas_info: is_cached=0, redis_ip=NULL, redis_port=NULL, server_ip=NULL, server_port=NULL
+    bool updateCanvasUncached(int canvasId);
+
 private:
     std::string host_;
     int port_;

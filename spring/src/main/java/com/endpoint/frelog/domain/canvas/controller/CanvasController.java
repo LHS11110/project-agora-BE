@@ -1,8 +1,10 @@
 package com.endpoint.frelog.domain.canvas.controller;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
+import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
+import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.service.CanvasResourceService;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
 import com.endpoint.frelog.global.security.CustomUserDetails;
@@ -221,6 +223,17 @@ public class CanvasController {
             @Valid @RequestBody CanvasUpdateDtos.InitGroupRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         return ResponseEntity.ok(canvasService.updateInitGroup(canvasId, request.initGroup(), currentUser));
+    }
+
+    /**
+     * 캔버스 캐시 상태 업데이트 (PATCH /api/canvases/{canvasId}/cache)
+     */
+    @PatchMapping("/{canvasId}/cache")
+    public ResponseEntity<CanvasResponse> updateCanvasCache(
+            @PathVariable Integer canvasId,
+            @RequestBody UpdateCanvasCacheRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        return ResponseEntity.ok(canvasService.updateCanvasCache(canvasId, request, currentUser));
     }
 
     /**

@@ -1,20 +1,115 @@
-# Project Agora BE (Backend)
+# Project Agora Backend (BE)
 
-`Project Agora`의 백엔드 서비스 저장소입니다.  
-`~/github/project-agora-DB`의 MS SQL Server 데이터베이스 스키마와 연동되어 회원 관리 및 JWT 기반 인증 기능을 제공합니다.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Java: 26](https://img.shields.io/badge/Java-26-orange.svg)](https://openjdk.org/)
+[![Spring Boot: 4.1.1](https://img.shields.io/badge/Spring%20Boot-4.1.1-brightgreen.svg)](https://spring.io/projects/spring-boot)
+[![C++: 17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/)
+
+**Project Agora**의 대규모 실시간 동시 협업 캔버스 백엔드 시스템입니다.  
+Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층과 C++ 기반 초고성능 WebSocket 실시간 이벤트 브로드캐스트 엔진 계층으로 분리되어 있으며, MS SQL Server, Redis Stack, Elasticsearch와 긴밀히 연동되어 고성능 분산 캐싱과 영구 데이터 동기화를 보장합니다.
 
 ---
 
-## 1. 데이터베이스(MSSQL) 접속 설정 가이드
+## 목차 (Table of Contents)
 
-요구사항에 따라 **데이터베이스 접속 호스트(IP)와 포트를 별도로 손쉽게 관리**할 수 있도록 분리 구성되어 있습니다.
+1. [시스템 아키텍처 개요](#1-시스템-아키텍처-개요)
+2. [기술 스택](#2-기술-스택)
+3. [핵심 기능 및 라이프사이클](#3-핵심-기능-및-라이프사이클)
+4. [데이터베이스 및 인프라 설정 가이드](#4-데이터베이스-및-인프라-설정-가이드)
+5. [주요 API 명세](#5-주요-api-명세)
+6. [실시간 인터랙티브 테스트베드 (JSP)](#6-실시간-인터랙티브-테스트베드-jsp)
+7. [빌드, 테스트 및 실행 가이드](#7-빌드-테스트-및-실행-가이드)
+8. [오픈소스 라이선스 및 규정 준수 고지](#8-오픈소스-라이선스-및-규정-준수-고지)
+
+---
+
+## 1. 시스템 아키텍처 개요
+
+```
+                       [ Web Browser / Client ]
+                                  │
+          ┌───────────────────────┴───────────────────────┐
+          │ (HTTP REST / JSP)                             │ (WebSocket :8001)
+          ▼                                               ▼
+┌─────────────────────────┐                     ┌─────────────────────────┐
+│   Spring Boot Server    │   Internal HTTP     │    C++ Real-Time Server │
+│   (Java 26 / Port 8080) │────────────────────>│    (uWebSockets / :8000)│
+│                         │<────────────────────│                         │
+│  - JWT 인증 및 회원 관리 │  Lifecycle Cleanup  │  - CanvasPool 메모리 관리│
+│  - P2C 로드밸런싱       │   (User Count: 0)   │  - 초고속 WS 브로드캐스트│
+│  - 캔버스 라이프사이클  │                     │  - 실시간 세션/채널 추적 │
+└──────────┬──────────────┘                     └────────────┬────────────┘
+           │                                                 │
+     ┌─────┴────────────────────────┐                        │
+     ▼                              ▼                        ▼
+┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
+│  MS SQL Server   │      │  Elasticsearch   │      │   Redis Stack    │
+│  (Users/Cache/   │      │  (캔버스 문서 영구│      │  (인메모리 캐시,  │
+│   Servers/Redis) │      │   보관 및 검색)   │      │   JSON & Search) │
+└──────────────────┘      └──────────────────┘      └──────────────────┘
+```
+
+- **Spring Boot API Server (`spring/`)**: REST API 제공, 회원 관리, JWT 토큰 발급, 캔버스 메타데이터 제어, 서버 및 Redis 인스턴스 풀 관리(P2C 알고리즘), 데이터 스토리지 간 동기화 오케스트레이션.
+- **C++ WebSocket Server (`cpp/`)**: uWebSockets 및 uSockets 기반 이벤트 기반 비동기 I/O. 캔버스별 메모리 풀(`CanvasPool`)과 소켓 채널(`SocketChannel`)을 유지하며 참여자 간 메시지를 제로카피급 속도로 실시간 브로드캐스트.
+- **MS SQL Server**: `users`, `server_info`, `redis_info`, `canvas_cache` 테이블을 관리하여 영구 메타데이터와 현재 캐시 배정 상태 추적.
+- **Redis Stack**: RedisJSON을 이용해 실시간 캔버스 데이터를 빠른 인메모리 포맷으로 유지.
+- **Elasticsearch**: 캔버스의 전체 이력 및 검색 가능한 문서를 영구 보관.
+
+---
+
+## 2. 기술 스택
+
+### Backend & Real-Time Engine
+- **Java**: OpenJDK 26
+- **Framework**: Spring Boot 4.1.1, Spring Data JPA, Spring Security, Apache Tomcat Embed (JSP Engine)
+- **C++**: C++17, uWebSockets, uSockets, cpp-httplib, FreeTDS (`sybdb`), zlib, nlohmann/json
+- **Database & Storage**: MS SQL Server 2022, Redis Stack (RedisJSON / RediSearch), Elasticsearch 8.15.0
+- **Security & Tokens**: JJWT (0.12.6), BCrypt Password Encoder
+- **Build Tools**: Gradle 8.x (Java), CMake 3.16+ (C++)
+
+---
+
+## 3. 핵심 기능 및 라이프사이클
+
+### (1) 캔버스 초기 생성 및 상태
+- 최초 캔버스 생성 시 MS SQL의 `canvas_cache`에 등록되며 기본값은 다음과 같습니다:
+  - `is_cached = false`
+  - `redis_ip = null`, `redis_port = null`
+  - `server_ip = null`, `server_port = null`
+
+### (2) 클라이언트 접속 진입 (`POST /api/access`)
+1. 클라이언트가 캔버스 ID로 접속 요청.
+2. Spring Boot가 **P2C (Power of Two Choices)** 알고리즘을 통해 부하가 가장 적은 C++ 서버와 Redis 인스턴스를 선정.
+3. Redis에 캔버스 데이터가 없으면 Elasticsearch에서 문서를 조회하여 Redis에 캐싱.
+4. C++ 서버의 `/init_canvas` 엔드포인트를 호출하여 C++ 메모리 풀(`CanvasPool`)에 캔버스를 로드.
+5. MS SQL `canvas_cache`의 캐시 상태 갱신: `is_cached = true`, `server_ip`, `server_port`, `redis_ip`, `redis_port`.
+6. 클라이언트에게 할당된 WebSocket 접속 정보(`server_ip`, `ws_port`) 및 포트 정보 반환.
+
+### (3) 실시간 협업 및 미세 변경 반영 (`PATCH /api/canvases/{canvasId}/granular`)
+- 캔버스 속성이나 세부 필드가 변경되면 Redis와 Elasticsearch에 반영함과 동시에, C++ 서버의 `/update_canvas`를 호출하여 현재 채널에 접속 중인 모든 웹소켓 클라이언트에게 델타 변경점을 실시간 브로드캐스트합니다.
+
+### (4) 활성 사용자 0명 자동 해제 (Teardown & Cleanup Lifecycle)
+1. **웹소켓 닫힘 감지**: C++ WebSocket 서버에서 클라이언트의 연결이 종료되면 해당 캔버스의 활성 연결 수를 즉시 검사.
+2. **Java API 자동 통지**: 캔버스 내 활성 사용자가 0명이 되면 C++ 서버가 백그라운드 비동기로 Spring Boot의 `POST /api/canvases/cleanup/user-count-zero` 엔드포인트를 호출.
+3. **C++ 메모리 해제**: C++ `CanvasPool`에서 캔버스를 언로드하여 서버 리소스 회수.
+4. **Redis -> Elasticsearch 최종 동기화**: Redis에 남아있는 최신 캔버스 JSON 데이터를 Elasticsearch에 저장하여 데이터 유실 방지.
+5. **MS SQL 상태 복원**: MS SQL `canvas_cache` 테이블의 레코드를 업데이트:
+   - `is_cached = false`
+   - `server_ip = 'none'`, `server_port = 'none'`
+   - `redis_ip = 'none'`, `redis_port = 'none'`
+
+---
+
+## 4. 데이터베이스 및 인프라 설정 가이드
 
 ### 설정 파일 위치
-- [application.properties](file:///home/ubuntu/github/project-agora-BE/spring/src/main/resources/application.properties)
+- Spring: [spring/src/main/resources/application.properties](file:///home/ubuntu/github/project-agora-BE/spring/src/main/resources/application.properties)
+- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 8000 0.0.0.0`)
 
-### 관리 프로퍼티 및 환경변수 매핑
+### MS SQL 접속 환경 변수 매핑
+요구사항에 따라 **데이터베이스 IP와 포트를 손쉽게 분리 변경**할 수 있도록 설계되었습니다:
 
-| 항목 | 설정 프로퍼티 (`application.properties`) | 환경 변수 (Environment Variable) | 기본값 |
+| 항목 | 설정 프로퍼티 (`application.properties`) | 환경 변수 | 기본값 |
 | :--- | :--- | :--- | :--- |
 | **DB IP (호스트)** | `app.db.host` | `DB_HOST` | `127.0.0.1` |
 | **DB 포트** | `app.db.port` | `DB_PORT` | `1433` |
@@ -22,188 +117,154 @@
 | **DB 사용자** | `app.db.username` | `DB_USER` | `agora_user` |
 | **DB 비밀번호** | `app.db.password` | `DB_PASSWORD` | `AgoraUserSecret@Passw0rd!2026` |
 
-Spring DataSource URL은 위 분리된 프로퍼티를 조합하여 자동 구성됩니다:
-```properties
-spring.datasource.url=jdbc:sqlserver://${app.db.host}:${app.db.port};databaseName=${app.db.name};encrypt=false;trustServerCertificate=true
-```
+### Elasticsearch 접속 설정
 
-### 실행 시 환경 변수로 IP/포트 변경 예시
-```bash
-# 원격 또는 다른 IP/Port의 MSSQL 서버로 실행
-DB_HOST=192.168.1.100 DB_PORT=14333 ./gradlew bootRun
-```
+| 항목 | 설정 프로퍼티 | 환경 변수 | 기본값 |
+| :--- | :--- | :--- | :--- |
+| **ES 호스트** | `app.elasticsearch.host` | `ES_HOST` | `127.0.0.1` |
+| **ES 포트** | `app.elasticsearch.port` | `ES_PORT` | `9200` |
 
 ---
 
-## 2. 데이터베이스 스키마 (`users` 테이블)
+## 5. 주요 API 명세
 
-`project-agora-DB`의 스키마와 1:1로 매핑되는 [User](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/domain/user/entity/User.java) 엔티티가 구현되어 있습니다.
+### (1) 회원 및 인증 API
 
-- `user_id` (PK, IDENTITY)
-- `email` (NVARCHAR(255), UNIQUE, NOT NULL)
-- `password_hash` (NVARCHAR(255), BCrypt 암호화 저장)
-- `nickname` (NVARCHAR(100), NOT NULL)
-- `role` (VARCHAR(20), `ROLE_USER`, `ROLE_ADMIN`)
-- `status` (VARCHAR(20), `ACTIVE`, `SUSPENDED`, `WITHDRAWN`)
-- `oauth_provider` / `oauth_id` (NVARCHAR, 소셜 로그인 연동 대비)
-- `last_login_at` (DATETIME2, 로그인 성공 시 자동 갱신)
-- `created_at` / `updated_at` (DATETIME2, 자동 감사)
+- **회원가입**: `POST /api/auth/signup`
+  - Body: `{"email": "user@agora.com", "password": "password1234", "nickname": "아고라"}`
+  - Response: `201 Created`
+- **로그인**: `POST /api/auth/login`
+  - Body: `{"email": "user@agora.com", "password": "password1234"}`
+  - Response: `200 OK` (`accessToken`, `user` 객체 반환)
+- **내 정보 조회**: `GET /api/auth/me` (헤더: `Authorization: Bearer <token>`)
+- **인증 헬스체크**: `GET /api/auth/health`
 
----
+### (2) 클라이언트 Access API
 
-## 3. 인증 API 명세
-
-### (1) 회원가입 (`POST /api/auth/signup`)
-- **Request Body**:
-  ```json
-  {
-    "email": "user@agora.com",
-    "password": "password1234",
-    "nickname": "아고라유저"
-  }
-  ```
-- **Response (201 Created)**:
-  ```json
-  {
-    "userId": 1,
-    "email": "user@agora.com",
-    "nickname": "아고라유저",
-    "role": "ROLE_USER",
-    "status": "ACTIVE",
-    "lastLoginAt": null,
-    "createdAt": "2026-09-09T13:30:00"
-  }
-  ```
-
-### (2) 로그인 (`POST /api/auth/login`)
-- **Request Body**:
-  ```json
-  {
-    "email": "user@agora.com",
-    "password": "password1234"
-  }
-  ```
-- **Response (200 OK)**:
-  ```json
-  {
-    "tokenType": "Bearer",
-    "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
-    "user": {
-      "userId": 1,
-      "email": "user@agora.com",
-      "nickname": "아고라유저",
-      "role": "ROLE_USER",
-      "status": "ACTIVE",
-      "lastLoginAt": "2026-09-09T13:35:00",
-      "createdAt": "2026-09-09T13:30:00"
-    }
-  }
-  ```
-- **예외 응답**:
-  - 비밀번호 불일치 / 사용자 미존재: `401 Unauthorized` (`AUTH_001`)
-  - 정지 계정 (`SUSPENDED`): `403 Forbidden` (`AUTH_002`)
-  - 탈퇴 계정 (`WITHDRAWN`): `403 Forbidden` (`AUTH_003`)
-
-### (3) 내 정보 조회 (`GET /api/auth/me`)
-- **Header**: `Authorization: Bearer <accessToken>`
-- **Response (200 OK)**:
-  ```json
-  {
-    "userId": 1,
-    "email": "user@agora.com",
-    "nickname": "아고라유저",
-    "role": "ROLE_USER",
-    "status": "ACTIVE",
-    "lastLoginAt": "2026-09-09T13:35:00",
-    "createdAt": "2026-09-09T13:30:00"
-  }
-  ```
-
-### (4) 헬스체크 (`GET /api/auth/health`)
-- 인증 없이 접근 가능 (200 OK)
-
----
-
-## 4. Canvas 관리 및 캐시 API 명세
-
-`~/github/project-agora-DB`의 `canvas_cache` 테이블과 연동되어 캔버스 메타데이터 및 캐시/서버 인스턴스 할당 상태를 관리합니다.  
-**요구사항 반영: 캔버스 최초 생성 시 `redis_ip`, `server_ip`는 항상 `none(null)`으로 시작하며 `is_cached`는 `false`로 등록됩니다.**
-
-### (1) 캔버스 생성 (`POST /api/canvases`)
-- **Request Body**:
-  ```json
-  {
-    "canvasName": "Agora Shared Canvas",
-    "canvasId": 1001
-  }
-  ```
-  *(canvasId 생략 시 DB 내 `MAX(canvas_id) + 1`로 자동 채번)*
-- **Response (201 Created)**:
-  ```json
-  {
-    "canvasId": 1001,
-    "canvasName": "Agora Shared Canvas",
-    "redisIp": null,
-    "redisPort": null,
-    "serverIp": null,
-    "serverPort": null,
-    "isCached": false,
-    "createdAt": "2026-09-09T14:00:00",
-    "updatedAt": "2026-09-09T14:00:00"
-  }
-  ```
-
-### (2) 전체 캔버스 목록 조회 (`GET /api/canvases`)
-- **Response (200 OK)**:
-  ```json
-  [
+- **캔버스 접속 진입**: `POST /api/access`
+  - Headers: `Authorization: Bearer <token>`
+  - Body: `{"canvasId": 1001}`
+  - Response (`200 OK`):
+    ```json
     {
       "canvasId": 1001,
-      "canvasName": "Agora Shared Canvas",
-      "redisIp": null,
-      "redisPort": null,
-      "serverIp": null,
-      "serverPort": null,
-      "isCached": false,
-      "createdAt": "2026-09-09T14:00:00",
-      "updatedAt": "2026-09-09T14:00:00"
+      "serverIp": "127.0.0.1",
+      "serverPort": 8000,
+      "wsPort": 8001,
+      "redisIp": "127.0.0.1",
+      "redisPort": 6379,
+      "status": "ALLOCATED"
     }
-  ]
-  ```
+    ```
 
-### (3) 캔버스 단건 조회 (`GET /api/canvases/{canvasId}`)
-- **Response (200 OK)**: 단건 캔버스 캐시 객체 반환
-- 존재하지 않을 시: `404 Not Found` (`CANVAS_001`)
+### (3) 캔버스 관리 및 동기화 API
 
-### (4) 캔버스 캐시 상태 업데이트 (`PATCH /api/canvases/{canvasId}/cache`)
-- **Request Body**:
-  ```json
-  {
-    "isCached": true,
-    "redisIp": "127.0.0.1",
-    "redisPort": "6379",
-    "serverIp": "127.0.0.1",
-    "serverPort": "8000"
-  }
-  ```
-- **Response (200 OK)**: 갱신된 캔버스 캐시 정보 반환
+- **캔버스 생성**: `POST /api/canvases`
+  - Body: `{"canvasName": "Team Agora", "canvasId": 1001}`
+- **전체 목록 조회**: `GET /api/canvases`
+- **단건 조회**: `GET /api/canvases/{canvasId}`
+- **캐시 수동 업데이트**: `PATCH /api/canvases/{canvasId}/cache`
+- **미세 필드 동기화 (Granular Reflection)**: `PATCH /api/canvases/{canvasId}/granular`
+  - Body: `{"title": "Updated Title", "metadata": {"status": "active"}}`
+  - Redis 및 ES를 업데이트하고 연결된 C++ 서버로 실시간 브로드캐스트 전파.
+- **사용자 0명 정리 콜백 (내부 호출)**: `POST /api/canvases/cleanup/user-count-zero`
+  - Body: `{"canvasId": 1001}`
+  - C++ CanvasPool 해제, Redis -> ES 최종 동기화, MSSQL `is_cached = false` 및 IP/Port `'none'` 처리.
 
-### (5) 캔버스 삭제 (`DELETE /api/canvases/{canvasId}`)
-- **Response**: `204 No Content`
+### (4) C++ 실시간 서버 내부 HTTP 엔드포인트 (:8000)
+
+- `POST /init_canvas`: `{"canvas_id": 1001, "redis_ip": "127.0.0.1", "redis_port": 6379}`
+- `POST /update_canvas`: `{"canvas_id": 1001, "payload": {...}}` (등록된 웹소켓에 즉시 브로드캐스트)
+- `POST /delete_canvas`: `{"canvas_id": 1001}`
+- `GET /health`: 서버 상태 확인
+
+### (5) C++ 실시간 WebSocket 엔드포인트 (:8001)
+
+- `ws://<server_ip>:8001/ws?canvasId=1001&userId=1`
+- 동일 `canvasId`로 연결된 모든 소켓 세션 간 양방향 실시간 메시지 브로드캐스트 지원.
 
 ---
 
-## 5. 빌드 및 테스트 실행
+## 6. 실시간 인터랙티브 테스트베드 (JSP)
+
+브라우저에서 Agora 백엔드의 전체 파이프라인과 웹소켓 브로드캐스트를 직관적으로 테스트할 수 있는 내장 테스트베드를 제공합니다.
+
+- **접속 URL**:
+  - `http://localhost:8080/test.jsp`
+  - `http://localhost:8080/test`
+- **테스트베드 기능**:
+  1. **인증 관리**: 원클릭 테스트 계정 로그인 및 JWT 발급 상태 표시.
+  2. **서버 & Redis 인스턴스 관리**: C++ 서버 및 Redis 정보 등록/조회.
+  3. **캔버스 라이프사이클 테스트**:
+     - 캔버스 생성 -> Access 진입(P2C 서버 할당) -> Granular 수정 -> 활성 사용자 0명 자동 해제 검증.
+  4. **듀얼 웹소켓 브로드캐스트 검증 (Dual WebSocket Clients)**:
+     - **클라이언트 A**와 **클라이언트 B**를 독립적으로 연결.
+     - 클라이언트 A에서 전송한 메시지가 C++ 웹소켓 서버를 거쳐 클라이언트 B로 정상 브로드캐스트되는지 양방향 패킷 로그로 실시간 확인.
+     - Ping / Pong 응답 지연 시간(ms) 실시간 측정.
+
+---
+
+## 7. 빌드, 테스트 및 실행 가이드
+
+### (1) Java Spring Boot Server
 
 ```bash
 cd spring
 
-# 테스트 전체 실행 (32개 테스트 통과)
+# 1. 전체 단위 및 통합 테스트 실행 (CanvasServiceTest 등 30+ 테스트)
 ./gradlew test
 
-# 실행 가능한 jar 빌드
+# 2. 실행 가능한 Jar 파일 빌드
 ./gradlew bootJar
 
-# 애플리케이션 실행 (웹 플레이그라운드 http://localhost:8080/ 포함)
+# 3. 개발 서버 실행 (포트 8080)
 ./gradlew bootRun
+
+# (선택) 환경 변수를 통한 DB 호스트 변경 실행 예시
+DB_HOST=127.0.0.1 DB_PORT=1433 ./gradlew bootRun
 ```
+
+### (2) C++ Real-Time Server
+
+```bash
+cd cpp
+
+# 1. 빌드 디렉터리 생성 및 CMake 구성
+cmake -B build -S .
+
+# 2. 빌드 실행 (uSockets 및 agora_cpp_server 컴파일)
+cmake --build build
+
+# 3. 서버 실행 (포트 8000 REST, 포트 8001 WebSocket 수신)
+./build/agora_cpp_server 8000 0.0.0.0
+```
+
+---
+
+## 8. 오픈소스 라이선스 및 규정 준수 고지
+
+`Project Agora Backend`는 **MIT License**로 배포됩니다.  
+본 프로젝트는 다양한 오픈소스 소프트웨어(OSS) 라이브러리를 포함하고 있으며, 각 라이브러리의 라이선스 규정을 엄격히 준수합니다.
+
+상세한 라이선스 전문 및 고지 사항은 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) 및 [LICENSE](LICENSE) 파일에서 확인할 수 있습니다.
+
+### 주요 외부 라이브러리 및 라이선스 요약
+
+| 라이브러리 / 컴포넌트 | 적용 영역 | 라이선스 | 저작권자 |
+| :--- | :--- | :--- | :--- |
+| **uWebSockets** | C++ 실시간 웹소켓 서버 | Apache-2.0 | Alex Hultman |
+| **uSockets** | C++ 비동기 네트워킹 코어 | Apache-2.0 | Alex Hultman |
+| **cpp-httplib** | C++ HTTP 통신 | MIT | Yuji Hirose |
+| **nlohmann/json** | C++ JSON 직렬화 | MIT | Niels Lohmann |
+| **FreeTDS (`sybdb`)** | C++ MSSQL DB 클라이언트 (동적 링크) | LGPL-2.1+ | Brian Bruns & FreeTDS Contributors |
+| **zlib** | C++ 패킷 압축 | zlib | Jean-loup Gailly, Mark Adler |
+| **Spring Boot & Framework** | Java 애플리케이션 프레임워크 | Apache-2.0 | VMware, Inc. / Broadcom |
+| **Microsoft JDBC Driver for SQL Server** | Java MSSQL 커넥터 | MIT | Microsoft Corporation |
+| **JJWT (`jjwt`)** | Java JWT 토큰 처리 | Apache-2.0 | Les Hazlewood & Contributors |
+| **Jackson Databind** | Java JSON 프로세서 | Apache-2.0 | FasterXML, LLC |
+| **Apache Tomcat Embed** | Java 서블릿/JSP 컨테이너 | Apache-2.0 | Apache Software Foundation |
+| **Jakarta Servlet / JSTL API** | Java 웹 표준 인터페이스 | EPL-2.0 | Eclipse Foundation |
+| **Pretendard / Inter / Fira Code** | 테스트베드 웹 폰트 | SIL OFL 1.1 | Kil Hyung-jin, Rasmus Andersson, Nikita Prokopov |
+
+> [!NOTE]
+> **LGPL v2.1 고지 (FreeTDS `sybdb`)**: 본 소프트웨어는 FreeTDS 라이브러리를 동적 링크(`libsybdb.so`) 방식으로 사용하며, FreeTDS의 소스 코드는 공식 웹사이트([https://www.freetds.org/](https://www.freetds.org/))에서 언제든지 확인 및 취득할 수 있습니다.

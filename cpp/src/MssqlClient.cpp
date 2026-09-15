@@ -80,3 +80,53 @@ std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
     std::cout << "[MssqlClient] Canvas #" << canvasId << " assigned Redis from DB: " << found_ip << ":" << found_port << "\n";
     return {found_ip, found_port};
 }
+
+bool MssqlClient::updateCanvasUncached(int canvasId) {
+    static bool dbinit_done = false;
+    if (!dbinit_done) {
+        dbinit();
+        dbinit_done = true;
+    }
+
+    LOGINREC *login = dblogin();
+    if (!login) {
+        std::cerr << "[MssqlClient] dblogin failed in updateCanvasUncached\n";
+        return false;
+    }
+
+    DBSETLUSER(login, user_.c_str());
+    DBSETLPWD(login, pass_.c_str());
+    DBSETLAPP(login, "AgoraCppServer");
+
+    std::string server_str = host_ + ":" + std::to_string(port_);
+    DBPROCESS *dbproc = dbopen(login, server_str.c_str());
+    dbloginfree(login);
+
+    if (!dbproc) {
+        std::cerr << "[MssqlClient] dbopen failed in updateCanvasUncached to " << server_str << "\n";
+        return false;
+    }
+
+    if (dbuse(dbproc, db_.c_str()) == FAIL) {
+        dbclose(dbproc);
+        return false;
+    }
+
+    std::string sql = "UPDATE canvas_info SET is_cached = 0, redis_ip = NULL, redis_port = NULL, server_ip = NULL, server_port = NULL, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId);
+    dbcmd(dbproc, sql.c_str());
+
+    if (dbsqlexec(dbproc) == FAIL) {
+        std::cerr << "[MssqlClient] Failed to execute updateCanvasUncached for canvas #" << canvasId << "\n";
+        dbclose(dbproc);
+        return false;
+    }
+
+    while (dbresults(dbproc) != NO_MORE_RESULTS) {
+        // consume result sets if any
+    }
+
+    dbclose(dbproc);
+    std::cout << "[MssqlClient] Canvas #" << canvasId << " in MS SQL updated: is_cached=false, redis/server ip&port=none(NULL)\n";
+    return true;
+}
+

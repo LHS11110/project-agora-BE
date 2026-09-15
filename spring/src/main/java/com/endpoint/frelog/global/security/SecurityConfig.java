@@ -70,6 +70,8 @@ public class SecurityConfig {
                                 "/api/canvases/*/image",
                                 "/api/database/**",
                                 "/api/test/**",
+                                "/api/access/internal/**",
+                                "/api/internal/**",
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()

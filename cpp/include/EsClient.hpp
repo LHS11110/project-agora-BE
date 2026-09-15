@@ -12,6 +12,7 @@ public:
              const std::string& index = "canvas");
 
     std::optional<nlohmann::json> getCanvasDocument(int canvasId);
+    bool saveCanvasDocument(int canvasId, const nlohmann::json& doc);
 
 private:
     std::string host_;

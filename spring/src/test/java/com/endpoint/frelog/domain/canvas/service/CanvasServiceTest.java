@@ -246,4 +246,51 @@ class CanvasServiceTest {
         assertThat(testUser.getServerIp()).isNull();
         assertThat(testUser.getServerPort()).isNull();
     }
+
+    @Test
+    @DisplayName("C++ 웹소켓 종료 내부 알림 시 사용자 접속 상태가 해제된다")
+    void handleInternalDisconnect_UserOnly_Success() {
+        // given
+        testUser.setIsAccessed(true);
+        testUser.setServerIp("127.0.0.1");
+        testUser.setServerPort("8000");
+        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+
+        // when
+        canvasService.handleInternalDisconnect(300, 1L, 2);
+
+        // then
+        assertThat(testUser.getIsAccessed()).isFalse();
+        assertThat(testUser.getServerIp()).isNull();
+        assertThat(testUser.getServerPort()).isNull();
+        verify(userRepository).save(testUser);
+    }
+
+    @Test
+    @DisplayName("C++ 웹소켓 종료 시 활성 사용자가 0명이면 캔버스 캐시 상태(is_cached=false, IP/Port=none)를 초기화한다")
+    void handleInternalDisconnect_ZeroActiveUsers_UnloadCanvas() {
+        // given
+        testUser.setIsAccessed(true);
+        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+
+        CanvasInfo info = new CanvasInfo(300);
+        info.setIsCached(true);
+        info.setRedisIp("127.0.0.1");
+        info.setRedisPort("6379");
+        info.setServerIp("127.0.0.1");
+        info.setServerPort("8000");
+        given(canvasInfoRepository.findById(300)).willReturn(Optional.of(info));
+
+        // when
+        canvasService.handleInternalDisconnect(300, 1L, 0);
+
+        // then
+        assertThat(testUser.getIsAccessed()).isFalse();
+        assertThat(info.getIsCached()).isFalse();
+        assertThat(info.getRedisIp()).isNull();
+        assertThat(info.getRedisPort()).isNull();
+        assertThat(info.getServerIp()).isNull();
+        assertThat(info.getServerPort()).isNull();
+        verify(canvasInfoRepository).save(info);
+    }
 }

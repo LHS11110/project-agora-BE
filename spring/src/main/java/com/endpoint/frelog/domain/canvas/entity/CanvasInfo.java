@@ -73,10 +73,10 @@ public class CanvasInfo {
         if (isCached != null) {
             this.isCached = isCached;
         }
-        this.redisIp = redisIp;
-        this.redisPort = redisPort;
-        this.serverIp = serverIp;
-        this.serverPort = serverPort;
+        this.redisIp = (redisIp == null || "none".equalsIgnoreCase(redisIp.trim())) ? null : redisIp.trim();
+        this.redisPort = (redisPort == null || "none".equalsIgnoreCase(redisPort.trim())) ? null : redisPort.trim();
+        this.serverIp = (serverIp == null || "none".equalsIgnoreCase(serverIp.trim())) ? null : serverIp.trim();
+        this.serverPort = (serverPort == null || "none".equalsIgnoreCase(serverPort.trim())) ? null : serverPort.trim();
     }
 
     // Getters and Setters

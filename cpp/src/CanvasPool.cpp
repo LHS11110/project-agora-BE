@@ -2,8 +2,10 @@
 #include <iostream>
 
 CanvasPool::CanvasPool(const std::string& db_host, int db_port,
-                       const std::string& es_host, int es_port)
-    : db_host_(db_host), db_port_(db_port), es_host_(es_host), es_port_(es_port) {
+                       const std::string& es_host, int es_port,
+                       const std::string& java_host, int java_port)
+    : db_host_(db_host), db_port_(db_port), es_host_(es_host), es_port_(es_port),
+      java_host_(java_host), java_port_(java_port) {
 }
 
 CanvasPool::~CanvasPool() {
@@ -86,6 +88,42 @@ std::shared_ptr<Canvas> CanvasPool::getCanvas(int canvas_id) {
     return nullptr;
 }
 
+void CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
+    if (!canvas) return;
+
+    // 1. Disconnect all connected users
+    canvas->disconnectAll();
+
+    // 2. Fetch canvas document from Redis and reflect to Elasticsearch
+    try {
+        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+        auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
+        if (cached_str && !cached_str->empty()) {
+            auto doc = nlohmann::json::parse(*cached_str);
+            EsClient es(es_host_, es_port_);
+            es.saveCanvasDocument(canvas_id, doc);
+            std::cout << "[CanvasPool] Reflected Canvas #" << canvas_id << " from Redis to Elasticsearch\n";
+        }
+
+        // 3. Clean up Redis cache
+        redis.del("canvas:" + std::to_string(canvas_id));
+        redis.deletePattern("canvas:" + std::to_string(canvas_id) + ":*");
+        std::cout << "[CanvasPool] Cleaned up Redis cache for Canvas #" << canvas_id << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "[CanvasPool] Error during Redis/ES sync for canvas #" << canvas_id << ": " << e.what() << "\n";
+    }
+
+    // 4. Update MS SQL canvas_info: is_cached=false, redis/server ip&port=none(NULL)
+    try {
+        MssqlClient mssql(db_host_, db_port_);
+        mssql.updateCanvasUncached(canvas_id);
+    } catch (const std::exception& e) {
+        std::cerr << "[CanvasPool] Error updating MS SQL for canvas #" << canvas_id << ": " << e.what() << "\n";
+    }
+
+    std::cout << "[CanvasPool] Canvas #" << canvas_id << " has no active users, unloaded from pool (load -1)\n";
+}
+
 bool CanvasPool::removeCanvas(int canvas_id) {
     std::shared_ptr<Canvas> canvas;
     {
@@ -98,48 +136,52 @@ bool CanvasPool::removeCanvas(int canvas_id) {
     }
 
     if (canvas) {
-        // Disconnect all connected users
-        canvas->disconnectAll();
-
-        // Clean up Redis
-        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-        redis.del("canvas:" + std::to_string(canvas_id));
-        redis.deletePattern("canvas:" + std::to_string(canvas_id) + ":*");
-
-        std::cout << "[CanvasPool] Canvas #" << canvas_id << " removed from pool and Redis cleaned up\n";
+        unloadCanvas(canvas_id, canvas);
         return true;
     }
     return false;
 }
 
 void CanvasPool::disconnectUserFromAll(int user_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    std::vector<int> empty_canvases;
-    for (auto& [id, canvas] : canvases_) {
-        if (canvas && canvas->isUserActive(user_id)) {
-            canvas->disconnectUser(user_id);
-            std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << id << "\n";
-            if (canvas->getActiveUsers().empty()) {
-                empty_canvases.push_back(id);
+    std::vector<std::pair<int, std::shared_ptr<Canvas>>> to_unload;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        for (auto it = canvases_.begin(); it != canvases_.end();) {
+            if (it->second && it->second->isUserActive(user_id)) {
+                it->second->disconnectUser(user_id);
+                std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << it->first << "\n";
+                if (it->second->getActiveUsers().empty()) {
+                    to_unload.push_back({it->first, it->second});
+                    it = canvases_.erase(it);
+                    continue;
+                }
             }
+            ++it;
         }
     }
-    for (int id : empty_canvases) {
-        canvases_.erase(id);
-        std::cout << "[CanvasPool] Canvas #" << id << " has no active users, unloaded from pool (load -1)\n";
+
+    for (auto& [id, canvas] : to_unload) {
+        unloadCanvas(id, canvas);
     }
 }
 
 void CanvasPool::disconnectUser(int canvas_id, int user_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    auto it = canvases_.find(canvas_id);
-    if (it != canvases_.end() && it->second) {
-        it->second->disconnectUser(user_id);
-        std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
-        if (it->second->getActiveUsers().empty()) {
-            canvases_.erase(it);
-            std::cout << "[CanvasPool] Canvas #" << canvas_id << " has no active users, unloaded from pool (load -1)\n";
+    std::shared_ptr<Canvas> canvas_to_unload;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = canvases_.find(canvas_id);
+        if (it != canvases_.end() && it->second) {
+            it->second->disconnectUser(user_id);
+            std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
+            if (it->second->getActiveUsers().empty()) {
+                canvas_to_unload = it->second;
+                canvases_.erase(it);
+            }
         }
+    }
+
+    if (canvas_to_unload) {
+        unloadCanvas(canvas_id, canvas_to_unload);
     }
 }
 

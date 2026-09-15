@@ -17,7 +17,8 @@ public:
     using TokenValidator = std::function<int(const std::string&)>;
 
     WebSocketServer(CanvasPool& pool, const std::string& host = "0.0.0.0", int ws_port = 8001,
-                    TokenValidator validator = nullptr);
+                    TokenValidator validator = nullptr,
+                    const std::string& java_host = "127.0.0.1", int java_port = 8080);
     ~WebSocketServer();
 
     void start();
@@ -33,6 +34,8 @@ private:
     std::string host_;
     int ws_port_;
     TokenValidator token_validator_;
+    std::string java_host_;
+    int java_port_;
     std::thread ws_thread_;
     std::atomic<bool> running_{false};
     void* listen_socket_{nullptr};

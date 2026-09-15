@@ -154,6 +154,30 @@ header {
   background: rgba(16, 185, 129, 0.08);
 }
 
+.badge-active {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.4);
+  background: rgba(52, 211, 153, 0.12);
+}
+
+.badge-inactive {
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.2);
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.badge-warning {
+  color: #fbbf24;
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.badge-danger {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .dot {
   width: 8px;
   height: 8px;

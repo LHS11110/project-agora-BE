@@ -52,3 +52,21 @@ std::optional<nlohmann::json> EsClient::getCanvasDocument(int canvasId) {
     std::cerr << "[EsClient] Document for canvas #" << canvasId << " not found in Elasticsearch\n";
     return std::nullopt;
 }
+
+bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
+    httplib::Client cli(host_, port_);
+    cli.set_connection_timeout(3, 0);
+    cli.set_read_timeout(3, 0);
+    cli.set_basic_auth(user_, pass_);
+
+    std::string doc_path = "/" + index_ + "/_doc/" + std::to_string(canvasId);
+    auto res = cli.Put(doc_path, doc.dump(), "application/json");
+    if (res && (res->status == 200 || res->status == 201)) {
+        std::cout << "[EsClient] Successfully reflected canvas #" << canvasId << " from Redis to Elasticsearch\n";
+        return true;
+    }
+    std::cerr << "[EsClient] Failed to save canvas #" << canvasId << " to Elasticsearch: "
+              << (res ? std::to_string(res->status) : "connection error") << "\n";
+    return false;
+}
+
