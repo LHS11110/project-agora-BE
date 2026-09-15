@@ -22,12 +22,15 @@ public class User {
     @Column(name = "user_id")
     private Long userId;
 
+    @org.hibernate.annotations.Nationalized
     @Column(name = "email", nullable = false, unique = true, length = 255)
     private String email;
 
+    @org.hibernate.annotations.Nationalized
     @Column(name = "password_hash", length = 255)
     private String passwordHash;
 
+    @org.hibernate.annotations.Nationalized
     @Column(name = "nickname", nullable = false, length = 100)
     private String nickname;
 

@@ -18,6 +18,7 @@ import java.time.LocalDateTime;
 public class CanvasInfo {
 
     @Id
+    @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
     @Column(name = "canvas_id", nullable = false)
     private Integer canvasId;
 

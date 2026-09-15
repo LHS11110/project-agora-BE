@@ -95,12 +95,10 @@ public class CanvasService {
 
         Long userId = currentUser.getUserId();
 
-        // 1. MS SQL canvas_id 채번 (MAX + 1)
-        Integer maxId = canvasInfoRepository.findMaxCanvasId();
-        Integer targetId = (maxId == null ? 0 : maxId) + 1;
-
-        CanvasInfo canvasInfo = new CanvasInfo(targetId);
-        canvasInfoRepository.save(canvasInfo);
+        // 1. MS SQL canvas_id 채번 (IDENTITY 자동 증가)
+        CanvasInfo canvasInfo = new CanvasInfo();
+        canvasInfo = canvasInfoRepository.save(canvasInfo);
+        Integer targetId = canvasInfo.getCanvasId();
 
         // 2. 비정형 대표 이미지 저장
         String imagePath = canvasResourceService.saveRepresentativeImage(targetId, imageFile);
