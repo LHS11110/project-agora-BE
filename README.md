@@ -168,7 +168,7 @@ sequenceDiagram
 
 ### 설정 파일 위치
 - Spring: [spring/src/main/resources/application.properties](file:///home/ubuntu/github/project-agora-BE/spring/src/main/resources/application.properties)
-- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 8000 0.0.0.0`)
+- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 8000 0.0.0.0 8002`)
 
 ### MS SQL 접속 환경 변수 매핑
 요구사항에 따라 **데이터베이스 IP와 포트를 손쉽게 분리 변경**할 수 있도록 설계되었습니다:
@@ -299,8 +299,9 @@ cmake -B build -S .
 # 2. 빌드 실행 (uSockets 및 agora_cpp_server 컴파일)
 cmake --build build
 
-# 3. 서버 실행 (포트 8000 REST, 포트 8001 WebSocket 수신)
-./build/agora_cpp_server 8000 0.0.0.0
+# 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
+# 사용법: ./build/agora_cpp_server [REST_PORT] [HOST] [WS_PORT]
+./build/agora_cpp_server 8000 0.0.0.0 8002
 ```
 
 ---
