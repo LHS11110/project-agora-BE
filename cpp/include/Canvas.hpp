@@ -5,11 +5,19 @@
 #include <set>
 #include <memory>
 #include <mutex>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include "SocketChannel.hpp"
 
 class Canvas {
 public:
+    struct WebSocketCallbacks {
+        std::function<void(int, const nlohmann::json&, int)> broadcast;
+        std::function<void(int, int, const nlohmann::json&)> send_to_user;
+        std::function<void(int, int)> disconnect_user;
+        std::function<void(int)> disconnect_all;
+    };
+
     Canvas(int canvas_id, const std::string& redis_ip = "127.0.0.1", int redis_port = 6379);
     ~Canvas();
 
@@ -29,16 +37,22 @@ public:
     // Connect user: allocates sockets, adds to active_users set, maps to user_sockets map
     std::pair<int, int> connectUser(int user_id, int rx_port, int tx_port);
 
-    // Disconnect user: removes from active_users and user_sockets
-    void disconnectUser(int user_id);
+    // Disconnect one connection for a user. Returns true when the user became inactive.
+    bool disconnectUser(int user_id);
+
+    // Disconnect every transport connection for a user.
+    void disconnectUserCompletely(int user_id);
 
     // Disconnect all users
     void disconnectAll();
 
-    // Broadcast message to all active users on their RX sockets
+    // WebSocket transport callbacks are supplied by WebSocketServer through CanvasPool.
+    void setWebSocketCallbacks(WebSocketCallbacks callbacks);
+
+    // Broadcast message to all active users on their RX sockets and WebSocket sessions.
     void broadcast(const nlohmann::json& data, int exclude_user_id = -1);
 
-    // Send message to specific user
+    // Send message to specific user on every active transport.
     void sendToUser(int user_id, const nlohmann::json& data);
 
     bool isUserActive(int user_id);
@@ -56,4 +70,5 @@ public:
 
 private:
     std::mutex canvas_mutex;
+    WebSocketCallbacks web_socket_callbacks_;
 };

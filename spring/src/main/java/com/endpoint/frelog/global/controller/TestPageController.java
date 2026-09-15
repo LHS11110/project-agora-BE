@@ -26,13 +26,7 @@ public class TestPageController {
             .connectTimeout(Duration.ofSeconds(3))
             .build();
 
-    @GetMapping(value = {"/test", "/test.jsp"})
-    public String testPage(Model model) {
-        model.addAttribute("pageTitle", "Agora Full System Real-Time Testbed");
-        model.addAttribute("serverTime", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-        model.addAttribute("activeEnv", "MSSQL + Elasticsearch + Redis + C++ Server");
-        return "test";
-    }
+
 
     /**
      * Proxy endpoint for browser to call C++ /api/access without CORS or cross-host network issues.

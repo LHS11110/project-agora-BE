@@ -1,8 +1,9 @@
 #pragma once
 
 #include <string>
-#include <map>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 #include <httplib.h>
 #include "CanvasPool.hpp"
 
@@ -15,6 +16,7 @@ public:
     void stop();
 
     int authenticateToken(const std::string& token);
+    int authenticateTokenForCanvas(const std::string& token, int canvas_id);
 
 private:
     CanvasPool& canvas_pool_;
@@ -22,12 +24,16 @@ private:
     int port_;
     httplib::Server server_;
 
-    // JWT token registry: token -> user_id, and user_id -> token
-    std::map<std::string, int> token_to_user_;
-    std::map<int, std::string> user_to_token_;
+    struct TokenRegistration {
+        int user_id{0};
+        std::unordered_set<int> canvas_ids;
+    };
+
+    // JWT token registry: a token is only valid for canvases allocated through Spring.
+    std::unordered_map<std::string, TokenRegistration> token_to_user_;
     std::mutex auth_mutex_;
 
     void setupRoutes();
 
-    bool registerToken(int user_id, const std::string& token);
+    bool registerToken(int user_id, const std::string& token, int canvas_id);
 };

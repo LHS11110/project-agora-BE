@@ -1,10 +1,10 @@
 #include "WebSocketServer.hpp"
-#include "App.h"
 #include "RedisClient.hpp"
-#include <iostream>
 #include <ctime>
-#include <nlohmann/json.hpp>
 #include <httplib.h>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <vector>
 
 static std::string getQueryParam(std::string_view query, const std::string& key) {
     std::string q(query);
@@ -18,12 +18,27 @@ static std::string getQueryParam(std::string_view query, const std::string& key)
 
 WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int ws_port, TokenValidator validator,
                                  const std::string& java_host, int java_port)
-    : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(validator),
+    : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(std::move(validator)),
       java_host_(java_host), java_port_(java_port) {
+    pool_.setWebSocketCallbacks({
+        [this](int canvas_id, const nlohmann::json& data, int exclude_user_id) {
+            broadcastToCanvas(canvas_id, data, exclude_user_id);
+        },
+        [this](int canvas_id, int user_id, const nlohmann::json& data) {
+            sendToUser(canvas_id, user_id, data);
+        },
+        [this](int canvas_id, int user_id) {
+            disconnectUser(canvas_id, user_id);
+        },
+        [this](int canvas_id) {
+            disconnectCanvas(canvas_id);
+        }
+    });
 }
 
 WebSocketServer::~WebSocketServer() {
     stop();
+    pool_.setWebSocketCallbacks({});
 }
 
 void WebSocketServer::start() {
@@ -32,23 +47,141 @@ void WebSocketServer::start() {
 }
 
 void WebSocketServer::stop() {
-    if (!running_.exchange(false)) return;
-    if (loop_) {
-        ((uWS::Loop*)loop_)->defer([this]() {
-            if (listen_socket_) {
-                us_listen_socket_close(0, (struct us_listen_socket_t*)listen_socket_);
-                listen_socket_ = nullptr;
-            }
-        });
+    const bool was_running = running_.exchange(false);
+
+    if (was_running) {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        if (loop_) {
+            loop_->defer([this]() {
+                std::vector<Socket*> sockets;
+                for (const auto& [canvas_id, canvas_sockets] : sockets_by_canvas_) {
+                    sockets.insert(sockets.end(), canvas_sockets.begin(), canvas_sockets.end());
+                }
+                sockets_by_canvas_.clear();
+
+                for (Socket* ws : sockets) {
+                    ws->end(1001, "Server shutting down");
+                }
+                if (listen_socket_) {
+                    us_listen_socket_close(0, static_cast<us_listen_socket_t*>(listen_socket_));
+                    listen_socket_ = nullptr;
+                }
+            });
+        }
     }
+
     if (ws_thread_.joinable()) {
         ws_thread_.join();
     }
-    std::cout << "[uWebSockets] WebSocket server stopped gracefully." << std::endl;
+
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        loop_ = nullptr;
+        listen_socket_ = nullptr;
+    }
+
+    if (was_running) {
+        std::cout << "[uWebSockets] WebSocket server stopped gracefully." << std::endl;
+    }
+}
+
+void WebSocketServer::broadcastToCanvas(int canvas_id, const nlohmann::json& data, int exclude_user_id) {
+    std::string payload = data.dump();
+
+    std::lock_guard<std::mutex> lock(loop_mutex_);
+    if (!running_ || !loop_) return;
+
+    loop_->defer([this, canvas_id, exclude_user_id, payload = std::move(payload)]() {
+        auto it = sockets_by_canvas_.find(canvas_id);
+        if (it == sockets_by_canvas_.end()) return;
+
+        for (Socket* ws : it->second) {
+            PerSocketData* data = ws->getUserData();
+            if (exclude_user_id > 0 && data->user_id == exclude_user_id) continue;
+            ws->send(payload, uWS::OpCode::TEXT);
+        }
+    });
+}
+
+void WebSocketServer::sendToUser(int canvas_id, int user_id, const nlohmann::json& data) {
+    std::string payload = data.dump();
+
+    std::lock_guard<std::mutex> lock(loop_mutex_);
+    if (!running_ || !loop_) return;
+
+    loop_->defer([this, canvas_id, user_id, payload = std::move(payload)]() {
+        auto it = sockets_by_canvas_.find(canvas_id);
+        if (it == sockets_by_canvas_.end()) return;
+
+        for (Socket* ws : it->second) {
+            if (ws->getUserData()->user_id == user_id) {
+                ws->send(payload, uWS::OpCode::TEXT);
+            }
+        }
+    });
+}
+
+void WebSocketServer::disconnectUser(int canvas_id, int user_id) {
+    std::lock_guard<std::mutex> lock(loop_mutex_);
+    if (!running_ || !loop_) return;
+
+    loop_->defer([this, canvas_id, user_id]() {
+        auto it = sockets_by_canvas_.find(canvas_id);
+        if (it == sockets_by_canvas_.end()) return;
+
+        std::vector<Socket*> sockets_to_close;
+        for (Socket* ws : it->second) {
+            if (ws->getUserData()->user_id == user_id) {
+                sockets_to_close.push_back(ws);
+            }
+        }
+        for (Socket* ws : sockets_to_close) {
+            ws->end(1008, "Access revoked");
+        }
+    });
+}
+
+void WebSocketServer::disconnectCanvas(int canvas_id) {
+    std::lock_guard<std::mutex> lock(loop_mutex_);
+    if (!running_ || !loop_) return;
+
+    loop_->defer([this, canvas_id]() {
+        auto it = sockets_by_canvas_.find(canvas_id);
+        if (it == sockets_by_canvas_.end()) return;
+
+        std::vector<Socket*> sockets_to_close(it->second.begin(), it->second.end());
+        for (Socket* ws : sockets_to_close) {
+            ws->end(1008, "Canvas session ended");
+        }
+    });
+}
+
+void WebSocketServer::registerSocket(Socket* ws) {
+    const PerSocketData* data = ws->getUserData();
+    sockets_by_canvas_[data->canvas_id].insert(ws);
+}
+
+void WebSocketServer::unregisterSocket(Socket* ws) {
+    const PerSocketData* data = ws->getUserData();
+    auto it = sockets_by_canvas_.find(data->canvas_id);
+    if (it == sockets_by_canvas_.end()) return;
+
+    it->second.erase(ws);
+    if (it->second.empty()) {
+        sockets_by_canvas_.erase(it);
+    }
 }
 
 void WebSocketServer::runServer() {
-    loop_ = uWS::Loop::get();
+    {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        loop_ = uWS::Loop::get();
+    }
+    if (!running_) {
+        std::lock_guard<std::mutex> lock(loop_mutex_);
+        loop_ = nullptr;
+        return;
+    }
 
     auto app = uWS::App();
 
@@ -79,21 +212,22 @@ void WebSocketServer::runServer() {
                 }
             }
 
-            int user_id = -1;
-            std::string token = getQueryParam(query, "token");
-            if (token_validator_ && !token.empty()) {
-                user_id = token_validator_(token);
-            }
-
-            if (user_id <= 0) {
-                std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid or missing JWT token for canvas #" << canvas_id << ")" << std::endl;
-                res->writeStatus("401 Unauthorized")->end("Invalid or missing JWT token");
-                return;
-            }
-
             if (canvas_id <= 0) {
                 std::cout << "[uWebSockets] Upgrade rejected: 400 Bad Request (canvas_id is required)" << std::endl;
                 res->writeStatus("400 Bad Request")->end("canvas_id is required");
+                return;
+            }
+
+            int user_id = -1;
+            std::string token = getQueryParam(query, "token");
+            if (token_validator_ && !token.empty()) {
+                user_id = token_validator_(token, canvas_id);
+            }
+
+            if (user_id <= 0) {
+                std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid, missing, or unauthorized JWT token for canvas #"
+                          << canvas_id << ")" << std::endl;
+                res->writeStatus("401 Unauthorized")->end("Invalid, missing, or unauthorized JWT token");
                 return;
             }
 
@@ -107,83 +241,97 @@ void WebSocketServer::runServer() {
         },
 
         .open = [this](auto* ws) {
-            PerSocketData* data = (PerSocketData*)ws->getUserData();
+            PerSocketData* data = ws->getUserData();
             std::cout << "[uWebSockets] WebSocket client connected: User #" << data->user_id
                       << " to Canvas #" << data->canvas_id << std::endl;
 
-            // 1. Get or create canvas in pool (increments active load count)
+            registerSocket(ws);
+            ws->subscribe("canvas/" + std::to_string(data->canvas_id));
+
+            // Get or create canvas in pool (increments active connection count).
             auto canvas = pool_.getOrCreateCanvas(data->canvas_id);
-            if (canvas) {
-                canvas->connectUser(data->user_id, 0, 0);
+            if (!canvas) {
+                ws->end(1011, "Canvas initialization failed");
+                return;
+            }
+            canvas->connectUser(data->user_id, 0, 0);
 
-                // 2. Fetch cached items from Redis and send init_items JSON frame
-                RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-                auto cached_str = redis.get("canvas:" + std::to_string(data->canvas_id));
+            // Fetch cached items from Redis and send init_items JSON frame.
+            RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+            auto cached_str = redis.get("canvas:" + std::to_string(data->canvas_id));
 
-                nlohmann::json init_msg = {
-                    {"type", "init_items"},
-                    {"canvas_id", data->canvas_id},
-                    {"user_id", data->user_id},
-                    {"server_protocol", "uWebSockets"},
-                    {"status", "connected"},
-                    {"items", nlohmann::json::object()}
-                };
+            nlohmann::json init_msg = {
+                {"type", "init_items"},
+                {"canvas_id", data->canvas_id},
+                {"user_id", data->user_id},
+                {"server_protocol", "uWebSockets"},
+                {"status", "connected"},
+                {"items", nlohmann::json::object()}
+            };
 
-                if (cached_str && !cached_str->empty()) {
-                    try {
-                        auto doc = nlohmann::json::parse(*cached_str);
-                        if (doc.contains("items")) init_msg["items"] = doc["items"];
-                        if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
-                        if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
-                    } catch (...) {}
-                }
-
-                ws->send(init_msg.dump(), uWS::OpCode::TEXT);
-                std::cout << "[uWebSockets] Sent init_items to User #" << data->user_id
-                          << " on Canvas #" << data->canvas_id << std::endl;
+            if (cached_str && !cached_str->empty()) {
+                try {
+                    auto doc = nlohmann::json::parse(*cached_str);
+                    if (doc.contains("items")) init_msg["items"] = doc["items"];
+                    if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
+                    if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
+                } catch (...) {}
             }
 
-            // Subscribe to canvas topic for pub/sub broadcasting
-            ws->subscribe("canvas/" + std::to_string(data->canvas_id));
+            ws->send(init_msg.dump(), uWS::OpCode::TEXT);
+            std::cout << "[uWebSockets] Sent init_items to User #" << data->user_id
+                      << " on Canvas #" << data->canvas_id << std::endl;
         },
 
         .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
-            PerSocketData* data = (PerSocketData*)ws->getUserData();
-            std::string text(message);
+            PerSocketData* data = ws->getUserData();
 
-            // Handle ping/pong
-            try {
-                auto j = nlohmann::json::parse(text);
-                if (j.value("type", "") == "ping") {
-                    nlohmann::json pong = {
-                        {"type", "pong"},
-                        {"canvas_id", data->canvas_id},
-                        {"user_id", data->user_id},
-                        {"timestamp", (long long)time(nullptr)}
-                    };
-                    ws->send(pong.dump(), uWS::OpCode::TEXT);
-                    return;
+            if (opCode == uWS::OpCode::TEXT) {
+                try {
+                    auto event = nlohmann::json::parse(message);
+                    if (event.value("type", "") == "ping") {
+                        nlohmann::json pong = {
+                            {"type", "pong"},
+                            {"canvas_id", data->canvas_id},
+                            {"user_id", data->user_id},
+                            {"timestamp", static_cast<long long>(time(nullptr))}
+                        };
+                        ws->send(pong.dump(), uWS::OpCode::TEXT);
+                        return;
+                    }
+
+                    if (event.is_object()) {
+                        // Socket metadata is authoritative; clients cannot spoof the sender or canvas.
+                        event["canvas_id"] = data->canvas_id;
+                        event["user_id"] = data->user_id;
+                        event["sender_id"] = data->user_id;
+                        ws->publish("canvas/" + std::to_string(data->canvas_id), event.dump(), uWS::OpCode::TEXT);
+                        return;
+                    }
+                } catch (...) {
+                    // Non-JSON text is still relayed as an opaque payload.
                 }
-            } catch (...) {}
+            }
 
-            // Broadcast to other connected users on this canvas
+            // uWS WebSocket::publish excludes this sending socket from the topic.
             ws->publish("canvas/" + std::to_string(data->canvas_id), message, opCode);
         },
 
         .drain = [](auto* /*ws*/) {},
 
         .close = [this](auto* ws, int code, std::string_view /*message*/) {
-            PerSocketData* data = (PerSocketData*)ws->getUserData();
+            PerSocketData* data = ws->getUserData();
             int canvas_id = data->canvas_id;
             int user_id = data->user_id;
+            unregisterSocket(ws);
 
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
                       << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
 
-            // 1. Disconnect user from canvas in pool; unloads canvas if 0 active users remain (load -1)
-            pool_.disconnectUser(canvas_id, user_id);
+            // One socket closing must not terminate another tab or device for the same user.
+            pool_.disconnectWebSocketConnection(canvas_id, user_id);
 
-            // 2. Notify Java API to reflect user disconnect & session release
+            // Notify Java API to reflect user disconnect & session release.
             std::string j_host = java_host_;
             int j_port = java_port_;
             std::thread([j_host, j_port, canvas_id, user_id]() {
@@ -226,4 +374,8 @@ void WebSocketServer::runServer() {
     });
 
     app.run();
+
+    std::lock_guard<std::mutex> lock(loop_mutex_);
+    listen_socket_ = nullptr;
+    loop_ = nullptr;
 }

@@ -1,464 +1,442 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agora Auth Playground | 스프링 로그인 실험실</title>
-  <link rel="stylesheet" href="/css/style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%3E<text y=%2226%22 font-size=%2226%22>🔐</text></svg>">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agora Premium Testbed</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0e14;
+            --glass-bg: rgba(17, 24, 39, 0.6);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --primary: #3b82f6;
+            --primary-glow: rgba(59, 130, 246, 0.5);
+            --accent: #8b5cf6;
+            --accent-glow: rgba(139, 92, 246, 0.5);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --success: #10b981;
+            --danger: #ef4444;
+            --font-family: 'Inter', sans-serif;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-family);
+            min-height: 100vh;
+            overflow-x: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Animated Background Orbs */
+        .orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            z-index: -1;
+            animation: float 10s infinite alternate ease-in-out;
+        }
+        .orb-1 { width: 400px; height: 400px; background: var(--primary-glow); top: -100px; left: -100px; }
+        .orb-2 { width: 500px; height: 500px; background: var(--accent-glow); bottom: -150px; right: -100px; animation-delay: -5s; }
+
+        @keyframes float {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(30px, 50px) scale(1.1); }
+        }
+
+        /* Glassmorphism Container */
+        .app-container {
+            width: 100%;
+            max-width: 1200px;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            background: var(--glass-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--glass-border);
+            border-radius: 24px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+            opacity: 0;
+            transform: translateY(20px);
+            animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        @keyframes slideUpFade {
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Header */
+        header {
+            padding: 20px 30px;
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.2);
+        }
+        header h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .user-status {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.9rem;
+        }
+
+        /* Views */
+        .view {
+            display: none;
+            flex: 1;
+            flex-direction: column;
+            padding: 30px;
+            height: 100%;
+            overflow-y: auto;
+        }
+        .view.active {
+            display: flex;
+            animation: fadeIn 0.4s ease-out forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.98); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        /* UI Elements */
+        input {
+            width: 100%;
+            padding: 14px 16px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            color: #fff;
+            font-family: var(--font-family);
+            font-size: 0.95rem;
+            outline: none;
+            transition: all 0.3s ease;
+        }
+        input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
+            background: rgba(0, 0, 0, 0.5);
+        }
+
+        button {
+            padding: 14px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), #2563eb);
+            color: white;
+            box-shadow: 0 4px 14px var(--primary-glow);
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px var(--primary-glow);
+        }
+        .btn-outline {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: var(--text-main);
+        }
+        .btn-outline:hover {
+            background: rgba(255,255,255,0.1);
+            transform: translateY(-1px);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger), #dc2626);
+            color: white;
+        }
+
+        /* Auth View */
+        .auth-container {
+            max-width: 400px;
+            margin: auto;
+            width: 100%;
+            text-align: center;
+        }
+        .auth-container h2 {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            font-weight: 700;
+        }
+        .auth-container p {
+            color: var(--text-muted);
+            margin-bottom: 30px;
+        }
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .quick-logins {
+            margin-top: 24px;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        /* Dashboard Layout */
+        .dashboard-layout {
+            display: flex;
+            gap: 24px;
+            flex: 1;
+            height: calc(100% - 70px);
+            padding: 24px;
+        }
+        .sidebar {
+            width: 320px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            border-right: 1px solid var(--glass-border);
+            padding-right: 24px;
+        }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: rgba(0,0,0,0.2);
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
+            overflow: hidden;
+        }
+
+        /* Canvas List */
+        .section-title {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        .canvas-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            padding: 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .canvas-card:hover, .canvas-card.active {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: rgba(59, 130, 246, 0.4);
+            transform: translateX(4px);
+        }
+        .canvas-name { font-weight: 600; font-size: 1rem; }
+        .canvas-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            box-shadow: 0 0 5px rgba(0,0,0,0.5);
+            transition: background 0.3s, box-shadow 0.3s;
+        }
+        .status-dot.active { background: var(--success); box-shadow: 0 0 10px var(--success); }
+
+        /* Broadcast Chat UI */
+        .chat-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--glass-border);
+            background: rgba(255,255,255,0.02);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-messages {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .message {
+            max-width: 80%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 0.95rem;
+            line-height: 1.4;
+            animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            word-break: break-all;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .msg-system {
+            background: rgba(255,255,255,0.05);
+            color: var(--text-muted);
+            align-self: center;
+            font-size: 0.8rem;
+            border-radius: 8px;
+            padding: 6px 12px;
+        }
+        .msg-me {
+            background: linear-gradient(135deg, var(--primary), #2563eb);
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+        }
+        .msg-other {
+            background: rgba(255,255,255,0.08);
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+        .msg-sender {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.6);
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+
+        .chat-input-area {
+            padding: 20px;
+            background: rgba(0,0,0,0.3);
+            border-top: 1px solid var(--glass-border);
+            display: flex;
+            gap: 12px;
+        }
+        .chat-input-area input {
+            flex: 1;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+        .loader {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top: 3px solid #fff;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
 </head>
 <body>
-  <div class="container">
-    <!-- Header -->
-    <header>
-      <div class="brand">
-        <div class="logo-badge">
-          <svg viewBox="0 0 24 24">
-            <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/>
-          </svg>
-        </div>
-        <div class="title-group">
-          <h1>Project Agora Auth Playground</h1>
-          <p>Spring Boot + MSSQL / JWT 인증 테스트베드</p>
-        </div>
-      </div>
-      <div class="header-badges">
-        <div class="badge badge-server" id="serverBadge">
-          <span class="dot"></span>
-          <span id="serverStatusText">서버 확인 중...</span>
-        </div>
-        <div class="badge badge-db" title="application.properties에서 독립 관리되는 DB 접속 정보">
-          <span>MSSQL: 127.0.0.1:1433</span>
-        </div>
-        <div class="badge" style="background: rgba(14, 165, 233, 0.15); border: 1px solid rgba(14, 165, 233, 0.4); color: #38bdf8;" title="application.properties에서 연동된 Elasticsearch 인덱스: canvas">
-          <span>ES: 127.0.0.1:9200 (canvas)</span>
-        </div>
-        <div class="badge badge-status" id="authStatusBadge">
-          <span>인증 상태: 미로그인</span>
-        </div>
-      </div>
-    </header>
 
-    <!-- Quick Accounts Bar -->
-    <div class="quick-accounts-card">
-      <div class="quick-title">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
-          <circle cx="9" cy="7" r="4"></circle>
-          <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-        </svg>
-        빠른 테스트 계정 선택:
-      </div>
-      <div class="quick-buttons">
-        <button class="btn-quick" onclick="setQuickAccount('user@agora.com', 'password123')">
-          <span class="tag tag-active">ACTIVE</span>
-          일반 사용자 (user@agora.com)
-        </button>
-        <button class="btn-quick" onclick="setQuickAccount('admin@agora.com', 'admin123')">
-          <span class="tag tag-admin">ADMIN</span>
-          관리자 (admin@agora.com)
-        </button>
-        <button class="btn-quick" onclick="setQuickAccount('suspended@agora.com', 'password123')">
-          <span class="tag tag-suspended">SUSPENDED</span>
-          정지된 계정 (실패 테스트)
-        </button>
-        <button class="btn-quick" style="border-color: rgba(56, 189, 248, 0.5); color: #38bdf8; background: rgba(56, 189, 248, 0.1);" onclick="openUsersModal()">
-          👥 모든 사용자 조회 (GET /api/users)
-        </button>
-      </div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+
+    <div class="app-container">
+        <header>
+            <h1>✨ Agora Realtime</h1>
+            <div class="user-status" id="userStatus">
+                <span id="userNameText" style="color: var(--text-muted);">로그인 대기 중</span>
+                <button id="logoutBtn" class="btn-outline" style="padding: 6px 12px; font-size: 0.8rem; display: none;" onclick="logout()">로그아웃</button>
+            </div>
+        </header>
+
+        <!-- Auth View -->
+        <div id="authView" class="view active">
+            <div class="auth-container">
+                <h2>Welcome Back</h2>
+                <p>프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드</p>
+                
+                <div class="auth-form">
+                    <input type="email" id="email" placeholder="이메일 (admin@agora.com)" value="admin@agora.com">
+                    <input type="password" id="password" placeholder="비밀번호 (admin123)" value="admin123">
+                    <button class="btn-primary" onclick="login()" id="loginBtn">
+                        <span id="loginText">로그인 및 시스템 접속</span>
+                        <div class="loader" id="loginLoader"></div>
+                    </button>
+                </div>
+
+                <div class="quick-logins">
+                    <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('admin@agora.com', 'admin123')">👑 Admin</button>
+                    <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('user@agora.com', 'password123')">👤 User</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dashboard View -->
+        <div id="dashboardView" class="dashboard-layout" style="display: none;">
+            
+            <div class="sidebar">
+                <div>
+                    <h3 class="section-title">새 캔버스 생성</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="newCanvasName" placeholder="캔버스 이름" style="padding: 10px 14px; font-size: 0.85rem;">
+                        <button class="btn-primary" style="padding: 10px 14px;" onclick="createCanvas()">생성</button>
+                    </div>
+                </div>
+
+                <div style="margin-top: 10px; display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h3 class="section-title" style="margin: 0;">내 캔버스 목록</h3>
+                        <button class="btn-outline" style="padding: 4px 8px; font-size: 0.7rem;" onclick="loadCanvases()">🔄</button>
+                    </div>
+                    <div id="canvasList" style="overflow-y: auto; flex: 1; padding-right: 4px;">
+                        <!-- Canvas cards injected here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="main-content" id="broadcastArea" style="opacity: 0.3; pointer-events: none; transition: all 0.3s;">
+                <div class="chat-header">
+                    <div>
+                        <h2 style="font-size: 1.1rem; font-weight: 600;" id="activeCanvasTitle">캔버스를 선택해주세요</h2>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="activeCanvasMeta">선택 시 자동으로 Access API 및 C++ WebSocket 연결이 수행됩니다.</p>
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <span id="connectionBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-muted);">
+                            <div class="status-dot" id="connectionDot"></div> <span id="connectionText">미연결</span>
+                        </span>
+                        <button id="connectBtn" class="btn-primary" style="padding: 8px 16px; font-size: 0.85rem;" onclick="connectActiveCanvas()">접속하기</button>
+                    </div>
+                </div>
+
+                <div class="chat-messages" id="chatContainer">
+                    <div class="msg-system">왼쪽 목록에서 캔버스를 선택한 후 접속하세요.</div>
+                </div>
+
+                <div class="chat-input-area">
+                    <input type="text" id="chatInput" placeholder="메시지를 입력하세요... (Enter 키로 전송)" onkeypress="handleChatKey(event)" disabled>
+                    <button class="btn-primary" id="sendBtn" onclick="sendMessage()" disabled>전송</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
-
-    <!-- Main Grid -->
-    <div class="main-grid">
-      <!-- Card 1: Auth Forms (Login / Signup) -->
-      <div class="card">
-        <div class="tab-nav">
-          <button class="tab-btn active" id="loginTabBtn" onclick="switchAuthTab('login')">로그인 (Login)</button>
-          <button class="tab-btn" id="signupTabBtn" onclick="switchAuthTab('signup')">회원가입 (Sign Up)</button>
-        </div>
-
-        <!-- Login Form -->
-        <form id="loginForm" onsubmit="handleLogin(event)">
-          <div class="form-group">
-            <label for="loginEmail">이메일 주소</label>
-            <input type="email" id="loginEmail" placeholder="user@agora.com" required value="user@agora.com">
-          </div>
-          <div class="form-group" style="margin-top: 14px;">
-            <label for="loginPassword">비밀번호</label>
-            <div class="input-wrapper">
-              <input type="password" id="loginPassword" placeholder="비밀번호 입력" required value="password123">
-              <button type="button" class="toggle-password" onclick="togglePassword('loginPassword')">👁️</button>
-            </div>
-          </div>
-          <div style="margin-top: 20px;">
-            <button type="submit" class="btn-primary" style="width: 100%;">
-              <span>로그인 요청 (POST /api/auth/login)</span>
-            </button>
-          </div>
-        </form>
-
-        <!-- Signup Form -->
-        <form id="signupForm" style="display: none;" onsubmit="handleSignup(event)">
-          <div class="form-group">
-            <label for="signupEmail">이메일 주소</label>
-            <input type="email" id="signupEmail" placeholder="newuser@agora.com" required>
-          </div>
-          <div class="form-group" style="margin-top: 14px;">
-            <label for="signupNickname">닉네임</label>
-            <input type="text" id="signupNickname" placeholder="새로운사용자" required>
-          </div>
-          <div class="form-group" style="margin-top: 14px;">
-            <label for="signupPassword">비밀번호 (6자 이상)</label>
-            <div class="input-wrapper">
-              <input type="password" id="signupPassword" placeholder="최소 6자 이상" minlength="6" required>
-              <button type="button" class="toggle-password" onclick="togglePassword('signupPassword')">👁️</button>
-            </div>
-          </div>
-          <div style="margin-top: 20px;">
-            <button type="submit" class="btn-primary" style="width: 100%;">
-              <span>회원가입 요청 (POST /api/auth/signup)</span>
-            </button>
-          </div>
-        </form>
-      </div>
-
-      <!-- Card 2: Token Inspector & Protected API Tester -->
-      <div class="card token-card">
-        <div class="card-header">
-          <div class="card-title">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            </svg>
-            JWT 토큰 인스펙터 & 인증 테스트
-          </div>
-        </div>
-
-        <div class="token-box" id="tokenDisplay">
-          <span class="token-empty">아직 발급받은 JWT 토큰이 없습니다. 로그인하면 자동으로 표시됩니다.</span>
-        </div>
-
-        <div class="claims-grid" id="claimsGrid" style="display: none;">
-          <div class="claim-item">
-            <span class="claim-key">User ID</span>
-            <span class="claim-val" id="claimUserId">-</span>
-          </div>
-          <div class="claim-item">
-            <span class="claim-key">Email</span>
-            <span class="claim-val" id="claimEmail">-</span>
-          </div>
-          <div class="claim-item">
-            <span class="claim-key">Role</span>
-            <span class="claim-val" id="claimRole">-</span>
-          </div>
-          <div class="claim-item">
-            <span class="claim-key">Nickname</span>
-            <span class="claim-val" id="claimNickname">-</span>
-          </div>
-        </div>
-
-        <div class="token-actions">
-          <button class="btn-secondary" onclick="callGetMe()">
-            <span>🔒 내 정보 조회 (/api/auth/me)</span>
-          </button>
-          <button class="btn-secondary" onclick="callGetMeUnauthorized()">
-            <span>⚠️ 토큰 없이 호출 (401 테스트)</span>
-          </button>
-          <button class="btn-secondary" onclick="copyToken()">
-            <span>📋 토큰 복사</span>
-          </button>
-          <button class="btn-secondary" onclick="clearAuth()">
-            <span>🚪 로그아웃</span>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Load Balancer Section -->
-    <div class="card" id="loadBalancerCard" style="background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); padding: 24px; box-shadow: var(--shadow-card);">
-      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
-        <div class="card-title" style="display: flex; align-items: center; gap: 10px; font-family: var(--font-title); font-size: 1.25rem; font-weight: 700; color: var(--text-main);">
-          <span style="font-size: 1.5rem;">⚖️</span>
-          로드 밸런서 관리 & 할당 (Server / Redis / Database)
-        </div>
-        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #10b981, #059669);" onclick="callAllocateServer()">
-            ⚡ Server 할당 (Python P2C)
-          </button>
-          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #ef4444, #dc2626);" onclick="callAllocateRedis()">
-            🔥 Redis 할당 (Java P2C)
-          </button>
-          <button class="btn-primary" style="padding: 8px 14px; font-size: 0.82rem; background: linear-gradient(135deg, #0284c7, #0369a1);" onclick="callGetDatabaseAddress()">
-            🗄️ DB 주소 조회
-          </button>
-          <button class="btn-secondary" style="padding: 8px 14px; font-size: 0.82rem;" onclick="loadLoadBalancerData()">
-            🔄 현황 새로고침
-          </button>
-        </div>
-      </div>
-
-      <!-- Quick Allocation Result Banner -->
-      <div id="allocationResultBanner" style="display: none; padding: 14px 18px; border-radius: var(--radius-md); margin-bottom: 20px; font-family: var(--font-mono); font-size: 0.88rem; align-items: center; justify-content: space-between; border: 1px solid rgba(255,255,255,0.15);">
-        <div id="allocationResultText"></div>
-        <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="document.getElementById('allocationResultBanner').style.display='none'">닫기</button>
-      </div>
-
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px;">
-        <!-- Server Instances Box -->
-        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h4 style="font-size: 0.95rem; font-weight: 600; color: #34d399; display: flex; align-items: center; gap: 6px;">
-              <span>🐍</span> Python Server 목록 (<span id="serverCountBadge">0</span>)
-            </h4>
-            <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="toggleAddServerForm()">+ 서버 등록</button>
-          </div>
-
-          <div id="addServerForm" style="display: none; margin-bottom: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px dashed rgba(255,255,255,0.15);">
-            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
-              <input type="text" id="newServerIp" placeholder="IP (127.0.0.1)" value="127.0.0.1" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-              <input type="text" id="newServerPort" placeholder="Port (8000)" value="8000" style="flex: 1; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-            </div>
-            <div style="display: flex; gap: 6px;">
-              <input type="text" id="newServerName" placeholder="서버 이름 (선택)" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-              <button class="btn-primary" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" onclick="submitRegisterServer()">등록</button>
-            </div>
-          </div>
-
-          <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
-            <table class="canvas-table" style="font-size: 0.82rem;">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>IP:Port</th>
-                  <th>이름</th>
-                  <th>부하(캔버스)</th>
-                  <th>삭제</th>
-                </tr>
-              </thead>
-              <tbody id="serverTableBody">
-                <tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">조회 중...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Redis Instances Box -->
-        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h4 style="font-size: 0.95rem; font-weight: 600; color: #f87171; display: flex; align-items: center; gap: 6px;">
-              <span>🔥</span> Redis 인스턴스 (<span id="redisCountBadge">0</span>)
-            </h4>
-            <button class="btn-secondary" style="padding: 4px 8px; font-size: 0.75rem;" onclick="toggleAddRedisForm()">+ Redis 등록</button>
-          </div>
-
-          <div id="addRedisForm" style="display: none; margin-bottom: 12px; padding: 10px; background: rgba(0,0,0,0.2); border-radius: var(--radius-sm); border: 1px dashed rgba(255,255,255,0.15);">
-            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
-              <input type="text" id="newRedisIp" placeholder="IP (127.0.0.1)" value="127.0.0.1" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-              <input type="text" id="newRedisPort" placeholder="Port (6379)" value="6379" style="flex: 1; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-            </div>
-            <div style="display: flex; gap: 6px;">
-              <input type="text" id="newRedisName" placeholder="Redis 이름 (선택)" style="flex: 2; padding: 4px 8px; font-size: 0.8rem; background: var(--input-bg); border: 1px solid var(--input-border); color: #fff; border-radius: 4px;">
-              <button class="btn-primary" style="flex: 1; padding: 4px 8px; font-size: 0.8rem;" onclick="submitRegisterRedis()">등록</button>
-            </div>
-          </div>
-
-          <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
-            <table class="canvas-table" style="font-size: 0.82rem;">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>IP:Port</th>
-                  <th>이름</th>
-                  <th>Java 부하</th>
-                  <th>삭제</th>
-                </tr>
-              </thead>
-              <tbody id="redisTableBody">
-                <tr><td colspan="5" style="text-align: center; color: var(--text-subtle); padding: 12px;">조회 중...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Database Info Box -->
-        <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h4 style="font-size: 0.95rem; font-weight: 600; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
-              <span>🗄️</span> Database 접속 주소 정보
-            </h4>
-            <span class="badge" style="background: rgba(14, 165, 233, 0.2); color: #38bdf8; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">MSSQL</span>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.85rem;">
-            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <span style="color: var(--text-muted);">Database 주소:</span>
-              <strong id="dbAddressVal" style="color: #38bdf8; font-family: var(--font-mono);">-</strong>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <span style="color: var(--text-muted);">Host (IP):</span>
-              <span id="dbHostVal" style="font-family: var(--font-mono);">-</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <span style="color: var(--text-muted);">Port:</span>
-              <span id="dbPortVal" style="font-family: var(--font-mono);">-</span>
-            </div>
-            <div style="display: flex; justify-content: space-between; padding: 8px 10px; background: rgba(0,0,0,0.2); border-radius: 6px;">
-              <span style="color: var(--text-muted);">Database Name:</span>
-              <span id="dbNameVal" style="font-family: var(--font-mono);">-</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Canvas Management Section -->
-    <div class="card canvas-card">
-      <div class="card-header">
-        <div class="card-title">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
-            <polyline points="21 15 16 10 5 21"></polyline>
-          </svg>
-          캔버스 정보 관리 (MS SQL + Elasticsearch 자동 동기화)
-        </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem;" onclick="loadCanvases()">
-            🔄 목록 새로고침 (GET /api/canvases)
-          </button>
-          <button class="btn-secondary" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(14, 165, 233, 0.15); color: #38bdf8; border-color: rgba(14, 165, 233, 0.4);" onclick="loadAllElasticsearchDocuments()">
-            📚 ES 전체 도큐먼트 목록 (GET /api/canvases/documents)
-          </button>
-        </div>
-      </div>
-
-
-      <div class="canvas-layout">
-        <!-- Canvas Create Form -->
-        <div class="canvas-form-box">
-          <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 10px; color: var(--text-main);">신규 캔버스 생성</h3>
-          <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 14px;">
-            ⚠️ 캔버스 생성은 <strong style="color: #38bdf8;">로그인한 사용자</strong>만 가능합니다.<br>
-            (<strong style="color: #38bdf8;">canvas_id</strong>는 MS SQL에서 자동 발급되며, 소유자는 현재 로그인 계정으로 자동 지정됩니다.)
-          </p>
-          <form id="createCanvasForm" onsubmit="handleCreateCanvas(event)">
-            <div class="form-group">
-              <label for="canvasNameInput">캔버스 이름 (필수)</label>
-              <input type="text" id="canvasNameInput" placeholder="예: Agora Workspace 1" required>
-            </div>
-            <div class="form-group" style="margin-top: 10px;">
-              <label for="canvasPasswordInput">캔버스 비밀번호 (선택 - ES canvas-password)</label>
-              <input type="text" id="canvasPasswordInput" placeholder="선택 사항 (미입력 시 null)">
-            </div>
-            <div class="form-group" style="margin-top: 10px;">
-              <label for="canvasInitGroupInput">초기 내부 그룹명 (선택 - 기본값: default)</label>
-              <input type="text" id="canvasInitGroupInput" placeholder="기본값: default" value="default">
-            </div>
-            <div style="margin-top: 14px;">
-              <button type="submit" class="btn-primary" style="width: 100%; font-size: 0.88rem; padding: 10px;">
-                캔버스 생성 (MS SQL & ES 연동)
-              </button>
-            </div>
-          </form>
-        </div>
-
-
-        <!-- Canvas Table List -->
-        <div class="canvas-list-box">
-          <div class="table-responsive">
-            <table class="canvas-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>이름</th>
-                  <th>소유자 (User ID)</th>
-                  <th>Redis Server</th>
-                  <th>Python Server</th>
-                  <th>is_cached</th>
-                  <th>테스트 액션</th>
-                </tr>
-              </thead>
-              <tbody id="canvasTableBody">
-                <tr>
-                  <td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 24px;">
-                    등록된 캔버스가 없습니다. 좌측에서 새로운 캔버스를 생성해보세요.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Console Section -->
-    <div class="console-card">
-      <div class="console-header">
-        <div class="console-title">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="4 17 10 11 4 5"></polyline>
-            <line x1="12" y1="19" x2="20" y2="19"></line>
-          </svg>
-          실시간 API 응답 콘솔 (Response Console)
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <span id="requestSummary" style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--text-subtle);"></span>
-          <span class="status-pill" id="statusPill" style="display: none;">READY</span>
-        </div>
-      </div>
-      <pre class="console-body" id="consoleBody">// 로그인 또는 회원가입 요청을 전송하면 여기에 HTTP 응답 헤더와 JSON 페이로드가 실시간으로 출력됩니다.</pre>
-    </div>
-  </div>
-
-  <!-- All Users Modal -->
-  <div class="modal-overlay" id="usersModalOverlay" style="display: none;" onclick="closeUsersModal(event)">
-    <div class="modal-dialog" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 1.25rem;">👥</span>
-          <h3 style="font-family: var(--font-title); font-size: 1.15rem; color: var(--text-main); font-weight: 700;">전체 사용자 목록 (모든 사용자 조회)</h3>
-        </div>
-        <button class="btn-close" onclick="closeUsersModal()">✕</button>
-      </div>
-      <div class="modal-body">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-          <p style="font-size: 0.82rem; color: var(--text-muted); margin: 0;">
-            모든 사용자(비로그인 포함)가 조회 가능한 <code>GET /api/users</code> 및 <code>GET /api/auth/users</code> 결과입니다.
-          </p>
-          <button class="btn-secondary" style="padding: 4px 10px; font-size: 0.78rem;" onclick="loadUsersTableData()">
-            🔄 새로고침
-          </button>
-        </div>
-        <div class="table-responsive">
-          <table class="canvas-table">
-            <thead>
-              <tr>
-                <th>User ID</th>
-                <th>이메일 (Email)</th>
-                <th>닉네임</th>
-                <th>역할 (Role)</th>
-                <th>상태 (Status)</th>
-                <th>가입일시</th>
-                <th>빠른 적용</th>
-              </tr>
-            </thead>
-            <tbody id="usersTableBody">
-              <tr>
-                <td colspan="7" style="text-align: center; color: var(--text-subtle); padding: 20px;">
-                  사용자 목록을 불러오는 중...
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="toast" id="toast"></div>
-
-  <script src="/js/app.js?v=1.2"></script>
+    <script src="/js/testbed.js"></script>
 </body>
 </html>

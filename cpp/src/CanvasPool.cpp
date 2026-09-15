@@ -72,6 +72,7 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     auto canvas = std::make_shared<Canvas>(canvas_id, redis_ip, redis_port);
     canvas->setCanvasName(canvas_name);
     canvas->setAdminUserId(admin_uid);
+    canvas->setWebSocketCallbacks(web_socket_callbacks_);
 
     canvases_[canvas_id] = canvas;
     std::cout << "[CanvasPool] Canvas #" << canvas_id << " successfully created and registered in pool\n";
@@ -86,6 +87,16 @@ std::shared_ptr<Canvas> CanvasPool::getCanvas(int canvas_id) {
         return it->second;
     }
     return nullptr;
+}
+
+void CanvasPool::setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    web_socket_callbacks_ = std::move(callbacks);
+    for (auto& [id, canvas] : canvases_) {
+        if (canvas) {
+            canvas->setWebSocketCallbacks(web_socket_callbacks_);
+        }
+    }
 }
 
 void CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
@@ -148,7 +159,7 @@ void CanvasPool::disconnectUserFromAll(int user_id) {
         std::lock_guard<std::mutex> lock(pool_mutex_);
         for (auto it = canvases_.begin(); it != canvases_.end();) {
             if (it->second && it->second->isUserActive(user_id)) {
-                it->second->disconnectUser(user_id);
+                it->second->disconnectUserCompletely(user_id);
                 std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << it->first << "\n";
                 if (it->second->getActiveUsers().empty()) {
                     to_unload.push_back({it->first, it->second});
@@ -171,8 +182,29 @@ void CanvasPool::disconnectUser(int canvas_id, int user_id) {
         std::lock_guard<std::mutex> lock(pool_mutex_);
         auto it = canvases_.find(canvas_id);
         if (it != canvases_.end() && it->second) {
-            it->second->disconnectUser(user_id);
+            it->second->disconnectUserCompletely(user_id);
             std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
+            if (it->second->getActiveUsers().empty()) {
+                canvas_to_unload = it->second;
+                canvases_.erase(it);
+            }
+        }
+    }
+
+    if (canvas_to_unload) {
+        unloadCanvas(canvas_id, canvas_to_unload);
+    }
+}
+
+void CanvasPool::disconnectWebSocketConnection(int canvas_id, int user_id) {
+    std::shared_ptr<Canvas> canvas_to_unload;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = canvases_.find(canvas_id);
+        if (it != canvases_.end() && it->second) {
+            it->second->disconnectUser(user_id);
+            std::cout << "[CanvasPool] WebSocket connection closed for user #" << user_id
+                      << " on Canvas #" << canvas_id << "\n";
             if (it->second->getActiveUsers().empty()) {
                 canvas_to_unload = it->second;
                 canvases_.erase(it);

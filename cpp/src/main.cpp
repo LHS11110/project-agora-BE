@@ -63,8 +63,8 @@ int main(int argc, char* argv[]) {
 
     CanvasPool pool(db_host, db_port, es_host, es_port, java_host, java_port);
     HttpServer server(pool, host, port);
-    WebSocketServer ws_server(pool, host, ws_port, [&](const std::string& token) {
-        return server.authenticateToken(token);
+    WebSocketServer ws_server(pool, host, ws_port, [&](const std::string& token, int canvas_id) {
+        return server.authenticateTokenForCanvas(token, canvas_id);
     }, java_host, java_port);
 
     g_server = &server;

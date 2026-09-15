@@ -20,11 +20,22 @@ void HttpServer::stop() {
     server_.stop();
 }
 
-bool HttpServer::registerToken(int user_id, const std::string& token) {
+bool HttpServer::registerToken(int user_id, const std::string& token, int canvas_id) {
+    if (user_id <= 0 || token.empty() || canvas_id <= 0) {
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(auth_mutex_);
-    token_to_user_[token] = user_id;
-    user_to_token_[user_id] = token;
-    std::cout << "[HttpServer] Registered JWT token for user #" << user_id << "\n";
+    auto [it, inserted] = token_to_user_.try_emplace(token);
+    if (!inserted && it->second.user_id != user_id) {
+        std::cerr << "[HttpServer] Rejected JWT token registration for conflicting user #" << user_id << "\n";
+        return false;
+    }
+
+    it->second.user_id = user_id;
+    it->second.canvas_ids.insert(canvas_id);
+    std::cout << "[HttpServer] Registered JWT token for user #" << user_id
+              << " on Canvas #" << canvas_id << "\n";
     return true;
 }
 
@@ -32,7 +43,20 @@ int HttpServer::authenticateToken(const std::string& token) {
     std::lock_guard<std::mutex> lock(auth_mutex_);
     auto it = token_to_user_.find(token);
     if (it != token_to_user_.end()) {
-        return it->second;
+        return it->second.user_id;
+    }
+    return -1;
+}
+
+int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_id) {
+    if (canvas_id <= 0) {
+        return -1;
+    }
+
+    std::lock_guard<std::mutex> lock(auth_mutex_);
+    auto it = token_to_user_.find(token);
+    if (it != token_to_user_.end() && it->second.canvas_ids.count(canvas_id) > 0) {
+        return it->second.user_id;
     }
     return -1;
 }
@@ -61,19 +85,21 @@ void HttpServer::setupRoutes() {
             int canvas_id = body.value("canvas_id", 0);
             if (canvas_id == 0) canvas_id = body.value("canvasId", 0);
 
-            if (user_id <= 0 || token.empty()) {
+            if (user_id <= 0 || token.empty() || canvas_id <= 0) {
                 res.status = 400;
-                res.set_content("{\"error\":\"Invalid user_id or token\"}", "application/json");
+                res.set_content("{\"error\":\"user_id, token, and canvas_id are required\"}", "application/json");
                 return;
             }
 
-            registerToken(user_id, token);
-
-            // 캔버스 ID가 전달된 경우 C++ 메모리 풀에 캔버스 사전 로드 및 활성화
-            if (canvas_id > 0) {
-                canvas_pool_.getOrCreateCanvas(canvas_id);
-                std::cout << "[HttpServer] Canvas #" << canvas_id << " loaded & activated in pool on token register\n";
+            if (!registerToken(user_id, token, canvas_id)) {
+                res.status = 409;
+                res.set_content("{\"error\":\"Token is already registered to another user\"}", "application/json");
+                return;
             }
+
+            // C++ 메모리 풀에 캔버스 사전 로드 및 활성화
+            canvas_pool_.getOrCreateCanvas(canvas_id);
+            std::cout << "[HttpServer] Canvas #" << canvas_id << " loaded & activated in pool on token register\n";
 
             res.status = 200;
             res.set_content("{\"status\":\"success\",\"message\":\"Token registered\"}", "application/json");
@@ -109,21 +135,25 @@ void HttpServer::setupRoutes() {
                 }
             }
 
-            // JWT 토큰 인증 수행
-            int auth_uid = authenticateToken(token);
-            if (auth_uid > 0) {
-                user_id = auth_uid;
-            } else if (user_id <= 0) {
-                res.status = 401;
-                res.set_content("{\"error\":\"Invalid or unregistered JWT token\"}", "application/json");
-                return;
-            }
-
             if (canvas_id <= 0) {
                 res.status = 400;
                 res.set_content("{\"error\":\"canvas_id is required\"}", "application/json");
                 return;
             }
+
+            // A token may only create sockets for canvases assigned by Spring.
+            int auth_uid = authenticateToken(token);
+            if (auth_uid <= 0) {
+                res.status = 401;
+                res.set_content("{\"error\":\"Invalid or unregistered JWT token\"}", "application/json");
+                return;
+            }
+            if (authenticateTokenForCanvas(token, canvas_id) <= 0) {
+                res.status = 403;
+                res.set_content("{\"error\":\"Token is not authorized for this canvas\"}", "application/json");
+                return;
+            }
+            user_id = auth_uid;
 
             // 캔버스 풀에서 캔버스 선택 또는 생성 (Redis 캐싱 포함)
             auto canvas = canvas_pool_.getOrCreateCanvas(canvas_id);
@@ -569,8 +599,22 @@ void HttpServer::setupRoutes() {
             }
 
             int auth_uid = authenticateToken(token);
-            if (auth_uid > 0) user_id = auth_uid;
-            if (user_id <= 0) user_id = 1;
+            if (auth_uid <= 0) {
+                res.status = 401;
+                res.set_content("{\"error\":\"Invalid or unregistered JWT token\"}", "application/json");
+                return;
+            }
+            if (user_id > 0 && user_id != auth_uid) {
+                res.status = 403;
+                res.set_content("{\"error\":\"Cannot disconnect another user\"}", "application/json");
+                return;
+            }
+            if (canvas_id > 0 && authenticateTokenForCanvas(token, canvas_id) <= 0) {
+                res.status = 403;
+                res.set_content("{\"error\":\"Token is not authorized for this canvas\"}", "application/json");
+                return;
+            }
+            user_id = auth_uid;
 
             if (canvas_id > 0) {
                 canvas_pool_.disconnectUser(canvas_id, user_id);

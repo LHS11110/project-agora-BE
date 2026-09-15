@@ -5,6 +5,11 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+#include <mutex>
+#include <unordered_map>
+#include <unordered_set>
+#include <nlohmann/json.hpp>
+#include "App.h"
 #include "CanvasPool.hpp"
 
 struct PerSocketData {
@@ -14,7 +19,8 @@ struct PerSocketData {
 
 class WebSocketServer {
 public:
-    using TokenValidator = std::function<int(const std::string&)>;
+    using Socket = uWS::WebSocket<false, true, PerSocketData>;
+    using TokenValidator = std::function<int(const std::string&, int)>;
 
     WebSocketServer(CanvasPool& pool, const std::string& host = "0.0.0.0", int ws_port = 8001,
                     TokenValidator validator = nullptr,
@@ -27,8 +33,15 @@ public:
     int getWsPort() const { return ws_port_; }
     bool isRunning() const { return running_; }
 
+    void broadcastToCanvas(int canvas_id, const nlohmann::json& data, int exclude_user_id = -1);
+    void sendToUser(int canvas_id, int user_id, const nlohmann::json& data);
+    void disconnectUser(int canvas_id, int user_id);
+    void disconnectCanvas(int canvas_id);
+
 private:
     void runServer();
+    void registerSocket(Socket* ws);
+    void unregisterSocket(Socket* ws);
 
     CanvasPool& pool_;
     std::string host_;
@@ -39,5 +52,7 @@ private:
     std::thread ws_thread_;
     std::atomic<bool> running_{false};
     void* listen_socket_{nullptr};
-    void* loop_{nullptr};
+    uWS::Loop* loop_{nullptr};
+    std::mutex loop_mutex_;
+    std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
 };

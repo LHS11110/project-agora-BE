@@ -30,6 +30,12 @@ public:
     // Disconnect a user from a specific canvas (unloads canvas if no active users remain)
     void disconnectUser(int canvas_id, int user_id);
 
+    // Record one WebSocket connection closing without terminating a user's other connections.
+    void disconnectWebSocketConnection(int canvas_id, int user_id);
+
+    // Configure WebSocket delivery for existing and future canvases.
+    void setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks);
+
     int getActiveCanvasCount();
     std::vector<int> getActiveCanvasIds();
 
@@ -44,6 +50,7 @@ private:
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;
     std::mutex pool_mutex_;
+    Canvas::WebSocketCallbacks web_socket_callbacks_;
 
     std::string db_host_;
     int db_port_;
