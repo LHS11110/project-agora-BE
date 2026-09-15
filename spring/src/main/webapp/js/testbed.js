@@ -909,80 +909,46 @@ async function runFullE2ETest() {
 let bcClients = []; // { id, userId, nickname, ws, messages: [], status }
 let bcNextId = 1;
 
-async function bcAddUserClient(email, password) {
-  const canvasId = Number(document.getElementById('bcCanvasId').value);
-  logConsole('BROADCAST CLIENT LOGIN', `${email} 계정으로 로그인 및 토큰 발급 중...`);
-
-  // 1. 해당 계정으로 로그인
-  let token = '';
-  let user = null;
-  let userId = null;
-
+// 관리자(admin@agora.com) 권한을 사용하여 해당 사용자를 캔버스 참여자(people)로 확실히 등록
+async function ensureUserInvitedToCanvas(canvasId, targetUserId) {
   try {
-    const loginRes = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password })
-    });
-    if (!loginRes.ok) {
-      alert(`${email} 로그인 실패: ` + loginRes.status);
-      return null;
-    }
-    const loginData = await loginRes.json();
-    token = loginData.accessToken;
-    user = loginData.user;
-    userId = user.user_id || user.userId;
-    logConsole('BROADCAST LOGIN SUCCESS', `✓ 로그인 성공: ${user.nickname} (ID: ${userId})`);
-  } catch (err) {
-    alert(`${email} 로그인 중 네트워크 오류: ` + err.message);
-    return null;
-  }
-
-  // 2. Canvas 참여자(people) 목록에 등록 시도 (권한 확보)
-  try {
-    await fetch(`/api/canvases/${canvasId}/people`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token
-      },
-      body: JSON.stringify({ user_id: userId })
-    });
-  } catch (_) {}
-
-  // 3. Spring Boot Access API 호출 (C++ 서버에 JWT 토큰 등록)
-  logConsole('BROADCAST ACCESS', `Canvas #${canvasId} Access API 호출 (C++ 서버에 JWT 등록)...`);
-  let accessData = {};
-  try {
-    const accessRes = await fetch('/api/access', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + token
-      },
-      body: JSON.stringify({ canvas_id: canvasId })
-    });
-    if (accessRes.ok) {
-      accessData = await accessRes.json();
-      logConsole('BROADCAST ACCESS OK', accessData);
+    let adminToken = '';
+    if (currentUser && currentUser.role === 'ROLE_ADMIN' && currentToken) {
+      adminToken = currentToken;
     } else {
-      logConsole('BROADCAST ACCESS WARN', `Access status: ${accessRes.status}`);
+      const adminLoginRes = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'admin@agora.com', password: 'admin123' })
+      });
+      if (adminLoginRes.ok) {
+        const data = await adminLoginRes.json();
+        adminToken = data.accessToken;
+      }
+    }
+
+    if (adminToken) {
+      await fetch(`/api/canvases/${canvasId}/people`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + adminToken
+        },
+        body: JSON.stringify({ user_id: targetUserId })
+      });
+      logConsole('CANVAS INVITE', `✓ 사용자 #${targetUserId}을(를) Canvas #${canvasId} 참여자(people)로 등록 완료`);
     }
   } catch (e) {
-    logConsole('BROADCAST ACCESS ERR', e.message);
+    console.warn('Auto-invite warning:', e);
   }
+}
 
-  let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
-  if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
-  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
-
-  const clientId = bcNextId++;
-  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${token}&user_id=${userId}`;
-
+// WebSocket 클라이언트 실제 연결 및 이벤트 핸들러 등록 헬퍼
+function bcConnectWebSocketClient(clientId, userId, nickname, email, canvasId, token, wsUrl) {
   const client = {
     id: clientId,
     userId: userId,
-    nickname: user ? user.nickname : `User #${userId}`,
+    nickname: nickname || `User #${userId}`,
     email: email,
     canvasId: canvasId,
     token: token,
@@ -1023,7 +989,7 @@ async function bcAddUserClient(email, password) {
       client.closeCode = event.code;
       bcRenderClients();
       bcUpdateSenderSelect();
-      logConsole('BROADCAST CLOSE', `Client #${clientId} 연결 종료 (code: ${event.code})`);
+      logConsole('BROADCAST CLOSE', `Client #${clientId} (${client.nickname}) 연결 종료 (code: ${event.code})`);
     };
 
     ws.onerror = () => {
@@ -1040,13 +1006,146 @@ async function bcAddUserClient(email, password) {
   return client;
 }
 
-async function bcAddClient(customUserId) {
-  if (!currentToken && !customUserId) {
-    alert('로그인이 필요합니다. 먼저 상단에서 로그인하거나 하단의 "👑 User 1 / 👤 User 2 빠른 인증 세션 연결" 버튼을 이용하세요.');
+// 특정 계정으로 로그인 후 WebSocket 연결 (User 1, User 2, User 3, User 4 등 빠른 연결 버튼용)
+async function bcAddUserClient(email, password) {
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  logConsole('BROADCAST CLIENT LOGIN', `${email} 계정으로 로그인 및 토큰 발급 중...`);
+
+  let token = '';
+  let user = null;
+  let userId = null;
+
+  try {
+    const loginRes = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    if (!loginRes.ok) {
+      alert(`${email} 로그인 실패: ` + loginRes.status);
+      return null;
+    }
+    const loginData = await loginRes.json();
+    token = loginData.accessToken;
+    user = loginData.user;
+    userId = user.user_id || user.userId;
+    logConsole('BROADCAST LOGIN SUCCESS', `✓ 로그인 성공: ${user.nickname} (ID: ${userId})`);
+  } catch (err) {
+    alert(`${email} 로그인 중 네트워크 오류: ` + err.message);
     return null;
   }
-  const email = currentUser ? currentUser.email : (customUserId === 26 ? 'admin@agora.com' : 'user@agora.com');
-  const password = email === 'admin@agora.com' ? 'admin123' : 'password123';
+
+  // 1. 관리자 권한으로 캔버스 참여자(people) 목록에 등록 보장 (비인가 차단 방지)
+  await ensureUserInvitedToCanvas(canvasId, userId);
+
+  // 2. Spring Boot Access API 호출 (C++ 서버에 JWT 토큰 등록 & 라우팅 정보 획득)
+  logConsole('BROADCAST ACCESS', `Canvas #${canvasId} Access API 호출 (C++ 서버에 JWT 등록)...`);
+  let accessData = {};
+  try {
+    const accessRes = await fetch('/api/access', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({ canvas_id: canvasId })
+    });
+    if (accessRes.ok) {
+      accessData = await accessRes.json();
+      logConsole('BROADCAST ACCESS OK', accessData);
+    } else {
+      const errText = await accessRes.text();
+      logConsole('BROADCAST ACCESS WARN', `Access status: ${accessRes.status} -> ${errText}`);
+      alert(`Access API 접근 실패 (${accessRes.status}): ${errText}`);
+      return null;
+    }
+  } catch (e) {
+    logConsole('BROADCAST ACCESS ERR', e.message);
+    alert('Access API 네트워크 오류: ' + e.message);
+    return null;
+  }
+
+  let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
+  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
+
+  const clientId = bcNextId++;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${token}&user_id=${userId}`;
+
+  return bcConnectWebSocketClient(clientId, userId, user ? user.nickname : null, email, canvasId, token, wsUrl);
+}
+
+// 현재 로그인된 사용자로 WebSocket 클라이언트 추가 연결 (사용자 ID 선택 옵션 불필요)
+async function bcAddCurrentClient() {
+  if (!currentToken || !currentUser) {
+    alert('현재 로그인된 사용자가 없습니다. 먼저 상단 [1. 사용자 관리] 탭에서 로그인하거나, 아래 빠른 인증 버튼을 이용하세요.');
+    return null;
+  }
+
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  const userId = currentUser.user_id || currentUser.userId;
+
+  // 1. 관리자 권한으로 캔버스 참여자(people) 목록에 등록 보장
+  await ensureUserInvitedToCanvas(canvasId, userId);
+
+  // 2. Spring Boot Access API 호출
+  logConsole('BROADCAST ACCESS', `Canvas #${canvasId} Access API 호출 (현재 로그인 사용자: ${currentUser.nickname}, ID: ${userId})...`);
+  let accessData = {};
+  try {
+    const accessRes = await fetch('/api/access', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + currentToken
+      },
+      body: JSON.stringify({ canvas_id: canvasId })
+    });
+    if (accessRes.ok) {
+      accessData = await accessRes.json();
+      logConsole('BROADCAST ACCESS OK', accessData);
+    } else {
+      const errText = await accessRes.text();
+      logConsole('BROADCAST ACCESS WARN', `Access status: ${accessRes.status} -> ${errText}`);
+      alert(`Access API 접근 실패 (${accessRes.status}): ${errText}`);
+      return null;
+    }
+  } catch (e) {
+    logConsole('BROADCAST ACCESS ERR', e.message);
+    alert('Access API 네트워크 오류: ' + e.message);
+    return null;
+  }
+
+  let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
+  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
+
+  const clientId = bcNextId++;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${currentToken}&user_id=${userId}`;
+
+  return bcConnectWebSocketClient(clientId, userId, currentUser.nickname, currentUser.email, canvasId, currentToken, wsUrl);
+}
+
+// 하위 호환성을 위해 bcAddClient 호출 시 현재 로그인 사용자로 연결
+async function bcAddClient() {
+  return await bcAddCurrentClient();
+}
+
+// 새 동적 테스트 사용자 즉시 생성 및 연결 (User 3, 4, 5... 무제한 멀티 클라이언트 브로드캐스트 검증용)
+async function bcAddDynamicTestUser() {
+  const ts = Date.now();
+  const email = `testuser_${ts.toString().slice(-4)}@agora.com`;
+  const nickname = `테스터${bcNextId}`;
+  const password = 'password123';
+
+  logConsole('CREATE TEST USER', `신규 테스트 사용자 생성 중: ${email}...`);
+  try {
+    await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, nickname })
+    });
+  } catch (_) {}
+
   return await bcAddUserClient(email, password);
 }
 
@@ -1124,7 +1223,11 @@ function bcUpdateSenderSelect() {
     opt.textContent = `Client #${c.id} (${c.nickname || 'User ' + c.userId})`;
     sel.appendChild(opt);
   });
-  if (prevVal) sel.value = prevVal;
+  if (prevVal && sel.querySelector(`option[value="${prevVal}"]`)) {
+    sel.value = prevVal;
+  } else if (sel.options.length > 1) {
+    sel.selectedIndex = 1;
+  }
 }
 
 function bcRenderClients() {

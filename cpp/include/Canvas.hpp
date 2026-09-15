@@ -51,6 +51,7 @@ public:
     std::string redis_ip;
     int redis_port;
     std::set<int> active_users;
+    std::map<int, int> user_conn_counts;
     std::map<int, std::shared_ptr<UserSockets>> user_sockets;
 
 private:

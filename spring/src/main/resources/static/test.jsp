@@ -660,16 +660,15 @@
           <label>WebSocket Port</label>
           <input type="text" id="bcWsPort" value="8001">
         </div>
-        <div class="form-group" style="flex: 1; min-width: 100px; margin-bottom: 0;">
-          <label>클라이언트 User ID</label>
-          <input type="number" id="bcUserId" value="25">
-        </div>
-        <button class="btn btn-success" onclick="bcAddClient()" style="margin-bottom: 0; height: 42px;">➕ 클라이언트 추가 연결</button>
+        <button class="btn btn-success" onclick="bcAddCurrentClient()" style="margin-bottom: 0; height: 42px;">➕ 현재 로그인 사용자로 연결</button>
       </div>
       <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-        <span style="font-size: 0.82rem; color: var(--text-muted); font-weight: 600;">⚡ 빠른 인증 세션 연결 (로그인 + JWT 등록 + WS 접속):</span>
+        <span style="font-size: 0.82rem; color: var(--text-muted); font-weight: 600;">⚡ 빠른 인증 세션 연결 (자동 초대 + 토큰 등록 + WS 접속):</span>
         <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('admin@agora.com', 'admin123')">👑 User 1 (관리자: admin@agora.com)</button>
-        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('user@agora.com', 'password123')">👤 User 2 (일반유저: user@agora.com)</button>
+        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('user@agora.com', 'password123')">👤 User 2 (일반: user@agora.com)</button>
+        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('user3@agora.com', 'password123')">👤 User 3 (일반: user3@agora.com)</button>
+        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('user4@agora.com', 'password123')">👤 User 4 (일반: user4@agora.com)</button>
+        <button class="btn btn-purple" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddDynamicTestUser()">✨ 새 테스트 유저 생성 & 연결</button>
       </div>
     </div>
 

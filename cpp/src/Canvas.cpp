@@ -12,21 +12,21 @@ Canvas::~Canvas() {
 std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {
     std::lock_guard<std::mutex> lock(canvas_mutex);
 
-    // If user already connected, stop previous sockets
-    if (user_sockets.find(user_id) != user_sockets.end()) {
-        user_sockets[user_id]->stop();
-    }
-
+    // If user already connected, stop previous sockets only if new ports are provided
     if (rx_port > 0 && tx_port > 0) {
+        if (user_sockets.find(user_id) != user_sockets.end()) {
+            user_sockets[user_id]->stop();
+        }
         auto sockets = std::make_shared<UserSockets>(user_id, rx_port, tx_port, this);
         sockets->start();
         user_sockets[user_id] = sockets;
     }
 
+    user_conn_counts[user_id]++;
     active_users.insert(user_id);
 
     std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
-              << " connected. Total active users: " << active_users.size()
+              << " connected (connections: " << user_conn_counts[user_id] << "). Total active users: " << active_users.size()
               << (rx_port > 0 ? " (RX: " + std::to_string(rx_port) + ", TX: " + std::to_string(tx_port) + ")" : " (WebSocket)") << "\n";
 
     return {rx_port, tx_port};
@@ -35,12 +35,26 @@ std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {
 void Canvas::disconnectUser(int user_id) {
     std::lock_guard<std::mutex> lock(canvas_mutex);
 
-    auto it = user_sockets.find(user_id);
-    if (it != user_sockets.end()) {
-        it->second->stop();
-        user_sockets.erase(it);
+    auto c_it = user_conn_counts.find(user_id);
+    if (c_it != user_conn_counts.end()) {
+        c_it->second--;
+        if (c_it->second <= 0) {
+            user_conn_counts.erase(c_it);
+            active_users.erase(user_id);
+            auto it = user_sockets.find(user_id);
+            if (it != user_sockets.end()) {
+                it->second->stop();
+                user_sockets.erase(it);
+            }
+        }
+    } else {
+        active_users.erase(user_id);
+        auto it = user_sockets.find(user_id);
+        if (it != user_sockets.end()) {
+            it->second->stop();
+            user_sockets.erase(it);
+        }
     }
-    active_users.erase(user_id);
 
     std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
               << " disconnected. Remaining active users: " << active_users.size() << "\n";
@@ -55,6 +69,7 @@ void Canvas::disconnectAll() {
         }
     }
     user_sockets.clear();
+    user_conn_counts.clear();
     active_users.clear();
 
     std::cout << "[Canvas #" << canvas_id << "] All users disconnected\n";
