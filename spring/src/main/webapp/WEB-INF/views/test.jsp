@@ -646,7 +646,7 @@
 
     <!-- Connection Settings -->
     <div class="card" style="margin-bottom: 20px;">
-      <div class="card-title">🔌 연결 설정</div>
+      <div class="card-title">🔌 연결 설정 & 빠른 인증 연결</div>
       <div style="display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap;">
         <div class="form-group" style="flex: 1; min-width: 120px; margin-bottom: 0;">
           <label>Canvas ID</label>
@@ -665,6 +665,11 @@
           <input type="number" id="bcUserId" value="25">
         </div>
         <button class="btn btn-success" onclick="bcAddClient()" style="margin-bottom: 0; height: 42px;">➕ 클라이언트 추가 연결</button>
+      </div>
+      <div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <span style="font-size: 0.82rem; color: var(--text-muted); font-weight: 600;">⚡ 빠른 인증 세션 연결 (로그인 + JWT 등록 + WS 접속):</span>
+        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('admin@agora.com', 'admin123')">👑 User 1 (관리자: admin@agora.com)</button>
+        <button class="btn btn-outline" style="font-size: 0.8rem; padding: 6px 12px;" onclick="bcAddUserClient('user@agora.com', 'password123')">👤 User 2 (일반유저: user@agora.com)</button>
       </div>
     </div>
 

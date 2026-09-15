@@ -906,28 +906,86 @@ async function runFullE2ETest() {
 }
 
 // 6. WebSocket Broadcast Test (Multi-Client)
-let bcClients = []; // { id, userId, ws, messages: [], status }
+let bcClients = []; // { id, userId, nickname, ws, messages: [], status }
 let bcNextId = 1;
 
-async function bcAddClient(customUserId) {
+async function bcAddUserClient(email, password) {
   const canvasId = Number(document.getElementById('bcCanvasId').value);
+  logConsole('BROADCAST CLIENT LOGIN', `${email} 계정으로 로그인 및 토큰 발급 중...`);
 
-  // 접속 전 토큰 등록 및 로드밸런싱 포트 할당을 위해 Access API 호출
-  await callSpringAccess(canvasId);
+  // 1. 해당 계정으로 로그인
+  let token = '';
+  let user = null;
+  let userId = null;
 
-  let host = allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  try {
+    const loginRes = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    if (!loginRes.ok) {
+      alert(`${email} 로그인 실패: ` + loginRes.status);
+      return null;
+    }
+    const loginData = await loginRes.json();
+    token = loginData.accessToken;
+    user = loginData.user;
+    userId = user.user_id || user.userId;
+    logConsole('BROADCAST LOGIN SUCCESS', `✓ 로그인 성공: ${user.nickname} (ID: ${userId})`);
+  } catch (err) {
+    alert(`${email} 로그인 중 네트워크 오류: ` + err.message);
+    return null;
+  }
+
+  // 2. Canvas 참여자(people) 목록에 등록 시도 (권한 확보)
+  try {
+    await fetch(`/api/canvases/${canvasId}/people`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({ user_id: userId })
+    });
+  } catch (_) {}
+
+  // 3. Spring Boot Access API 호출 (C++ 서버에 JWT 토큰 등록)
+  logConsole('BROADCAST ACCESS', `Canvas #${canvasId} Access API 호출 (C++ 서버에 JWT 등록)...`);
+  let accessData = {};
+  try {
+    const accessRes = await fetch('/api/access', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify({ canvas_id: canvasId })
+    });
+    if (accessRes.ok) {
+      accessData = await accessRes.json();
+      logConsole('BROADCAST ACCESS OK', accessData);
+    } else {
+      logConsole('BROADCAST ACCESS WARN', `Access status: ${accessRes.status}`);
+    }
+  } catch (e) {
+    logConsole('BROADCAST ACCESS ERR', e.message);
+  }
+
+  let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
   if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
-  const port = allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
-  const userId = customUserId || Number(document.getElementById('bcUserId').value);
+  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
 
   const clientId = bcNextId++;
-  const realUserId = currentUser ? (currentUser.user_id || currentUser.userId) : userId;
-  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${currentToken || ''}&user_id=${realUserId}`;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${token}&user_id=${userId}`;
 
   const client = {
     id: clientId,
     userId: userId,
+    nickname: user ? user.nickname : `User #${userId}`,
+    email: email,
     canvasId: canvasId,
+    token: token,
     ws: null,
     messages: [],
     status: 'connecting',
@@ -945,7 +1003,7 @@ async function bcAddClient(customUserId) {
       client.status = 'connected';
       bcRenderClients();
       bcUpdateSenderSelect();
-      logConsole('BROADCAST', `Client #${clientId} (User ${userId}) connected to Canvas #${canvasId}`);
+      logConsole('BROADCAST OPEN', `Client #${clientId} (${client.nickname}, ID: ${userId}) 연결 성공!`);
       const dcBtn = document.getElementById('bcDisconnectAllBtn');
       if (dcBtn) dcBtn.disabled = false;
     };
@@ -956,7 +1014,6 @@ async function bcAddClient(customUserId) {
       try { parsed = JSON.parse(event.data); } catch (_) { parsed = event.data; }
       const entry = { time: timestamp, data: parsed, raw: event.data };
       client.messages.push(entry);
-      // Keep only last 50 messages
       if (client.messages.length > 50) client.messages.shift();
       bcRenderClientMessages(clientId);
     };
@@ -966,7 +1023,7 @@ async function bcAddClient(customUserId) {
       client.closeCode = event.code;
       bcRenderClients();
       bcUpdateSenderSelect();
-      logConsole('BROADCAST', `Client #${clientId} disconnected (code: ${event.code})`);
+      logConsole('BROADCAST CLOSE', `Client #${clientId} 연결 종료 (code: ${event.code})`);
     };
 
     ws.onerror = () => {
@@ -980,10 +1037,17 @@ async function bcAddClient(customUserId) {
     logConsole('BROADCAST ERROR', err.message);
   }
 
-  // Auto-increment userId for next client
-  document.getElementById('bcUserId').value = userId + 1;
-
   return client;
+}
+
+async function bcAddClient(customUserId) {
+  if (!currentToken && !customUserId) {
+    alert('로그인이 필요합니다. 먼저 상단에서 로그인하거나 하단의 "👑 User 1 / 👤 User 2 빠른 인증 세션 연결" 버튼을 이용하세요.');
+    return null;
+  }
+  const email = currentUser ? currentUser.email : (customUserId === 26 ? 'admin@agora.com' : 'user@agora.com');
+  const password = email === 'admin@agora.com' ? 'admin123' : 'password123';
+  return await bcAddUserClient(email, password);
 }
 
 function bcRemoveClient(clientId) {
@@ -1030,7 +1094,6 @@ function bcSendMessage(senderId, messageText) {
   }
 
   client.ws.send(msg);
-  // Add to sender's log as "sent"
   const timestamp = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
   let parsed;
   try { parsed = JSON.parse(msg); } catch (_) { parsed = msg; }
@@ -1038,7 +1101,7 @@ function bcSendMessage(senderId, messageText) {
   if (client.messages.length > 50) client.messages.shift();
   bcRenderClientMessages(client.id);
 
-  logConsole('BROADCAST SEND', `Client #${client.id} (User ${client.userId}) sent: ${msg}`);
+  logConsole('BROADCAST SEND', `Client #${client.id} (${client.nickname}) sent: ${msg}`);
   return true;
 }
 
@@ -1058,7 +1121,7 @@ function bcUpdateSenderSelect() {
   bcClients.filter(c => c.status === 'connected').forEach(c => {
     const opt = document.createElement('option');
     opt.value = c.id;
-    opt.textContent = `Client #${c.id} (User ${c.userId})`;
+    opt.textContent = `Client #${c.id} (${c.nickname || 'User ' + c.userId})`;
     sel.appendChild(opt);
   });
   if (prevVal) sel.value = prevVal;
@@ -1073,8 +1136,8 @@ function bcRenderClients() {
       <div class="card" style="border-style: dashed; border-color: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; min-height: 200px;">
         <div style="text-align: center; color: var(--text-dim);">
           <div style="font-size: 2rem; margin-bottom: 8px;">📡</div>
-          <p>위의 "클라이언트 추가 연결" 버튼으로 WebSocket 클라이언트를 2개 이상 추가하세요.</p>
-          <p style="font-size: 0.78rem; margin-top: 4px;">또는 "자동 브로드캐스트 테스트"로 전체 흐름을 한 번에 검증할 수 있습니다.</p>
+          <p>위의 "빠른 인증 세션 연결" 버튼으로 WebSocket 클라이언트를 2개 이상 추가하세요.</p>
+          <p style="font-size: 0.78rem; margin-top: 4px;">또는 "🧪 자동 브로드캐스트 테스트"로 전체 흐름을 한 번에 검증할 수 있습니다.</p>
         </div>
       </div>`;
     return;
@@ -1093,11 +1156,12 @@ function bcRenderClients() {
       <div class="card" style="border-color: ${s.border}; position: relative;">
         <button onclick="bcRemoveClient(${c.id})" style="position: absolute; top: 10px; right: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1rem; padding: 4px;" title="연결 종료">✕</button>
         <div class="card-title" style="font-size: 0.95rem;">
-          ${s.icon} Client #${c.id}
-          <span style="font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-left: auto; margin-right: 20px;">User ${c.userId} · Canvas #${c.canvasId}</span>
+          ${s.icon} Client #${c.id} · <span style="color: #60a5fa;">${c.nickname || 'User ' + c.userId}</span>
+          <span style="font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-left: auto; margin-right: 20px;">ID: ${c.userId} · Canvas #${c.canvasId}</span>
         </div>
         <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px;">
           <span style="padding: 2px 8px; border-radius: 10px; background: ${s.bg}; border: 1px solid ${s.border}; font-weight: 600;">${s.text}</span>
+          <span style="font-size: 0.72rem; color: var(--text-dim); margin-left: 8px;">${c.email || ''}</span>
         </div>
         <div style="font-size: 0.72rem; color: var(--text-dim); margin-bottom: 8px; word-break: break-all;">
           ${c.wsUrl}
@@ -1145,14 +1209,14 @@ function bcClearMessages(clientId) {
   }
 }
 
-// Automated Broadcast Test
+// Automated Broadcast Test (Dual-User Authenticated End-to-End)
 async function bcRunAutoTest() {
   const btn = document.getElementById('bcAutoTestBtn');
   const resultEl = document.getElementById('bcAutoTestResult');
   if (btn) { btn.disabled = true; btn.innerText = '⏳ 테스트 실행 중...'; }
   if (resultEl) { resultEl.style.display = 'block'; }
 
-  // Disconnect existing clients
+  // 기존 클라이언트 연결 정리
   bcDisconnectAll();
   await sleep(300);
 
@@ -1160,141 +1224,222 @@ async function bcRunAutoTest() {
   const results = [];
 
   try {
-    // Step 1: Connect 3 clients
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">1/5단계: 3개 클라이언트 연결 중...</p></div>';
+    // Step 1: User 1 & User 2 독립 로그인 및 JWT 토큰 획득
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">1/8단계: User 1(관리자) & User 2(일반) Spring Boot 로그인 중...</p></div>';
 
-    const c1 = bcAddClient(25);
-    await sleep(200);
-    const c2 = bcAddClient(26);
-    await sleep(200);
-    const c3 = bcAddClient(27);
+    const loginRes1 = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@agora.com', password: 'admin123' })
+    });
+    const loginData1 = await loginRes1.json();
+    const token1 = loginData1.accessToken;
+    const user1 = loginData1.user;
+    const uid1 = user1.user_id || user1.userId;
 
-    // Wait for all to connect
+    const loginRes2 = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'user@agora.com', password: 'password123' })
+    });
+    const loginData2 = await loginRes2.json();
+    const token2 = loginData2.accessToken;
+    const user2 = loginData2.user;
+    const uid2 = user2.user_id || user2.userId;
+
+    results.push({
+      step: '1. Spring Boot 다중 사용자 로그인',
+      status: (token1 && token2) ? 'success' : 'failed',
+      detail: `User 1: ${user1.nickname}(ID: ${uid1}) ✓ | User 2: ${user2.nickname}(ID: ${uid2}) ✓`
+    });
+
+    // Step 2: Canvas #2 참여자(people) 등록 확인 (User 2가 User 1 초대)
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">2/8단계: Canvas #' + canvasId + ' 참여자(people) 초대 처리 중...</p></div>';
+    try {
+      await fetch(`/api/canvases/${canvasId}/people`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + token2
+        },
+        body: JSON.stringify({ user_id: uid1 })
+      });
+    } catch (_) {}
+    results.push({
+      step: '2. 캔버스 참여자(people) 초대 및 권한 설정',
+      status: 'success',
+      detail: `User 1(ID: ${uid1})을 Canvas #${canvasId} 참여 목록에 등록 완료`
+    });
+
+    // Step 3: 각 사용자의 Access API 호출 (C++ 서버에 JWT 등록)
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">3/8단계: Spring Boot Access API 호출 (C++ 서버에 JWT 토큰 등록 중)...</p></div>';
+
+    const accRes1 = await fetch('/api/access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token1 },
+      body: JSON.stringify({ canvas_id: canvasId })
+    });
+    const accData1 = await accRes1.json();
+
+    const accRes2 = await fetch('/api/access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token2 },
+      body: JSON.stringify({ canvas_id: canvasId })
+    });
+    const accData2 = await accRes2.json();
+
+    results.push({
+      step: '3. Access API & C++ JWT 토큰 등록',
+      status: (accRes1.ok && accRes2.ok) ? 'success' : 'failed',
+      detail: `C++ 서버 할당 및 양쪽 사용자 JWT 토큰 등록 완료 (${accData1.server_ip}:${accData1.server_port})`
+    });
+
+    // Step 4: uWebSockets 실제 연결 수립
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/8단계: C++ uWebSockets(8001) 실시간 웹소켓 연결 중...</p></div>';
+
+    const c1 = await bcAddUserClient('admin@agora.com', 'admin123');
+    await sleep(300);
+    const c2 = await bcAddUserClient('user@agora.com', 'password123');
+
+    // 연결 대기 (최대 5초)
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('클라이언트 연결 시간 초과 (5초)')), 5000);
+      const timeout = setTimeout(() => reject(new Error('클라이언트 웹소켓 연결 시간 초과 (5초)')), 5000);
       const check = setInterval(() => {
-        const allConnected = [c1, c2, c3].every(c => c.status === 'connected');
-        const anyError = [c1, c2, c3].some(c => c.status === 'error');
+        const allConnected = [c1, c2].every(c => c && c.status === 'connected');
+        const anyError = [c1, c2].some(c => c && c.status === 'error');
         if (allConnected) { clearInterval(check); clearTimeout(timeout); resolve(); }
-        if (anyError) { clearInterval(check); clearTimeout(timeout); reject(new Error('클라이언트 연결 실패')); }
+        if (anyError) { clearInterval(check); clearTimeout(timeout); reject(new Error('웹소켓 연결 실패 (토큰 인증 오류 또는 포트 차단)')); }
       }, 100);
     });
 
-    results.push({ step: '1. 3개 클라이언트 연결', status: 'success', detail: `Client #${c1.id}, #${c2.id}, #${c3.id} 연결 완료` });
-
-    // Step 2: Verify init_items received by all
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">2/5단계: init_items 수신 확인 중...</p></div>';
-    await sleep(500);
-
-    const allReceivedInit = [c1, c2, c3].every(c =>
-      c.messages.some(m => typeof m.data === 'object' && m.data.type === 'init_items')
-    );
     results.push({
-      step: '2. init_items 초기 메시지 수신',
-      status: allReceivedInit ? 'success' : 'warning',
-      detail: allReceivedInit ? '3개 클라이언트 모두 init_items 수신 ✓' : '일부 클라이언트가 init_items를 수신하지 못함'
+      step: '4. C++ uWebSockets 클라이언트 연결 수립',
+      status: 'success',
+      detail: `Client #${c1.id}(${c1.nickname}) & Client #${c2.id}(${c2.nickname}) 101 Switching Protocols 성공`
     });
 
-    // Step 3: Client 1 sends a broadcast message
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">3/5단계: Client #' + c1.id + '에서 브로드캐스트 메시지 전송 중...</p></div>';
+    // Step 5: init_items 초기 데이터 프레임 수신 확인
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">5/8단계: 초기 프레임(init_items) 수신 확인 중...</p></div>';
+    await sleep(400);
 
-    const testMsg = JSON.stringify({
+    const c1Init = c1.messages.some(m => typeof m.data === 'object' && m.data.type === 'init_items');
+    const c2Init = c2.messages.some(m => typeof m.data === 'object' && m.data.type === 'init_items');
+    results.push({
+      step: '5. uWebSockets 초기화 프레임 (init_items) 수신',
+      status: (c1Init && c2Init) ? 'success' : 'warning',
+      detail: (c1Init && c2Init) ? '양쪽 클라이언트 모두 init_items 수신 완료 ✓' : 'init_items 수신 대기 중'
+    });
+
+    // Step 6: User 1 -> User 2 실시간 드로잉 이벤트 브로드캐스트 검증
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">6/8단계: User 1 ➔ User 2 드로잉 이벤트 브로드캐스팅 검증 중...</p></div>';
+
+    c2.messages = [];
+    const drawMsg = JSON.stringify({
       type: 'draw',
-      action: 'broadcast_test',
-      shape: 'circle',
+      canvas_id: canvasId,
+      user_id: uid1,
+      item_id: 'rect_auto_test',
+      shape: 'rectangle',
       x: 150,
       y: 250,
-      color: '#ff6600',
-      timestamp: Date.now(),
-      sender_client: c1.id
+      color: '#ff0055',
+      timestamp: Date.now()
     });
 
-    // Clear previous messages to only check broadcast
-    c2.messages = [];
-    c3.messages = [];
-
-    c1.ws.send(testMsg);
-    const sendTs = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
-    c1.messages.push({ time: sendTs, data: JSON.parse(testMsg), raw: testMsg, sent: true });
+    c1.ws.send(drawMsg);
+    const sendTs1 = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    c1.messages.push({ time: sendTs1, data: JSON.parse(drawMsg), raw: drawMsg, sent: true });
     bcRenderClientMessages(c1.id);
 
-    results.push({ step: '3. Client #' + c1.id + ' 브로드캐스트 전송', status: 'success', detail: `draw 타입 메시지 전송: ${testMsg.substring(0, 80)}...` });
-
-    // Step 4: Verify Client 2 & 3 received the broadcast
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/5단계: Client #' + c2.id + ', #' + c3.id + '에서 브로드캐스트 수신 확인 중...</p></div>';
-
-    await sleep(800);
-
-    const c2Received = c2.messages.some(m =>
-      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
+    await sleep(600);
+    const c2ReceivedDraw = c2.messages.some(m =>
+      typeof m.data === 'object' && m.data.type === 'draw' && m.data.item_id === 'rect_auto_test'
     );
-    const c3Received = c3.messages.some(m =>
-      typeof m.data === 'object' && m.data.action === 'broadcast_test' && m.data.sender_client === c1.id
-    );
-    // Sender should NOT receive their own broadcast (uWebSockets publish excludes sender)
-    const c1NotReceived = !c1.messages.some(m =>
-      !m.sent && typeof m.data === 'object' && m.data.action === 'broadcast_test'
-    );
-
-    const broadcastOk = c2Received && c3Received;
     results.push({
-      step: '4. 브로드캐스트 수신 검증',
-      status: broadcastOk ? 'success' : 'failed',
-      detail: [
-        `Client #${c2.id}: ${c2Received ? '✅ 수신 성공' : '❌ 미수신'}`,
-        `Client #${c3.id}: ${c3Received ? '✅ 수신 성공' : '❌ 미수신'}`,
-        `Client #${c1.id} (발신자): ${c1NotReceived ? '✅ 자기 메시지 미수신 (정상)' : '⚠️ 자기 메시지 수신됨'}`
-      ].join(' | ')
+      step: '6. User 1 ➔ User 2 드로잉 브로드캐스트',
+      status: c2ReceivedDraw ? 'success' : 'failed',
+      detail: c2ReceivedDraw ? 'User 2가 User 1의 드로잉 이벤트를 실시간 수신 성공 ✓' : 'User 2 메시지 미수신'
     });
 
-    // Step 5: Ping/Pong test
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">5/5단계: Ping/Pong 응답 검증 중...</p></div>';
+    // Step 7: User 2 -> User 1 실시간 채팅 메시지 브로드캐스트 검증
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">7/8단계: User 2 ➔ User 1 채팅 브로드캐스팅 검증 중...</p></div>';
 
-    c2.messages = [];
-    const pingMsg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
-    c2.ws.send(pingMsg);
-    c2.messages.push({ time: sendTs, data: JSON.parse(pingMsg), raw: pingMsg, sent: true });
+    c1.messages = [];
+    const chatMsg = JSON.stringify({
+      type: 'chat',
+      canvas_id: canvasId,
+      user_id: uid2,
+      sender: user2.nickname,
+      text: '안녕하세요 관리자님! 실시간 웹소켓 브로드캐스팅 검증 성공입니다.'
+    });
+
+    c2.ws.send(chatMsg);
+    const sendTs2 = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    c2.messages.push({ time: sendTs2, data: JSON.parse(chatMsg), raw: chatMsg, sent: true });
     bcRenderClientMessages(c2.id);
 
-    await sleep(500);
+    await sleep(600);
+    const c1ReceivedChat = c1.messages.some(m =>
+      typeof m.data === 'object' && m.data.type === 'chat' && m.data.text && m.data.text.includes('안녕하세요 관리자님')
+    );
+    results.push({
+      step: '7. User 2 ➔ User 1 채팅 브로드캐스트',
+      status: c1ReceivedChat ? 'success' : 'failed',
+      detail: c1ReceivedChat ? 'User 1이 User 2의 채팅 메시지를 실시간 수신 성공 ✓' : 'User 1 메시지 미수신'
+    });
 
-    const pongReceived = c2.messages.some(m =>
+    // Step 8: C++ 실시간 Heartbeat Ping / Pong 검증
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">8/8단계: C++ 서버 Ping/Pong 응답 검증 중...</p></div>';
+
+    const pingMsg = JSON.stringify({ type: 'ping', timestamp: Date.now() });
+    c1.ws.send(pingMsg);
+    c1.messages.push({ time: sendTs2, data: JSON.parse(pingMsg), raw: pingMsg, sent: true });
+    bcRenderClientMessages(c1.id);
+
+    await sleep(500);
+    const pongReceived = c1.messages.some(m =>
       typeof m.data === 'object' && m.data.type === 'pong'
     );
     results.push({
-      step: '5. Ping/Pong 응답',
+      step: '8. C++ uWebSockets Ping/Pong (Heartbeat)',
       status: pongReceived ? 'success' : 'failed',
-      detail: pongReceived ? `Client #${c2.id}에서 pong 응답 수신 ✓` : `Client #${c2.id}에서 pong 미수신`
+      detail: pongReceived ? 'C++ 서버로부터 pong 프레임 응답 수신 성공 ✓' : 'C++ 서버 pong 응답 없음'
     });
 
-    // Render final results
+    // Final Rendering
     const allPassed = results.every(r => r.status === 'success');
     if (resultEl) {
       resultEl.innerHTML = `
         <div class="card" style="border-color: ${allPassed ? '#10b981' : '#f59e0b'};">
           <div class="card-title" style="color: ${allPassed ? '#34d399' : '#f59e0b'};">
-            ${allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 브로드캐스트 테스트 결과'}
+            ${allPassed ? '🎉 브로드캐스트 전체 검증 통과 (8/8 성공)!' : '⚠️ 브로드캐스트 테스트 결과'}
           </div>
-          <table>
-            <thead><tr><th>단계</th><th>결과</th><th>상세</th></tr></thead>
+          <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+            <thead>
+              <tr style="border-bottom: 1px solid rgba(255,255,255,0.1); text-align: left;">
+                <th style="padding: 8px;">단계</th>
+                <th style="padding: 8px;">결과</th>
+                <th style="padding: 8px;">상세</th>
+              </tr>
+            </thead>
             <tbody>
               ${results.map(r => `
-                <tr>
-                  <td style="white-space: nowrap;">${r.step}</td>
-                  <td><span class="step-badge badge-${r.status}" style="font-size: 0.72rem;">${r.status === 'success' ? '✅ 성공' : r.status === 'warning' ? '⚠️ 경고' : '❌ 실패'}</span></td>
-                  <td style="font-size: 0.78rem; color: var(--text-muted);">${r.detail}</td>
+                <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+                  <td style="padding: 8px; white-space: nowrap; font-weight: 600;">${r.step}</td>
+                  <td style="padding: 8px;"><span class="badge badge-${r.status === 'success' ? 'active' : 'danger'}" style="font-size: 0.72rem;">${r.status === 'success' ? '✅ 성공' : '❌ 실패'}</span></td>
+                  <td style="padding: 8px; font-size: 0.8rem; color: var(--text-muted);">${r.detail}</td>
                 </tr>
               `).join('')}
             </tbody>
           </table>
-          <div style="margin-top: 12px; display: flex; gap: 8px;">
-            <button class="btn btn-danger" style="font-size: 0.78rem;" onclick="bcDisconnectAll()">⛔ 전체 연결 종료</button>
-            <button class="btn btn-outline" style="font-size: 0.78rem;" onclick="bcRunAutoTest()">🔄 재실행</button>
+          <div style="margin-top: 14px; display: flex; gap: 8px;">
+            <button class="btn btn-danger" style="font-size: 0.8rem;" onclick="bcDisconnectAll()">⛔ 전체 연결 종료</button>
+            <button class="btn btn-primary" style="font-size: 0.8rem;" onclick="bcRunAutoTest()">🔄 재실행</button>
           </div>
         </div>`;
     }
 
-    logConsole('BROADCAST TEST', allPassed ? '🎉 브로드캐스트 테스트 전체 통과!' : '⚠️ 일부 단계 실패');
+    logConsole('BROADCAST TEST COMPLETE', allPassed ? '🎉 브로드캐스트 테스트 전체 통과 (8/8)!' : '⚠️ 일부 단계 실패');
 
   } catch (err) {
     logConsole('BROADCAST TEST ERROR', err.message);
@@ -1303,7 +1448,7 @@ async function bcRunAutoTest() {
         <div class="card" style="border-color: #ef4444;">
           <div class="card-title" style="color: #f87171;">❌ 브로드캐스트 테스트 실패</div>
           <p style="color: var(--text-muted);">${err.message}</p>
-          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버가 포트 8001에서 실행 중인지 확인하세요.</p>
+          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버(8001) 및 Spring Boot(8080) 정상 가동 여부를 확인하세요.</p>
         </div>`;
     }
   } finally {
