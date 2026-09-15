@@ -391,6 +391,11 @@ function connectCanvasWebSocket(cid) {
     return;
   }
 
+  if (!currentToken) {
+    alert('로그인이 필요합니다. 먼저 상단에서 로그인을 진행해주세요.');
+    return;
+  }
+
   let wsHost = allocatedCppIp || '127.0.0.1';
   if (wsHost === '127.0.0.1' || wsHost === 'localhost') wsHost = window.location.hostname;
   const wsPort = allocatedWsPort || '8001';
@@ -432,7 +437,11 @@ function connectCanvasWebSocket(cid) {
     };
 
     activeWebSocket.onclose = async (event) => {
-      logConsole('WEBSOCKET CLOSE', `uWebSockets 연결 종료됨 (code: ${event.code})`);
+      let closeMsg = `uWebSockets 연결 종료됨 (code: ${event.code})`;
+      if (event.code === 1006) {
+        closeMsg += ' [비정상 종료: 토큰 인증 실패 또는 C++ 웹소켓 서버(8001)에 연결할 수 없습니다. 로그인 후 "Spring API 접속" 버튼을 먼저 클릭했는지 확인해주세요.]';
+      }
+      logConsole('WEBSOCKET CLOSE', closeMsg);
       if (statusEl) {
         statusEl.innerText = '⚪ WebSocket 종료됨';
         statusEl.className = 'badge badge-inactive';

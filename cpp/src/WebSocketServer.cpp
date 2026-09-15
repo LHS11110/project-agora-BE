@@ -86,11 +86,13 @@ void WebSocketServer::runServer() {
             }
 
             if (user_id <= 0) {
+                std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid or missing JWT token for canvas #" << canvas_id << ")" << std::endl;
                 res->writeStatus("401 Unauthorized")->end("Invalid or missing JWT token");
                 return;
             }
 
             if (canvas_id <= 0) {
+                std::cout << "[uWebSockets] Upgrade rejected: 400 Bad Request (canvas_id is required)" << std::endl;
                 res->writeStatus("400 Bad Request")->end("canvas_id is required");
                 return;
             }
