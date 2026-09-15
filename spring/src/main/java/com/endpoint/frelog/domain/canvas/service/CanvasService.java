@@ -529,7 +529,7 @@ public class CanvasService {
         cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken, canvasId);
 
         // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
-        UserSession session = userSessionRepository.findById(userId).orElse(new UserSession(userRepository.findById(userId).orElseThrow()));
+        UserSession session = userSessionRepository.findById(userId).orElseGet(() -> new UserSession(userRepository.findById(userId).orElseThrow()));
         session.setIsAccessed(true);
         session.setCppServer(canvasInfo.getCppServer());
         userSessionRepository.save(session);

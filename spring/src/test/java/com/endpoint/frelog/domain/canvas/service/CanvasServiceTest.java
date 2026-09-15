@@ -45,6 +45,9 @@ class CanvasServiceTest {
     private UserRepository userRepository;
 
     @Mock
+    private com.endpoint.frelog.domain.user.repository.UserSessionRepository userSessionRepository;
+
+    @Mock
     private CanvasElasticsearchService canvasElasticsearchService;
 
     @Mock
@@ -55,6 +58,12 @@ class CanvasServiceTest {
 
     @Mock
     private CppServerClient cppServerClient;
+
+    @Mock
+    private com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository serverInfoRepository;
+
+    @Mock
+    private com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository redisInfoRepository;
 
     @InjectMocks
     private CanvasService canvasService;
@@ -203,7 +212,7 @@ class CanvasServiceTest {
         doc.getPeople().add(1L);
         given(canvasElasticsearchService.getCanvasDocumentById(300)).willReturn(Optional.of(doc));
 
-        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
 
         CanvasInfo info = new CanvasInfo(300);
         info.setIsCached(false);
@@ -211,6 +220,9 @@ class CanvasServiceTest {
 
         given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000"));
         given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));
+
+        given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1")));
+        given(redisInfoRepository.findByRedisIpAndRedisPort("127.0.0.1", "6379")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379", "Redis-1")));
 
         // when
         CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, "jwt.token.here", userDetails);
@@ -220,7 +232,7 @@ class CanvasServiceTest {
         assertThat(response.serverIp()).isEqualTo("127.0.0.1");
         assertThat(response.serverPort()).isEqualTo("8000");
 
-        verify(cppServerClient).registerJwtToken("127.0.0.1", "8000", 1L, "jwt.token.here");
+        verify(cppServerClient).registerJwtToken("127.0.0.1", "8000", 1L, "jwt.token.here", 300);
         assertThat(info.getIsCached()).isTrue();
         // assertThat(testUser.getIsAccessed()).isTrue();
     }
@@ -231,7 +243,10 @@ class CanvasServiceTest {
         // given
         // testUser.setIsAccessed(true);
         // testUser.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+        com.endpoint.frelog.domain.user.entity.UserSession mockSession = new com.endpoint.frelog.domain.user.entity.UserSession(testUser);
+        mockSession.setIsAccessed(true);
+        mockSession.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1"));
+        given(userSessionRepository.findById(1L)).willReturn(Optional.of(mockSession));
 
         // when
         canvasService.disconnectCanvasAccess(300, userDetails);
@@ -249,7 +264,7 @@ class CanvasServiceTest {
         // given
         // testUser.setIsAccessed(true);
         // testUser.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
 
         // when
         canvasService.handleInternalDisconnect(300, 1L, 2);
@@ -258,7 +273,7 @@ class CanvasServiceTest {
         // assertThat(testUser.getIsAccessed()).isFalse();
         // assertThat(testUser.getServerIp()).isNull();
         // assertThat(testUser.getServerPort()).isNull();
-        verify(userRepository).save(testUser);
+        verify(userSessionRepository).save(org.mockito.ArgumentMatchers.any(com.endpoint.frelog.domain.user.entity.UserSession.class));
     }
 
     @Test
@@ -266,7 +281,7 @@ class CanvasServiceTest {
     void handleInternalDisconnect_ZeroActiveUsers_UnloadCanvas() {
         // given
         // testUser.setIsAccessed(true);
-        given(userRepository.findById(1L)).willReturn(Optional.of(testUser));
+        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
 
         CanvasInfo info = new CanvasInfo(300);
         info.setIsCached(true);

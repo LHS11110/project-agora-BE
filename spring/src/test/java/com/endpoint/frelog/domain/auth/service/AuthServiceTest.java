@@ -77,7 +77,7 @@ class AuthServiceTest {
         assertThat(response.accessToken()).isEqualTo("mock-jwt-token");
         assertThat(response.user().email()).isEqualTo("user@agora.com");
         assertThat(response.user().nickname()).isEqualTo("아고라유저");
-        verify(userRepository).save(activeUser);
+        verify(userSessionRepository).save(org.mockito.ArgumentMatchers.any(com.endpoint.frelog.domain.user.entity.UserSession.class));
     }
 
     @Test
