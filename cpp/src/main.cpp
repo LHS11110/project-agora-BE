@@ -25,6 +25,7 @@ void signal_handler(int signal) {
 int main(int argc, char* argv[]) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::string host = "0.0.0.0";
+    std::string advertise_ip = "127.0.0.1";
     int port = 8000;
     std::string db_host = "127.0.0.1";
     int db_port = 1433;
@@ -34,6 +35,8 @@ int main(int argc, char* argv[]) {
     int java_port = 8080;
 
     if (const char* env_host = std::getenv("HOST")) host = env_host;
+    if (const char* env_adv_ip = std::getenv("PUBLIC_IP")) advertise_ip = env_adv_ip;
+    else advertise_ip = (host == "0.0.0.0" ? "127.0.0.1" : host);
     if (const char* env_port = std::getenv("PORT")) port = std::stoi(env_port);
     if (const char* env_db_host = std::getenv("DB_HOST")) db_host = env_db_host;
     if (const char* env_db_port = std::getenv("DB_PORT")) db_port = std::stoi(env_db_port);
@@ -65,8 +68,8 @@ int main(int argc, char* argv[]) {
     std::cout << "========================================" << std::endl;
 
     MssqlClient dbClient(db_host, db_port);
-    if (dbClient.registerServer(host == "0.0.0.0" ? "127.0.0.1" : host, port, ws_port)) {
-        std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << (host == "0.0.0.0" ? "127.0.0.1" : host) << ", REST: " << port << ", WS: " << ws_port << ")\n";
+    if (dbClient.registerServer(advertise_ip, port, ws_port)) {
+        std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << advertise_ip << ", REST: " << port << ", WS: " << ws_port << ")\n";
     } else {
         std::cerr << "[MssqlClient] Failed to register server to DB!\n";
     }
