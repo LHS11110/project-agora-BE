@@ -25,6 +25,45 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
 
 ## 1. 시스템 아키텍처 개요
 
+### 시스템 전체 흐름도
+
+```mermaid
+flowchart TD
+    Client[Web Browser / Client]
+    
+    subgraph Spring API Server (Java 26)
+        Auth[JWT 인증 & 회원 관리]
+        P2C[P2C 로드밸런싱]
+        CanvasCtrl[캔버스 생명주기 관리]
+    end
+    
+    subgraph C++ Real-Time Server
+        Memory[CanvasPool 메모리 관리]
+        WS[초고속 WebSocket 브로드캐스트]
+    end
+    
+    subgraph Databases & Storage
+        MSSQL[(MS SQL Server)]
+        Redis[(Redis Stack)]
+        ES[(Elasticsearch)]
+    end
+
+    Client -->|HTTP REST API| Auth
+    Client -->|HTTP REST API| CanvasCtrl
+    Client <-->|WebSocket| WS
+    
+    Auth --> MSSQL
+    P2C --> MSSQL
+    CanvasCtrl --> P2C
+    CanvasCtrl --> Redis
+    CanvasCtrl --> ES
+    CanvasCtrl -->|Internal HTTP| Memory
+    
+    WS --> Memory
+```
+
+### 서버 간 네트워크 구성도
+
 ```
                        [ Web Browser / Client ]
                                   │
@@ -78,6 +117,31 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
   - `server_ip = null`, `server_port = null`
 
 ### (2) 클라이언트 접속 진입 (`POST /api/access`)
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as Spring Boot API
+    participant DB as MS SQL (canvas_cache)
+    participant Redis as Redis Stack
+    participant ES as Elasticsearch
+    participant CPP as C++ WebSocket Server
+
+    Client->>API: POST /api/access (canvasId=1001)
+    API->>DB: 할당 서버 캐시 상태 조회
+    alt 캐시되지 않은 경우 (is_cached=false)
+        API->>API: P2C(Power of Two Choices) 알고리즘으로 최적 서버 할당
+        API->>ES: Elasticsearch에서 최신 캔버스 데이터 조회
+        API->>Redis: Redis에 인메모리 캐싱 (JSON)
+        API->>CPP: POST /init_canvas (C++ 메모리에 로드 요청)
+        CPP-->>API: 로드 완료 응답
+        API->>DB: canvas_cache 상태 업데이트 (서버 IP/포트 등록)
+    end
+    API-->>Client: 접속 서버 정보 반환 (serverIp, wsPort)
+    Client->>CPP: WebSocket 실시간 연결 (ws://serverIp:wsPort/ws)
+    CPP-->>Client: 실시간 브로드캐스트 채널 참여 완료
+```
+
 1. 클라이언트가 캔버스 ID로 접속 요청.
 2. Spring Boot가 **P2C (Power of Two Choices)** 알고리즘을 통해 부하가 가장 적은 C++ 서버와 Redis 인스턴스를 선정.
 3. Redis에 캔버스 데이터가 없으면 Elasticsearch에서 문서를 조회하여 Redis에 캐싱.
@@ -149,10 +213,10 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
     {
       "canvasId": 1001,
       "serverIp": "127.0.0.1",
-      "serverPort": 8000,
-      "wsPort": 8001,
+      "serverPort": "8000",
+      "wsPort": "8002",
       "redisIp": "127.0.0.1",
-      "redisPort": 6379,
+      "redisPort": "6379",
       "status": "ALLOCATED"
     }
     ```
@@ -178,9 +242,9 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
 - `POST /delete_canvas`: `{"canvas_id": 1001}`
 - `GET /health`: 서버 상태 확인
 
-### (5) C++ 실시간 WebSocket 엔드포인트 (:8001)
+### (5) C++ 실시간 WebSocket 엔드포인트 (:8002)
 
-- `ws://<server_ip>:8001/ws?canvasId=1001&userId=1`
+- `ws://<server_ip>:<ws_port>/ws?canvasId=1001&userId=1` (기본 `ws_port`는 `8002`)
 - 동일 `canvasId`로 연결된 모든 소켓 세션 간 양방향 실시간 메시지 브로드캐스트 지원.
 
 ---
