@@ -279,6 +279,15 @@ async function listAllCanvases() {
   const res = await apiCall('/api/canvases');
   const activeIds = await fetchActiveCanvasIdSet();
   renderCanvasTable(res.data, activeIds);
+  if (Array.isArray(res.data) && res.data.length > 0) {
+    const firstId = res.data[0].canvas_id;
+    const accEl = document.getElementById('accessCanvasId');
+    const bcEl = document.getElementById('bcCanvasId');
+    const refEl = document.getElementById('reflectCanvasId');
+    if (accEl && (!accEl.value || accEl.value === '2')) accEl.value = firstId;
+    if (bcEl && (!bcEl.value || bcEl.value === '2')) bcEl.value = firstId;
+    if (refEl && (!refEl.value || refEl.value === '2')) refEl.value = firstId;
+  }
   return res;
 }
 
@@ -319,9 +328,11 @@ function renderCanvasTable(list, activeSet = new Set()) {
 function selectCanvasForTest(id) {
   const refEl = document.getElementById('reflectCanvasId');
   const accEl = document.getElementById('accessCanvasId');
+  const bcEl = document.getElementById('bcCanvasId');
   if (refEl) refEl.value = id;
   if (accEl) accEl.value = id;
-  logConsole('CANVAS SELECTED', `캔버스 #${id}가 선택되었습니다. 탭 4 또는 탭 5에서 테스트하세요.`);
+  if (bcEl) bcEl.value = id;
+  logConsole('CANVAS SELECTED', `캔버스 #${id}가 선택되었습니다. (탭 4, 5, 6 일괄 반영)`);
 }
 
 // 4. Granular Updates (C++ Realtime Reflection)
@@ -965,13 +976,15 @@ function bcConnectWebSocketClient(clientId, userId, nickname, email, canvasId, t
     const ws = new WebSocket(wsUrl);
     client.ws = ws;
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       client.status = 'connected';
       bcRenderClients();
       bcUpdateSenderSelect();
       logConsole('BROADCAST OPEN', `Client #${clientId} (${client.nickname}, ID: ${userId}) 연결 성공!`);
       const dcBtn = document.getElementById('bcDisconnectAllBtn');
       if (dcBtn) dcBtn.disabled = false;
+      await refreshCppActiveStatus();
+      await listAllCanvases();
     };
 
     ws.onmessage = (event) => {
@@ -984,12 +997,14 @@ function bcConnectWebSocketClient(clientId, userId, nickname, email, canvasId, t
       bcRenderClientMessages(clientId);
     };
 
-    ws.onclose = (event) => {
+    ws.onclose = async (event) => {
       client.status = 'closed';
       client.closeCode = event.code;
       bcRenderClients();
       bcUpdateSenderSelect();
       logConsole('BROADCAST CLOSE', `Client #${clientId} (${client.nickname}) 연결 종료 (code: ${event.code})`);
+      await refreshCppActiveStatus();
+      await listAllCanvases();
     };
 
     ws.onerror = () => {
@@ -1147,6 +1162,26 @@ async function bcAddDynamicTestUser() {
   } catch (_) {}
 
   return await bcAddUserClient(email, password);
+}
+
+// 탭 6에서 현재 지정된 Canvas ID를 즉시 C++ 메모리 풀에 로드 및 활성화
+async function bcActivateCurrentCanvas() {
+  const canvasId = Number(document.getElementById('bcCanvasId').value);
+  if (!currentToken) {
+    alert('로그인이 필요합니다. 상단에서 로그인해주세요.');
+    return;
+  }
+  logConsole('CANVAS ACTIVATE', `Canvas #${canvasId} 활성화(Spring Access & C++ 로드) 요청 중...`);
+  const res = await callSpringAccess(canvasId);
+  await refreshCppActiveStatus();
+  await listAllCanvases();
+  if (res.ok) {
+    logConsole('CANVAS ACTIVATE OK', `✓ Canvas #${canvasId} C++ 메모리 풀 활성화 완료!`);
+    alert(`✓ Canvas #${canvasId}가 C++ 서버에 성공적으로 활성화되었습니다!`);
+  } else {
+    logConsole('CANVAS ACTIVATE FAIL', res.error || '활성화 실패');
+    alert(`Canvas #${canvasId} 활성화 실패: ` + (res.error || '오류'));
+  }
 }
 
 function bcRemoveClient(clientId) {

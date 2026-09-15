@@ -58,6 +58,8 @@ void HttpServer::setupRoutes() {
             auto body = nlohmann::json::parse(req.body);
             int user_id = body.value("user_id", -1);
             std::string token = body.value("token", "");
+            int canvas_id = body.value("canvas_id", 0);
+            if (canvas_id == 0) canvas_id = body.value("canvasId", 0);
 
             if (user_id <= 0 || token.empty()) {
                 res.status = 400;
@@ -66,6 +68,13 @@ void HttpServer::setupRoutes() {
             }
 
             registerToken(user_id, token);
+
+            // 캔버스 ID가 전달된 경우 C++ 메모리 풀에 캔버스 사전 로드 및 활성화
+            if (canvas_id > 0) {
+                canvas_pool_.getOrCreateCanvas(canvas_id);
+                std::cout << "[HttpServer] Canvas #" << canvas_id << " loaded & activated in pool on token register\n";
+            }
+
             res.status = 200;
             res.set_content("{\"status\":\"success\",\"message\":\"Token registered\"}", "application/json");
         } catch (const std::exception& e) {

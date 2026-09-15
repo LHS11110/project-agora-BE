@@ -652,6 +652,7 @@
           <label>Canvas ID</label>
           <input type="number" id="bcCanvasId" value="2">
         </div>
+        <button class="btn btn-primary" onclick="bcActivateCurrentCanvas()" style="margin-bottom: 0; height: 42px;" title="C++ 메모리 풀에 캔버스를 즉시 로드 및 활성화합니다.">⚡ 캔버스 활성화</button>
         <div class="form-group" style="flex: 1; min-width: 120px; margin-bottom: 0;">
           <label>WebSocket Host</label>
           <input type="text" id="bcWsHost" value="127.0.0.1">
