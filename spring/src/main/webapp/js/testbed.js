@@ -898,10 +898,14 @@ async function runFullE2ETest() {
 let bcClients = []; // { id, userId, ws, messages: [], status }
 let bcNextId = 1;
 
-function bcAddClient(customUserId) {
+async function bcAddClient(customUserId) {
   const canvasId = Number(document.getElementById('bcCanvasId').value);
-  const host = document.getElementById('bcWsHost').value || '127.0.0.1';
-  const port = document.getElementById('bcWsPort').value || '8001';
+
+  // 접속 전 토큰 등록 및 로드밸런싱 포트 할당을 위해 Access API 호출
+  await callSpringAccess(canvasId);
+
+  const host = allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  const port = allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
   const userId = customUserId || Number(document.getElementById('bcUserId').value);
 
   const clientId = bcNextId++;
