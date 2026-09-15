@@ -78,6 +78,7 @@ function setQuickLogin(email, password) {
 }
 
 function showAuth() {
+    el.authView.style.display = 'flex';
     el.authView.classList.add('active');
     el.dashboardView.style.display = 'none';
     el.logoutBtn.style.display = 'none';
@@ -150,8 +151,9 @@ async function loadCanvases() {
             return;
         }
 
-        // Fetch C++ active canvases
-        const activeRes = await apiCall(`/api/test/cpp-active-canvases?host=${state.cppIp}&port=${state.cppPort}`);
+        // Fetch C++ active canvases via Spring Boot proxy. 
+        // Always use 127.0.0.1 for server-to-server internal calls to avoid Hairpin NAT timeout.
+        const activeRes = await apiCall(`/api/test/cpp-active-canvases?host=127.0.0.1&port=8000`);
         const activeIds = new Set(activeRes.ok && activeRes.data.canvases ? activeRes.data.canvases.map(c => c.canvas_id) : []);
 
         res.data.forEach(c => {
