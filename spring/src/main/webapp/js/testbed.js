@@ -8,9 +8,9 @@ let state = {
     user: JSON.parse(localStorage.getItem('agora_user') || 'null'),
     currentCanvas: null,
     ws: null,
-    cppIp: window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname,
-    cppPort: '8000',
-    wsPort: '8001'
+    cppIp: '',
+    cppPort: '',
+    wsPort: ''
 };
 
 // --- DOM Elements ---
@@ -315,13 +315,12 @@ async function connectActiveCanvas() {
 
     state.cppIp = accessRes.data.server_ip;
     state.cppPort = accessRes.data.server_port;
-    state.wsPort = accessRes.data.ws_port || (Number(state.cppPort) + 1).toString();
+    state.wsPort = accessRes.data.ws_port;
 
     addSystemMessage(`할당된 실시간 서버: ${state.cppIp}:${state.wsPort}. WebSocket 연결 시도...`);
 
     // 2. WebSocket Connect
-    let host = state.cppIp === '127.0.0.1' ? window.location.hostname : state.cppIp;
-    const wsUrl = `ws://${host}:${state.wsPort}/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
+    const wsUrl = `ws://${state.cppIp}:${state.wsPort}/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
 
     try {
         state.ws = new WebSocket(wsUrl);
