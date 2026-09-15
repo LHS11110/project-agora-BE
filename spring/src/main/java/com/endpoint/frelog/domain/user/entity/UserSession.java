@@ -11,16 +11,26 @@ import jakarta.persistence.MapsId;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import org.springframework.data.domain.Persistable;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "user_sessions")
-public class UserSession {
+public class UserSession implements Persistable<Long> {
 
     @Id
     @Column(name = "user_id")
     private Long userId;
+
+    @Transient
+    private boolean isNew = true;
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
 
     @OneToOne
     @JoinColumn(name = "user_id", insertable = false, updatable = false)
@@ -46,6 +56,12 @@ public class UserSession {
         this.userId = user.getUserId();
     }
 
+    @jakarta.persistence.PostPersist
+    @jakarta.persistence.PostLoad
+    protected void markNotNew() {
+        this.isNew = false;
+    }
+
     @PrePersist
     protected void onCreate() {
         if (this.isAccessed == null) {
@@ -66,6 +82,11 @@ public class UserSession {
     }
 
     public Long getUserId() {
+        return userId;
+    }
+
+    @Override
+    public Long getId() {
         return userId;
     }
 

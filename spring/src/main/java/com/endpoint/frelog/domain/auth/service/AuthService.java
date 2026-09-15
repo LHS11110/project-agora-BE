@@ -68,7 +68,7 @@ public class AuthService {
             throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         }
 
-        UserSession session = userSessionRepository.findById(user.getUserId()).orElse(new UserSession(user));
+        UserSession session = userSessionRepository.findById(user.getUserId()).orElseGet(() -> new UserSession(user));
         session.updateLastLogin(LocalDateTime.now());
         userSessionRepository.save(session);
 
