@@ -79,17 +79,15 @@ void WebSocketServer::runServer() {
                 }
             }
 
-            int user_id = 1;
-            std::string uid_str = getQueryParam(query, "user_id");
-            if (uid_str.empty()) uid_str = getQueryParam(query, "userId");
-            if (!uid_str.empty()) {
-                try { user_id = std::stoi(uid_str); } catch (...) {}
-            }
-
+            int user_id = -1;
             std::string token = getQueryParam(query, "token");
             if (token_validator_ && !token.empty()) {
-                int auth_uid = token_validator_(token);
-                if (auth_uid > 0) user_id = auth_uid;
+                user_id = token_validator_(token);
+            }
+
+            if (user_id <= 0) {
+                res->writeStatus("401 Unauthorized")->end("Invalid or missing JWT token");
+                return;
             }
 
             if (canvas_id <= 0) {

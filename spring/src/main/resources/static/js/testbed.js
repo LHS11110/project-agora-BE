@@ -905,7 +905,8 @@ function bcAddClient(customUserId) {
   const userId = customUserId || Number(document.getElementById('bcUserId').value);
 
   const clientId = bcNextId++;
-  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?userId=${userId}`;
+  const realUserId = currentUser ? (currentUser.user_id || currentUser.userId) : userId;
+  const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${currentToken || ''}&user_id=${realUserId}`;
 
   const client = {
     id: clientId,
