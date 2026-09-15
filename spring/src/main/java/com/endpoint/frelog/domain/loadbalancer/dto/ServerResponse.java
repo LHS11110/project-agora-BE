@@ -3,7 +3,7 @@ package com.endpoint.frelog.domain.loadbalancer.dto;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 
 public record ServerResponse(
-        Long serverId,
+        Integer serverId,
         String serverIp,
         String serverPort,
         String serverName,

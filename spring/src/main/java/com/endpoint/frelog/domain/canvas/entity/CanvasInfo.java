@@ -1,5 +1,9 @@
 package com.endpoint.frelog.domain.canvas.entity;
 
+import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
+import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -17,17 +21,13 @@ public class CanvasInfo {
     @Column(name = "canvas_id", nullable = false)
     private Integer canvasId;
 
-    @Column(name = "redis_ip", length = 45)
-    private String redisIp;
+    @ManyToOne
+    @JoinColumn(name = "redis_id")
+    private RedisInfo redisInfo;
 
-    @Column(name = "redis_port", length = 10)
-    private String redisPort;
-
-    @Column(name = "server_ip", length = 45)
-    private String serverIp;
-
-    @Column(name = "server_port", length = 10)
-    private String serverPort;
+    @ManyToOne
+    @JoinColumn(name = "cpp_server_id")
+    private ServerInfo cppServer;
 
     @Column(name = "is_cached", nullable = false)
     private Boolean isCached = false;
@@ -43,10 +43,8 @@ public class CanvasInfo {
 
     public CanvasInfo(Integer canvasId) {
         this.canvasId = canvasId;
-        this.redisIp = null;
-        this.redisPort = null;
-        this.serverIp = null;
-        this.serverPort = null;
+        this.redisInfo = null;
+        this.cppServer = null;
         this.isCached = false;
     }
 
@@ -69,14 +67,12 @@ public class CanvasInfo {
         this.updatedAt = LocalDateTime.now();
     }
 
-    public void updateCacheState(Boolean isCached, String redisIp, String redisPort, String serverIp, String serverPort) {
+    public void updateCacheState(Boolean isCached, RedisInfo redisInfo, ServerInfo cppServer) {
         if (isCached != null) {
             this.isCached = isCached;
         }
-        this.redisIp = (redisIp == null || "none".equalsIgnoreCase(redisIp.trim())) ? null : redisIp.trim();
-        this.redisPort = (redisPort == null || "none".equalsIgnoreCase(redisPort.trim())) ? null : redisPort.trim();
-        this.serverIp = (serverIp == null || "none".equalsIgnoreCase(serverIp.trim())) ? null : serverIp.trim();
-        this.serverPort = (serverPort == null || "none".equalsIgnoreCase(serverPort.trim())) ? null : serverPort.trim();
+        this.redisInfo = redisInfo;
+        this.cppServer = cppServer;
     }
 
     // Getters and Setters
@@ -88,36 +84,20 @@ public class CanvasInfo {
         this.canvasId = canvasId;
     }
 
-    public String getRedisIp() {
-        return redisIp;
+    public RedisInfo getRedisInfo() {
+        return redisInfo;
     }
 
-    public void setRedisIp(String redisIp) {
-        this.redisIp = redisIp;
+    public void setRedisInfo(RedisInfo redisInfo) {
+        this.redisInfo = redisInfo;
     }
 
-    public String getRedisPort() {
-        return redisPort;
+    public ServerInfo getCppServer() {
+        return cppServer;
     }
 
-    public void setRedisPort(String redisPort) {
-        this.redisPort = redisPort;
-    }
-
-    public String getServerIp() {
-        return serverIp;
-    }
-
-    public void setServerIp(String serverIp) {
-        this.serverIp = serverIp;
-    }
-
-    public String getServerPort() {
-        return serverPort;
-    }
-
-    public void setServerPort(String serverPort) {
-        this.serverPort = serverPort;
+    public void setCppServer(ServerInfo cppServer) {
+        this.cppServer = cppServer;
     }
 
     public Boolean getIsCached() {
@@ -126,6 +106,22 @@ public class CanvasInfo {
 
     public void setIsCached(Boolean isCached) {
         this.isCached = isCached;
+    }
+
+    public String getServerIp() {
+        return cppServer != null ? cppServer.getServerIp() : null;
+    }
+
+    public String getServerPort() {
+        return cppServer != null ? cppServer.getServerPort() : null;
+    }
+
+    public String getRedisIp() {
+        return redisInfo != null ? redisInfo.getRedisIp() : null;
+    }
+
+    public String getRedisPort() {
+        return redisInfo != null ? redisInfo.getRedisPort() : null;
     }
 
     public LocalDateTime getCreatedAt() {

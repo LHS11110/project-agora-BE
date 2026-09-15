@@ -17,7 +17,7 @@ public class RedisInfo {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "redis_id")
-    private Long redisId;
+    private Integer redisId;
 
     @Column(name = "redis_ip", nullable = false, length = 45)
     private String redisIp;
@@ -63,11 +63,11 @@ public class RedisInfo {
         }
     }
 
-    public Long getRedisId() {
+    public Integer getRedisId() {
         return redisId;
     }
 
-    public void setRedisId(Long redisId) {
+    public void setRedisId(Integer redisId) {
         this.redisId = redisId;
     }
 

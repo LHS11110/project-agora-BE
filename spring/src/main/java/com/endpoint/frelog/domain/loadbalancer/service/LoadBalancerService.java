@@ -150,7 +150,7 @@ public class LoadBalancerService {
             return socketKeyCount;
         }
 
-        long dbCount = canvasInfoRepository.countByRedisIpAndRedisPort(redisIp, redisPort);
+        long dbCount = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redisIp, redisPort);
         return (int) dbCount;
     }
 
@@ -247,7 +247,7 @@ public class LoadBalancerService {
         ServerInfo server = serverInfoRepository.findById(serverId)
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.existsByServerIpAndServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
+        boolean inUse = canvasInfoRepository.existsByCppServer_ServerIpAndCppServer_ServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -278,7 +278,7 @@ public class LoadBalancerService {
         ServerInfo server = serverInfoRepository.findById(serverId)
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.existsByServerIpAndServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
+        boolean inUse = canvasInfoRepository.existsByCppServer_ServerIpAndCppServer_ServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",
@@ -338,7 +338,7 @@ public class LoadBalancerService {
         RedisInfo redis = redisInfoRepository.findById(redisId)
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.existsByRedisIpAndRedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
+        boolean inUse = canvasInfoRepository.existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -369,7 +369,7 @@ public class LoadBalancerService {
         RedisInfo redis = redisInfoRepository.findById(redisId)
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.existsByRedisIpAndRedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
+        boolean inUse = canvasInfoRepository.existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",

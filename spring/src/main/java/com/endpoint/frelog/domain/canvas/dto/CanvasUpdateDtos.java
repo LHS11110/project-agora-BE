@@ -82,9 +82,9 @@ public class CanvasUpdateDtos {
 
         private static String calculateWsPort(String serverPort) {
             try {
-                return String.valueOf(Integer.parseInt(serverPort) + 1);
+                return String.valueOf(Integer.parseInt(serverPort) + 2);
             } catch (Exception e) {
-                return "8001";
+                return "8002";
             }
         }
     }

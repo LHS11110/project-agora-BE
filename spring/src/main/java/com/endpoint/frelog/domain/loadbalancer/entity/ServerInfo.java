@@ -17,7 +17,7 @@ public class ServerInfo {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(name = "server_id")
-    private Long serverId;
+    private Integer serverId;
 
     @Column(name = "server_ip", nullable = false, length = 45)
     private String serverIp;
@@ -56,11 +56,11 @@ public class ServerInfo {
         }
     }
 
-    public Long getServerId() {
+    public Integer getServerId() {
         return serverId;
     }
 
-    public void setServerId(Long serverId) {
+    public void setServerId(Integer serverId) {
         this.serverId = serverId;
     }
 

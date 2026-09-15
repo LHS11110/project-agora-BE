@@ -129,6 +129,68 @@ async function login() {
     el.loginBtn.disabled = false;
 }
 
+function toggleAuthTab(tab) {
+    const loginForm = document.getElementById('loginFormBlock');
+    const signupForm = document.getElementById('signupFormBlock');
+    const tabLoginBtn = document.getElementById('tabLoginBtn');
+    const tabSignupBtn = document.getElementById('tabSignupBtn');
+    
+    if (tab === 'login') {
+        loginForm.style.display = 'flex';
+        signupForm.style.display = 'none';
+        tabLoginBtn.classList.add('btn-primary');
+        tabLoginBtn.classList.remove('btn-outline');
+        tabSignupBtn.classList.remove('btn-primary');
+        tabSignupBtn.classList.add('btn-outline');
+        document.getElementById('authTitle').innerText = 'Welcome Back';
+        document.getElementById('authSubtitle').innerText = '프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드';
+    } else {
+        loginForm.style.display = 'none';
+        signupForm.style.display = 'flex';
+        tabSignupBtn.classList.add('btn-primary');
+        tabSignupBtn.classList.remove('btn-outline');
+        tabLoginBtn.classList.remove('btn-primary');
+        tabLoginBtn.classList.add('btn-outline');
+        document.getElementById('authTitle').innerText = 'Create Account';
+        document.getElementById('authSubtitle').innerText = '새로운 테스트 계정을 생성합니다';
+    }
+}
+
+async function signup() {
+    const email = document.getElementById('signupEmail').value;
+    const password = document.getElementById('signupPassword').value;
+    const nickname = document.getElementById('signupNickname').value;
+    const btnText = document.getElementById('signupText');
+    const btnLoader = document.getElementById('signupLoader');
+    const btn = document.getElementById('signupBtn');
+    
+    if (!email || !password || !nickname) {
+        alert('모든 필드를 입력해주세요.');
+        return;
+    }
+    
+    btnText.style.display = 'none';
+    btnLoader.style.display = 'block';
+    btn.disabled = true;
+
+    const res = await apiCall('/api/auth/signup', 'POST', { email, password, nickname });
+
+    if (res.ok) {
+        alert('계정이 성공적으로 생성되었습니다!');
+        // Automatically login
+        el.email.value = email;
+        el.password.value = password;
+        toggleAuthTab('login');
+        await login();
+    } else {
+        alert('계정 생성 실패: ' + (res.data?.message || '입력값을 확인해주세요.'));
+    }
+
+    btnText.style.display = 'block';
+    btnLoader.style.display = 'none';
+    btn.disabled = false;
+}
+
 function logout() {
     state.token = '';
     state.user = null;
@@ -199,6 +261,30 @@ function selectCanvas(canvas) {
     
     el.activeCanvasTitle.innerText = `🎨 #${canvas.canvas_id} ${canvas.canvas_name}`;
     el.activeCanvasMeta.innerText = `현재 선택된 캔버스입니다. 우측 상단의 접속 버튼을 눌러 통신을 시작하세요.`;
+    document.getElementById('settingsBtn').style.display = 'block';
+    
+    // Fetch participants list
+    const participantsEl = document.getElementById('activeCanvasParticipants');
+    if (participantsEl) {
+        participantsEl.innerText = '참여자 정보 불러오는 중...';
+        Promise.all([
+            apiCall(`/api/canvases/${canvas.canvas_id}/document`),
+            apiCall('/api/users')
+        ]).then(([docRes, usersRes]) => {
+            if (docRes.ok && usersRes.ok) {
+                const peopleIds = docRes.data.people || docRes.data.peoples || [];
+                const users = usersRes.data || [];
+                const userMap = new Map(users.map(u => [u.userId, u.nickname]));
+                
+                const participantNames = peopleIds.map(id => userMap.get(id) || `알수없음(ID:${id})`);
+                participantsEl.innerHTML = `<strong>👥 초대된 참여자:</strong> ${participantNames.length > 0 ? participantNames.join(', ') : '없음'}`;
+            } else {
+                participantsEl.innerText = '참여자 정보를 불러오지 못했습니다.';
+            }
+        }).catch(() => {
+            participantsEl.innerText = '';
+        });
+    }
     
     disconnectWebSocket();
     loadCanvases(); // Refresh active UI states
@@ -334,8 +420,79 @@ function addSystemMessage(text) {
     const div = document.createElement('div');
     div.className = 'msg-system';
     div.innerText = text;
-    el.chatContainer.appendChild(div);
+    document.getElementById('chatContainer').appendChild(div);
     scrollToBottom();
+}
+
+// --- Canvas Settings Modal ---
+function openSettingsModal() {
+    if (!state.currentCanvas) return;
+    document.getElementById('settingsModal').style.display = 'flex';
+    document.getElementById('settingCanvasName').value = state.currentCanvas.canvas_name || '';
+}
+
+function closeSettingsModal() {
+    document.getElementById('settingsModal').style.display = 'none';
+}
+
+async function updateCanvasSetting(type) {
+    if (!state.currentCanvas) return;
+    const cid = state.currentCanvas.canvas_id;
+    let url, value;
+
+    if (type === 'name') {
+        value = document.getElementById('settingCanvasName').value;
+        url = `/api/canvases/${cid}/name`;
+    } else if (type === 'description') {
+        value = document.getElementById('settingCanvasDesc').value;
+        url = `/api/canvases/${cid}/description`;
+    } else if (type === 'password') {
+        value = document.getElementById('settingCanvasPwd').value;
+        url = `/api/canvases/${cid}/password`;
+    }
+
+    if (!value) return alert('값을 입력해주세요.');
+
+    const payload = {};
+    if (type === 'name') payload.canvasName = value;
+    if (type === 'description') payload.description = value;
+    if (type === 'password') payload.password = value;
+
+    const res = await apiCall(url, 'PATCH', payload);
+    if (res.ok) {
+        alert('성공적으로 변경되었습니다.');
+        loadCanvases();
+        if (type === 'name') {
+            state.currentCanvas.canvas_name = value;
+            document.getElementById('activeCanvasTitle').innerText = `🎨 #${cid} ${value}`;
+        }
+    } else {
+        alert('변경 실패: ' + (res.data?.message || '권한이 없거나 오류가 발생했습니다.'));
+    }
+}
+
+async function manageParticipant(action) {
+    if (!state.currentCanvas) return;
+    const cid = state.currentCanvas.canvas_id;
+    const targetUserId = document.getElementById('settingParticipantId').value;
+    
+    if (!targetUserId) return alert('유저 ID를 입력해주세요.');
+
+    let url = `/api/canvases/${cid}/people`;
+    let method = 'POST';
+    
+    if (action === 'remove') {
+        url = `/api/canvases/${cid}/people/${targetUserId}`;
+        method = 'DELETE';
+    }
+
+    const res = await apiCall(url, method, action === 'add' ? { userId: parseInt(targetUserId) } : null);
+    if (res.ok) {
+        alert(`참여자가 성공적으로 ${action === 'add' ? '추가' : '제외'}되었습니다.`);
+        selectCanvas(state.currentCanvas); // Refresh participant list
+    } else {
+        alert('처리 실패: ' + (res.data?.message || '오류가 발생했습니다.'));
+    }
 }
 
 function addChatMessage(sender, text, isMe) {

@@ -45,7 +45,7 @@ std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
         return {"127.0.0.1", 6379};
     }
 
-    std::string sql = "SELECT redis_ip, redis_port FROM canvas_info WHERE canvas_id = " + std::to_string(canvasId);
+    std::string sql = "SELECT r.redis_ip, r.redis_port FROM canvas_info c JOIN redis_server r ON c.redis_id = r.redis_id WHERE c.canvas_id = " + std::to_string(canvasId);
     dbcmd(dbproc, sql.c_str());
 
     if (dbsqlexec(dbproc) == FAIL) {
@@ -112,7 +112,7 @@ bool MssqlClient::updateCanvasUncached(int canvasId) {
         return false;
     }
 
-    std::string sql = "UPDATE canvas_info SET is_cached = 0, redis_ip = NULL, redis_port = NULL, server_ip = NULL, server_port = NULL, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId);
+    std::string sql = "UPDATE canvas_info SET is_cached = 0, redis_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId);
     dbcmd(dbproc, sql.c_str());
 
     if (dbsqlexec(dbproc) == FAIL) {

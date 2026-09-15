@@ -45,20 +45,8 @@ public class User {
     @Column(name = "oauth_id", length = 255)
     private String oauthId;
 
-    @Column(name = "last_login_at")
-    private LocalDateTime lastLoginAt;
-
     @Column(name = "password_changed_at")
     private LocalDateTime passwordChangedAt;
-
-    @Column(name = "is_accessed", nullable = false)
-    private Boolean isAccessed = false;
-
-    @Column(name = "server_ip", length = 45)
-    private String serverIp;
-
-    @Column(name = "server_port", length = 10)
-    private String serverPort;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -92,9 +80,6 @@ public class User {
         if (this.status == null) {
             this.status = UserStatus.ACTIVE;
         }
-        if (this.isAccessed == null) {
-            this.isAccessed = false;
-        }
     }
 
     @PreUpdate
@@ -102,9 +87,6 @@ public class User {
         this.updatedAt = LocalDateTime.now();
     }
 
-    public void updateLastLogin(LocalDateTime loginTime) {
-        this.lastLoginAt = loginTime;
-    }
 
     public void changePassword(String newPasswordHash) {
         this.passwordHash = newPasswordHash;
@@ -180,13 +162,6 @@ public class User {
         this.oauthId = oauthId;
     }
 
-    public LocalDateTime getLastLoginAt() {
-        return lastLoginAt;
-    }
-
-    public void setLastLoginAt(LocalDateTime lastLoginAt) {
-        this.lastLoginAt = lastLoginAt;
-    }
 
     public LocalDateTime getPasswordChangedAt() {
         return passwordChangedAt;
@@ -212,27 +187,4 @@ public class User {
         this.updatedAt = updatedAt;
     }
 
-    public Boolean getIsAccessed() {
-        return isAccessed;
-    }
-
-    public void setIsAccessed(Boolean accessed) {
-        isAccessed = accessed;
-    }
-
-    public String getServerIp() {
-        return serverIp;
-    }
-
-    public void setServerIp(String serverIp) {
-        this.serverIp = serverIp;
-    }
-
-    public String getServerPort() {
-        return serverPort;
-    }
-
-    public void setServerPort(String serverPort) {
-        this.serverPort = serverPort;
-    }
 }

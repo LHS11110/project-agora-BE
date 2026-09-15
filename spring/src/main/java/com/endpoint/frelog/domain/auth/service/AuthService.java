@@ -8,8 +8,10 @@ import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.user.dto.UpdateUserRequest;
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
+import com.endpoint.frelog.domain.user.entity.UserSession;
 import com.endpoint.frelog.domain.user.entity.UserStatus;
 import com.endpoint.frelog.domain.user.repository.UserRepository;
+import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
@@ -35,15 +37,18 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final CppServerClient cppServerClient;
+    private final UserSessionRepository userSessionRepository;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtTokenProvider jwtTokenProvider,
-                       CppServerClient cppServerClient) {
+                       CppServerClient cppServerClient,
+                       UserSessionRepository userSessionRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
         this.cppServerClient = cppServerClient;
+        this.userSessionRepository = userSessionRepository;
     }
 
     @Transactional
@@ -63,8 +68,9 @@ public class AuthService {
             throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         }
 
-        user.updateLastLogin(LocalDateTime.now());
-        userRepository.save(user);
+        UserSession session = userSessionRepository.findById(user.getUserId()).orElse(new UserSession(user));
+        session.updateLastLogin(LocalDateTime.now());
+        userSessionRepository.save(session);
 
         // Multi-session login: stateless JWT issued per login request
         String token = jwtTokenProvider.createToken(
@@ -156,11 +162,14 @@ public class AuthService {
         }
 
         // 1. 접속 중인지 확인 후 C++ 서버에 접속 종료 요청
-        if (Boolean.TRUE.equals(user.getIsAccessed())) {
+        UserSession session = userSessionRepository.findById(userId).orElse(null);
+        if (session != null && Boolean.TRUE.equals(session.getIsAccessed())) {
+            String serverIp = session.getCppServer() != null ? session.getCppServer().getServerIp() : null;
+            String serverPort = session.getCppServer() != null ? session.getCppServer().getServerPort() : null;
             log.info("회원 #{}가 실시간 서버({}:{})에 접속 중이므로 C++ 서버 접속 중단 요청을 전송합니다.",
-                    userId, user.getServerIp(), user.getServerPort());
-            if (user.getServerIp() != null && user.getServerPort() != null) {
-                cppServerClient.disconnectUser(user.getServerIp(), user.getServerPort(), userId);
+                    userId, serverIp, serverPort);
+            if (serverIp != null && serverPort != null) {
+                cppServerClient.disconnectUser(serverIp, serverPort, userId);
             }
         }
 
@@ -168,11 +177,15 @@ public class AuthService {
         String hashValue = generateHash(userId);
         user.setNickname("deleted user-" + hashValue);
         user.setStatus(UserStatus.WITHDRAWN);
-        user.setIsAccessed(false);
-        user.setServerIp(null);
-        user.setServerPort(null);
 
         userRepository.save(user);
+
+        if (session != null) {
+            session.setIsAccessed(false);
+            session.setCppServer(null);
+            userSessionRepository.save(session);
+        }
+
         log.info("회원 #{} 소프트 딜리트 완료: nickname='{}', status=WITHDRAWN", userId, user.getNickname());
     }
 

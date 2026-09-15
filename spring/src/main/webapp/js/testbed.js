@@ -8,7 +8,7 @@ let currentToken = localStorage.getItem('agora_token') || '';
 let currentUser = JSON.parse(localStorage.getItem('agora_user') || 'null');
 let allocatedCppIp = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
 let allocatedCppPort = '8000';
-let allocatedWsPort = '8001';
+let allocatedWsPort = '8002';
 let allocatedRxPort = 0;
 let allocatedTxPort = 0;
 let activeWebSocket = null;
@@ -409,7 +409,7 @@ function connectCanvasWebSocket(cid) {
 
   let wsHost = allocatedCppIp || '127.0.0.1';
   if (wsHost === '127.0.0.1' || wsHost === 'localhost') wsHost = window.location.hostname;
-  const wsPort = allocatedWsPort || '8001';
+  const wsPort = allocatedWsPort || '8002';
   const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${canvas_id}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
   logConsole('WEBSOCKET CONNECT', `uWebSockets 서버로 실제 웹소켓 연결 시도: ${wsUrl}`);
@@ -450,7 +450,7 @@ function connectCanvasWebSocket(cid) {
     activeWebSocket.onclose = async (event) => {
       let closeMsg = `uWebSockets 연결 종료됨 (code: ${event.code})`;
       if (event.code === 1006) {
-        closeMsg += ' [비정상 종료: 토큰 인증 실패 또는 C++ 웹소켓 서버(8001)에 연결할 수 없습니다. 로그인 후 "Spring API 접속" 버튼을 먼저 클릭했는지 확인해주세요.]';
+        closeMsg += ' [비정상 종료: 토큰 인증 실패 또는 C++ 웹소켓 서버(8002)에 연결할 수 없습니다. 로그인 후 "Spring API 접속" 버튼을 먼저 클릭했는지 확인해주세요.]';
       }
       logConsole('WEBSOCKET CLOSE', closeMsg);
       if (statusEl) {
@@ -638,7 +638,7 @@ async function testCanvasCreateAndSocketLoad() {
     if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/6단계: uWebSockets(포트 ${allocatedWsPort}) 브라우저 웹소켓 실시간 연결 중...</span>`;
     let wsHost = allocatedCppIp || '127.0.0.1';
     if (wsHost === '127.0.0.1' || wsHost === 'localhost') wsHost = window.location.hostname;
-    const wsPort = allocatedWsPort || '8001';
+    const wsPort = allocatedWsPort || '8002';
     const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${testCid}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
     const wsConnectPromise = new Promise((resolve, reject) => {
@@ -1082,7 +1082,7 @@ async function bcAddUserClient(email, password) {
 
   let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
   if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
-  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
+  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8002';
 
   const clientId = bcNextId++;
   const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${token}&user_id=${userId}`;
@@ -1132,7 +1132,7 @@ async function bcAddCurrentClient() {
 
   let host = accessData.server_ip || allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
   if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
-  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
+  const port = accessData.ws_port || allocatedWsPort || document.getElementById('bcWsPort').value || '8002';
 
   const clientId = bcNextId++;
   const wsUrl = `ws://${host}:${port}/ws/canvas/${canvasId}?token=${currentToken}&user_id=${userId}`;
@@ -1433,7 +1433,7 @@ async function bcRunAutoTest() {
     });
 
     // Step 4: uWebSockets 실제 연결 수립
-    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/8단계: C++ uWebSockets(8001) 실시간 웹소켓 연결 중...</p></div>';
+    if (resultEl) resultEl.innerHTML = '<div class="card"><div class="card-title">📡 자동 브로드캐스트 테스트 진행 중...</div><p style="color: var(--text-muted);">4/8단계: C++ uWebSockets(8002) 실시간 웹소켓 연결 중...</p></div>';
 
     const c1 = await bcAddUserClient('admin@agora.com', 'admin123');
     await sleep(300);
@@ -1586,7 +1586,7 @@ async function bcRunAutoTest() {
         <div class="card" style="border-color: #ef4444;">
           <div class="card-title" style="color: #f87171;">❌ 브로드캐스트 테스트 실패</div>
           <p style="color: var(--text-muted);">${err.message}</p>
-          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버(8001) 및 Spring Boot(8080) 정상 가동 여부를 확인하세요.</p>
+          <p style="font-size: 0.78rem; color: var(--text-dim); margin-top: 8px;">C++ 서버(8002) 및 Spring Boot(8080) 정상 가동 여부를 확인하세요.</p>
         </div>`;
     }
   } finally {

@@ -47,7 +47,7 @@ public record UserResponse(
                 user.getRole(),
                 user.getStatus(),
                 user.getStatus() != null ? user.getStatus().name() : null,
-                user.getLastLoginAt(),
+                null, // lastLoginAt is now in UserSession
                 user.getPasswordChangedAt(),
                 user.getCreatedAt(),
                 user.getUpdatedAt()

@@ -7,349 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #0b0e14;
-            --glass-bg: rgba(17, 24, 39, 0.6);
-            --glass-border: rgba(255, 255, 255, 0.08);
-            --primary: #3b82f6;
-            --primary-glow: rgba(59, 130, 246, 0.5);
-            --accent: #8b5cf6;
-            --accent-glow: rgba(139, 92, 246, 0.5);
-            --text-main: #f3f4f6;
-            --text-muted: #9ca3af;
-            --success: #10b981;
-            --danger: #ef4444;
-            --font-family: 'Inter', sans-serif;
-        }
-
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            font-family: var(--font-family);
-            min-height: 100vh;
-            overflow-x: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        /* Animated Background Orbs */
-        .orb {
-            position: absolute;
-            border-radius: 50%;
-            filter: blur(80px);
-            z-index: -1;
-            animation: float 10s infinite alternate ease-in-out;
-        }
-        .orb-1 { width: 400px; height: 400px; background: var(--primary-glow); top: -100px; left: -100px; }
-        .orb-2 { width: 500px; height: 500px; background: var(--accent-glow); bottom: -150px; right: -100px; animation-delay: -5s; }
-
-        @keyframes float {
-            0% { transform: translate(0, 0) scale(1); }
-            100% { transform: translate(30px, 50px) scale(1.1); }
-        }
-
-        /* Glassmorphism Container */
-        .app-container {
-            width: 100%;
-            max-width: 1200px;
-            height: 90vh;
-            display: flex;
-            flex-direction: column;
-            background: var(--glass-bg);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid var(--glass-border);
-            border-radius: 24px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            overflow: hidden;
-            opacity: 0;
-            transform: translateY(20px);
-            animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-        }
-
-        @keyframes slideUpFade {
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Header */
-        header {
-            padding: 20px 30px;
-            border-bottom: 1px solid var(--glass-border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: rgba(0,0,0,0.2);
-        }
-        header h1 {
-            font-size: 1.25rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #60a5fa, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .user-status {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 0.9rem;
-        }
-
-        /* Views */
-        .view {
-            display: none;
-            flex: 1;
-            flex-direction: column;
-            padding: 30px;
-            height: 100%;
-            overflow-y: auto;
-        }
-        .view.active {
-            display: flex;
-            animation: fadeIn 0.4s ease-out forwards;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: scale(0.98); }
-            to { opacity: 1; transform: scale(1); }
-        }
-
-        /* UI Elements */
-        input {
-            width: 100%;
-            padding: 14px 16px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 12px;
-            color: #fff;
-            font-family: var(--font-family);
-            font-size: 0.95rem;
-            outline: none;
-            transition: all 0.3s ease;
-        }
-        input:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
-            background: rgba(0, 0, 0, 0.5);
-        }
-
-        button {
-            padding: 14px 24px;
-            border: none;
-            border-radius: 12px;
-            font-size: 0.95rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary), #2563eb);
-            color: white;
-            box-shadow: 0 4px 14px var(--primary-glow);
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px var(--primary-glow);
-        }
-        .btn-outline {
-            background: rgba(255,255,255,0.05);
-            border: 1px solid rgba(255,255,255,0.15);
-            color: var(--text-main);
-        }
-        .btn-outline:hover {
-            background: rgba(255,255,255,0.1);
-            transform: translateY(-1px);
-        }
-        .btn-danger {
-            background: linear-gradient(135deg, var(--danger), #dc2626);
-            color: white;
-        }
-
-        /* Auth View */
-        .auth-container {
-            max-width: 400px;
-            margin: auto;
-            width: 100%;
-            text-align: center;
-        }
-        .auth-container h2 {
-            font-size: 2rem;
-            margin-bottom: 8px;
-            font-weight: 700;
-        }
-        .auth-container p {
-            color: var(--text-muted);
-            margin-bottom: 30px;
-        }
-        .auth-form {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .quick-logins {
-            margin-top: 24px;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-
-        /* Dashboard Layout */
-        .dashboard-layout {
-            display: flex;
-            gap: 24px;
-            flex: 1;
-            height: calc(100% - 70px);
-            padding: 24px;
-        }
-        .sidebar {
-            width: 320px;
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
-            border-right: 1px solid var(--glass-border);
-            padding-right: 24px;
-        }
-        .main-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            background: rgba(0,0,0,0.2);
-            border-radius: 16px;
-            border: 1px solid var(--glass-border);
-            overflow: hidden;
-        }
-
-        /* Canvas List */
-        .section-title {
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--text-muted);
-            font-weight: 600;
-            margin-bottom: 12px;
-        }
-        .canvas-card {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.08);
-            padding: 16px;
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.2s;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .canvas-card:hover, .canvas-card.active {
-            background: rgba(59, 130, 246, 0.1);
-            border-color: rgba(59, 130, 246, 0.4);
-            transform: translateX(4px);
-        }
-        .canvas-name { font-weight: 600; font-size: 1rem; }
-        .canvas-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: var(--text-muted);
-            box-shadow: 0 0 5px rgba(0,0,0,0.5);
-            transition: background 0.3s, box-shadow 0.3s;
-        }
-        .status-dot.active { background: var(--success); box-shadow: 0 0 10px var(--success); }
-
-        /* Broadcast Chat UI */
-        .chat-header {
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--glass-border);
-            background: rgba(255,255,255,0.02);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .chat-messages {
-            flex: 1;
-            padding: 24px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
-        .message {
-            max-width: 80%;
-            padding: 12px 16px;
-            border-radius: 16px;
-            font-size: 0.95rem;
-            line-height: 1.4;
-            animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-            word-break: break-all;
-        }
-        @keyframes slideIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .msg-system {
-            background: rgba(255,255,255,0.05);
-            color: var(--text-muted);
-            align-self: center;
-            font-size: 0.8rem;
-            border-radius: 8px;
-            padding: 6px 12px;
-        }
-        .msg-me {
-            background: linear-gradient(135deg, var(--primary), #2563eb);
-            align-self: flex-end;
-            border-bottom-right-radius: 4px;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
-        }
-        .msg-other {
-            background: rgba(255,255,255,0.08);
-            align-self: flex-start;
-            border-bottom-left-radius: 4px;
-        }
-        .msg-sender {
-            font-size: 0.75rem;
-            color: rgba(255,255,255,0.6);
-            margin-bottom: 4px;
-            font-weight: 600;
-        }
-
-        .chat-input-area {
-            padding: 20px;
-            background: rgba(0,0,0,0.3);
-            border-top: 1px solid var(--glass-border);
-            display: flex;
-            gap: 12px;
-        }
-        .chat-input-area input {
-            flex: 1;
-        }
-
-        /* Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
-
-        .loader {
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top: 3px solid #fff;
-            border-radius: 50%;
-            width: 18px;
-            height: 18px;
-            animation: spin 1s linear infinite;
-            display: none;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-    </style>
+    <link rel="stylesheet" href="/css/index.css">
 </head>
 <body>
 
@@ -368,21 +26,36 @@
         <!-- Auth View -->
         <div id="authView" class="view active">
             <div class="auth-container">
-                <h2>Welcome Back</h2>
-                <p>프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드</p>
+                <h2 id="authTitle">Welcome Back</h2>
+                <p id="authSubtitle">프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드</p>
                 
-                <div class="auth-form">
+                <div class="auth-tabs" style="display:flex; justify-content:center; gap: 10px; margin-bottom: 20px;">
+                    <button id="tabLoginBtn" class="btn-primary" onclick="toggleAuthTab('login')" style="padding: 6px 12px; font-size: 0.8rem;">로그인</button>
+                    <button id="tabSignupBtn" class="btn-outline" onclick="toggleAuthTab('signup')" style="padding: 6px 12px; font-size: 0.8rem;">계정 생성</button>
+                </div>
+
+                <div class="auth-form" id="loginFormBlock">
                     <input type="email" id="email" placeholder="이메일 (admin@agora.com)" value="admin@agora.com">
                     <input type="password" id="password" placeholder="비밀번호 (admin123)" value="admin123">
                     <button class="btn-primary" onclick="login()" id="loginBtn">
                         <span id="loginText">로그인 및 시스템 접속</span>
                         <div class="loader" id="loginLoader"></div>
                     </button>
+                    
+                    <div class="quick-logins">
+                        <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('admin@agora.com', 'admin123')">👑 Admin</button>
+                        <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('user@agora.com', 'password123')">👤 User</button>
+                    </div>
                 </div>
 
-                <div class="quick-logins">
-                    <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('admin@agora.com', 'admin123')">👑 Admin</button>
-                    <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('user@agora.com', 'password123')">👤 User</button>
+                <div class="auth-form" id="signupFormBlock" style="display: none;">
+                    <input type="email" id="signupEmail" placeholder="이메일">
+                    <input type="password" id="signupPassword" placeholder="비밀번호 (6자 이상)">
+                    <input type="text" id="signupNickname" placeholder="닉네임">
+                    <button class="btn-primary" onclick="signup()" id="signupBtn">
+                        <span id="signupText">계정 생성</span>
+                        <div class="loader" id="signupLoader"></div>
+                    </button>
                 </div>
             </div>
         </div>
@@ -420,6 +93,7 @@
                         <span id="connectionBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-muted);">
                             <div class="status-dot" id="connectionDot"></div> <span id="connectionText">미연결</span>
                         </span>
+                        <button id="settingsBtn" class="btn-outline" style="padding: 8px 12px; font-size: 0.85rem; display: none;" onclick="openSettingsModal()">⚙️ 설정</button>
                         <button id="connectBtn" class="btn-primary" style="padding: 8px 16px; font-size: 0.85rem;" onclick="connectActiveCanvas()">접속하기</button>
                     </div>
                 </div>
@@ -431,6 +105,51 @@
                 <div class="chat-input-area">
                     <input type="text" id="chatInput" placeholder="메시지를 입력하세요... (Enter 키로 전송)" onkeypress="handleChatKey(event)" disabled>
                     <button class="btn-primary" id="sendBtn" onclick="sendMessage()" disabled>전송</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Canvas Settings Modal -->
+        <div id="settingsModal" style="display:none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;">
+            <div class="auth-container" style="background: #111; border: 1px solid var(--glass-border); border-radius: 16px; padding: 30px; position: relative; max-width: 450px;">
+                <button class="btn-outline" style="position: absolute; top: 15px; right: 15px; border: none; padding: 5px 10px;" onclick="closeSettingsModal()">✕</button>
+                <h3 style="margin-bottom: 20px; font-size: 1.2rem;">⚙️ 캔버스 설정</h3>
+                
+                <div class="auth-form" style="text-align: left; gap: 12px;">
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">이름 변경</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="settingCanvasName" placeholder="새 이름">
+                            <button class="btn-outline" onclick="updateCanvasSetting('name')">변경</button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">설명 변경</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="settingCanvasDesc" placeholder="설명">
+                            <button class="btn-outline" onclick="updateCanvasSetting('description')">변경</button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">비밀번호 설정</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="password" id="settingCanvasPwd" placeholder="새 비밀번호">
+                            <button class="btn-outline" onclick="updateCanvasSetting('password')">설정</button>
+                        </div>
+                    </div>
+                    
+                    <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;">
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">참여자 관리 (User ID)</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" id="settingParticipantId" placeholder="유저 ID">
+                            <button class="btn-outline" onclick="manageParticipant('add')">추가</button>
+                            <button class="btn-danger" style="border:none; border-radius: 12px; padding: 14px 24px; font-weight: 600;" onclick="manageParticipant('remove')">제외</button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

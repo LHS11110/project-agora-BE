@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
     if (argc > 2) {
         host = argv[2];
     }
-    int ws_port = port + 1;
+    int ws_port = port + 2; // Default to 8002 if port is 8000, avoiding 8001 (Redis Stack)
     if (const char* env_ws_port = std::getenv("WS_PORT")) ws_port = std::stoi(env_ws_port);
 
     std::cout << "========================================" << std::endl;

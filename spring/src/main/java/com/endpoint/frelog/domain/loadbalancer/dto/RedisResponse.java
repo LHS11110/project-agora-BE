@@ -3,7 +3,7 @@ package com.endpoint.frelog.domain.loadbalancer.dto;
 import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
 
 public record RedisResponse(
-        Long redisId,
+        Integer redisId,
         String redisIp,
         String redisPort,
         String redisName,

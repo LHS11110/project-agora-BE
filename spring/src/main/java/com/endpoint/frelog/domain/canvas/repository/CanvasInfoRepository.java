@@ -13,11 +13,11 @@ public interface CanvasInfoRepository extends JpaRepository<CanvasInfo, Integer>
     @Query("SELECT COALESCE(MAX(c.canvasId), 0) FROM CanvasInfo c")
     Integer findMaxCanvasId();
 
-    long countByRedisIpAndRedisPort(String redisIp, String redisPort);
+    long countByRedisInfo_RedisIpAndRedisInfo_RedisPort(String redisIp, String redisPort);
 
-    long countByServerIpAndServerPort(String serverIp, String serverPort);
+    long countByCppServer_ServerIpAndCppServer_ServerPort(String serverIp, String serverPort);
 
-    boolean existsByRedisIpAndRedisPortAndIsCachedTrue(String redisIp, String redisPort);
+    boolean existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(String redisIp, String redisPort);
 
-    boolean existsByServerIpAndServerPortAndIsCachedTrue(String serverIp, String serverPort);
+    boolean existsByCppServer_ServerIpAndCppServer_ServerPortAndIsCachedTrue(String serverIp, String serverPort);
 }

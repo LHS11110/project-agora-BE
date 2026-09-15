@@ -10,10 +10,16 @@ import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
+import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
+import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
+import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
+import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.service.LoadBalancerService;
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
+import com.endpoint.frelog.domain.user.entity.UserSession;
 import com.endpoint.frelog.domain.user.repository.UserRepository;
+import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
@@ -39,6 +45,9 @@ public class CanvasService {
     private final CanvasResourceService canvasResourceService;
     private final CppServerClient cppServerClient;
     private final LoadBalancerService loadBalancerService;
+    private final RedisInfoRepository redisInfoRepository;
+    private final ServerInfoRepository serverInfoRepository;
+    private final UserSessionRepository userSessionRepository;
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
@@ -46,13 +55,19 @@ public class CanvasService {
             CanvasElasticsearchService canvasElasticsearchService,
             CanvasResourceService canvasResourceService,
             CppServerClient cppServerClient,
-            LoadBalancerService loadBalancerService) {
+            LoadBalancerService loadBalancerService,
+            RedisInfoRepository redisInfoRepository,
+            ServerInfoRepository serverInfoRepository,
+            UserSessionRepository userSessionRepository) {
         this.canvasInfoRepository = canvasInfoRepository;
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
         this.canvasResourceService = canvasResourceService;
         this.cppServerClient = cppServerClient;
         this.loadBalancerService = loadBalancerService;
+        this.redisInfoRepository = redisInfoRepository;
+        this.serverInfoRepository = serverInfoRepository;
+        this.userSessionRepository = userSessionRepository;
     }
 
     /**
@@ -435,10 +450,10 @@ public class CanvasService {
         boolean isCached = Boolean.TRUE.equals(canvasInfo.getIsCached());
 
         if (isCached) {
-            String serverIp = canvasInfo.getServerIp();
-            String serverPort = canvasInfo.getServerPort();
-            String redisIp = canvasInfo.getRedisIp();
-            String redisPort = canvasInfo.getRedisPort();
+            String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
+            String serverPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerPort() : "none";
+            String redisIp = canvasInfo.getRedisInfo() != null ? canvasInfo.getRedisInfo().getRedisIp() : "none";
+            String redisPort = canvasInfo.getRedisInfo() != null ? canvasInfo.getRedisInfo().getRedisPort() : "none";
 
             log.info("캔버스 #{} 삭제: C++ 실시간 서버({}:{}) 및 Redis({}:{}) 캐시 정리 요청", canvasId, serverIp, serverPort, redisIp, redisPort);
             cppServerClient.deleteCanvasFromServerAndRedis(serverIp, serverPort, canvasId, redisIp, redisPort);
@@ -492,10 +507,10 @@ public class CanvasService {
             AllocateServerResponse serverAlloc = loadBalancerService.allocateServer();
             AllocateRedisResponse redisAlloc = loadBalancerService.allocateRedis();
 
-            canvasInfo.setServerIp(serverAlloc.serverIp());
-            canvasInfo.setServerPort(serverAlloc.serverPort());
-            canvasInfo.setRedisIp(redisAlloc.redisIp());
-            canvasInfo.setRedisPort(redisAlloc.redisPort());
+            ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverAlloc.serverIp(), serverAlloc.serverPort()).orElse(null);
+            RedisInfo rInfo = redisInfoRepository.findByRedisIpAndRedisPort(redisAlloc.redisIp(), redisAlloc.redisPort()).orElse(null);
+            canvasInfo.setCppServer(sInfo);
+            canvasInfo.setRedisInfo(rInfo);
             canvasInfo.setIsCached(true);
 
             canvasInfoRepository.save(canvasInfo);
@@ -504,17 +519,15 @@ public class CanvasService {
         }
 
         // 3. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록하고 캔버스 활성화
-        String serverIp = canvasInfo.getServerIp();
-        String serverPort = canvasInfo.getServerPort();
+        String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
+        String serverPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerPort() : "none";
         cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken, canvasId);
 
-        // 4. user 테이블 상태 갱신 (접속 중 상태로 기록)
-        userRepository.findById(userId).ifPresent(user -> {
-            user.setIsAccessed(true);
-            user.setServerIp(serverIp);
-            user.setServerPort(serverPort);
-            userRepository.save(user);
-        });
+        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
+        UserSession session = userSessionRepository.findById(userId).orElse(new UserSession(userRepository.findById(userId).orElseThrow()));
+        session.setIsAccessed(true);
+        session.setCppServer(canvasInfo.getCppServer());
+        userSessionRepository.save(session);
 
         // 5. C++ 실시간 서버의 IP와 Port 반환
         return new CanvasUpdateDtos.AccessResponse(serverIp, serverPort);
@@ -530,16 +543,14 @@ public class CanvasService {
         }
         Long userId = currentUser.getUserId();
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
-
-        String serverIp = user.getServerIp();
-        String serverPort = user.getServerPort();
+        UserSession session = userSessionRepository.findById(userId).orElse(null);
+        String serverIp = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerIp() : null;
+        String serverPort = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerPort() : null;
 
         if ((serverIp == null || serverPort == null) && canvasId != null) {
             canvasInfoRepository.findById(canvasId).ifPresent(info -> {
-                if (info.getServerIp() != null && info.getServerPort() != null) {
-                    cppServerClient.disconnectUserFromCanvas(info.getServerIp(), info.getServerPort(), canvasId, userId);
+                if (info.getCppServer() != null) {
+                    cppServerClient.disconnectUserFromCanvas(info.getCppServer().getServerIp(), info.getCppServer().getServerPort(), canvasId, userId);
                 }
             });
         } else if (serverIp != null && serverPort != null) {
@@ -550,10 +561,11 @@ public class CanvasService {
             }
         }
 
-        user.setIsAccessed(false);
-        user.setServerIp(null);
-        user.setServerPort(null);
-        userRepository.save(user);
+        if (session != null) {
+            session.setIsAccessed(false);
+            session.setCppServer(null);
+            userSessionRepository.save(session);
+        }
         log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
     }
 
@@ -566,11 +578,10 @@ public class CanvasService {
     @Transactional
     public void handleInternalDisconnect(Integer canvasId, Long userId, Integer activeUsersCount) {
         if (userId != null) {
-            userRepository.findById(userId).ifPresent(user -> {
-                user.setIsAccessed(false);
-                user.setServerIp(null);
-                user.setServerPort(null);
-                userRepository.save(user);
+            userSessionRepository.findById(userId).ifPresent(session -> {
+                session.setIsAccessed(false);
+                session.setCppServer(null);
+                userSessionRepository.save(session);
                 log.info("[InternalDisconnect] C++ 웹소켓 종료 반영: 사용자 #{} isAccessed=false 설정 완료", userId);
             });
         }
@@ -578,10 +589,8 @@ public class CanvasService {
         if (canvasId != null && activeUsersCount != null && activeUsersCount <= 0) {
             canvasInfoRepository.findById(canvasId).ifPresent(canvasInfo -> {
                 canvasInfo.setIsCached(false);
-                canvasInfo.setRedisIp(null);
-                canvasInfo.setRedisPort(null);
-                canvasInfo.setServerIp(null);
-                canvasInfo.setServerPort(null);
+                canvasInfo.setRedisInfo(null);
+                canvasInfo.setCppServer(null);
                 canvasInfoRepository.save(canvasInfo);
                 log.info("[InternalDisconnect] 캔버스 #{} 활성 사용자 0명 감지: is_cached=false 및 ip/port=none(null) 반영 완료", canvasId);
             });
@@ -610,17 +619,19 @@ public class CanvasService {
 
         if (Boolean.FALSE.equals(isCached) || "none".equalsIgnoreCase(redisIp) || "none".equalsIgnoreCase(serverIp)) {
             canvasInfo.setIsCached(false);
-            canvasInfo.setRedisIp(null);
-            canvasInfo.setRedisPort(null);
-            canvasInfo.setServerIp(null);
-            canvasInfo.setServerPort(null);
+            canvasInfo.setRedisInfo(null);
+            canvasInfo.setCppServer(null);
         } else {
-            canvasInfo.updateCacheState(isCached, redisIp, redisPort, serverIp, serverPort);
+            RedisInfo rInfo = redisInfoRepository.findByRedisIpAndRedisPort(redisIp, redisPort).orElse(null);
+            ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverIp, serverPort).orElse(null);
+            canvasInfo.updateCacheState(isCached, rInfo, sInfo);
         }
 
         CanvasInfo saved = canvasInfoRepository.save(canvasInfo);
-        log.info("캔버스 #{} 캐시 상태 갱신 완료: isCached={}, Server={}:{}, Redis={}:{}",
-                canvasId, saved.getIsCached(), saved.getServerIp(), saved.getServerPort(), saved.getRedisIp(), saved.getRedisPort());
+        log.info("캔버스 #{} 캐시 상태 갱신 완료: isCached={}, Server={}, Redis={}",
+                canvasId, saved.getIsCached(), 
+                saved.getCppServer() != null ? saved.getCppServer().getServerIp() + ":" + saved.getCppServer().getServerPort() : "none", 
+                saved.getRedisInfo() != null ? saved.getRedisInfo().getRedisIp() + ":" + saved.getRedisInfo().getRedisPort() : "none");
 
         return CanvasResponse.from(saved);
     }
