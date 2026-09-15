@@ -83,7 +83,6 @@ class CanvasServiceTest {
     @DisplayName("캔버스 생성 시 MS SQL과 Elasticsearch에 각각 데이터가 저장된다")
     void createCanvas_Success() {
         // given
-        given(canvasInfoRepository.findMaxCanvasId()).willReturn(100);
         CanvasInfo savedInfo = new CanvasInfo(101);
         given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedInfo);
         given(canvasResourceService.saveRepresentativeImage(eq(101), any())).willReturn("/api/canvases/101/image");
@@ -218,7 +217,7 @@ class CanvasServiceTest {
         info.setIsCached(false);
         given(canvasInfoRepository.findById(300)).willReturn(Optional.of(info));
 
-        given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000"));
+        given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000", "8002"));
         given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));
 
         given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1")));

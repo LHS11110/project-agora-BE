@@ -53,7 +53,7 @@ class LoadBalancerControllerTest {
     @DisplayName("서버 할당 API 성공 시 200 OK 및 IP, Port 반환")
     void allocateServer_Success() throws Exception {
         given(loadBalancerService.allocateServer())
-                .willReturn(AllocateServerResponse.of("127.0.0.1", "8000"));
+                .willReturn(AllocateServerResponse.of("127.0.0.1", "8000", "8002"));
 
         mockMvc.perform(post("/api/load-balancer/allocate/server"))
                 .andExpect(status().isOk())

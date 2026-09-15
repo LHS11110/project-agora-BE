@@ -72,7 +72,7 @@ public class LoadBalancerService {
         if (servers.size() == 1) {
             ServerInfo single = servers.get(0);
             log.info("C++ Server 단일 등록 인스턴스 할당: {}:{}", single.getServerIp(), single.getServerPort());
-            return AllocateServerResponse.of(single.getServerIp(), single.getServerPort());
+            return AllocateServerResponse.of(single.getServerIp(), single.getServerPort(), single.getWsPort());
         }
 
         // Power of Two Choices: 무작위로 2개 후보 선택
@@ -95,7 +95,7 @@ public class LoadBalancerService {
                 s2.getServerIp(), s2.getServerPort(), load2,
                 chosen.getServerIp(), chosen.getServerPort());
 
-        return AllocateServerResponse.of(chosen.getServerIp(), chosen.getServerPort());
+        return AllocateServerResponse.of(chosen.getServerIp(), chosen.getServerPort(), chosen.getWsPort());
     }
 
     /**

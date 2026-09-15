@@ -98,7 +98,7 @@ async function showDashboard() {
     el.userNameText.style.color = 'var(--text-main)';
 
     // Auto setup servers for seamless testing
-    await apiCall('/api/servers', 'POST', { serverIp: '127.0.0.1', serverPort: '8000' });
+    await apiCall('/api/servers', 'POST', { serverIp: '127.0.0.1', serverPort: '8000', wsPort: '8002' });
     await apiCall('/api/redis', 'POST', { redisIp: '127.0.0.1', redisPort: '6379' });
 
     loadCanvases();
