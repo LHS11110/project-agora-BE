@@ -42,7 +42,7 @@ int main(int argc, char* argv[]) {
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
     if (const char* env_java_port = std::getenv("JAVA_PORT")) java_port = std::stoi(env_java_port);
 
-    // Command line args override: ./agora_cpp_server [port] [host]
+    // Command line args override: ./agora_cpp_server [port] [host] [ws_port]
     if (argc > 1) {
         port = std::stoi(argv[1]);
     }
@@ -51,6 +51,9 @@ int main(int argc, char* argv[]) {
     }
     int ws_port = port + 2; // Default to 8002 if port is 8000, avoiding 8001 (Redis Stack)
     if (const char* env_ws_port = std::getenv("WS_PORT")) ws_port = std::stoi(env_ws_port);
+    if (argc > 3) {
+        ws_port = std::stoi(argv[3]);
+    }
 
     std::cout << "========================================" << std::endl;
     std::cout << " Agora C++ Realtime Canvas Server" << std::endl;
