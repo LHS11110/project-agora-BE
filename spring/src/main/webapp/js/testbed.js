@@ -6,7 +6,7 @@
 
 let currentToken = localStorage.getItem('agora_token') || '';
 let currentUser = JSON.parse(localStorage.getItem('agora_user') || 'null');
-let allocatedCppIp = '127.0.0.1';
+let allocatedCppIp = window.location.hostname === 'localhost' ? '127.0.0.1' : window.location.hostname;
 let allocatedCppPort = '8000';
 let allocatedWsPort = '8001';
 let allocatedRxPort = 0;
@@ -391,7 +391,8 @@ function connectCanvasWebSocket(cid) {
     return;
   }
 
-  const wsHost = allocatedCppIp || '127.0.0.1';
+  let wsHost = allocatedCppIp || '127.0.0.1';
+  if (wsHost === '127.0.0.1' || wsHost === 'localhost') wsHost = window.location.hostname;
   const wsPort = allocatedWsPort || '8001';
   const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${canvas_id}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
@@ -615,7 +616,8 @@ async function testCanvasCreateAndSocketLoad() {
 
     // Step 4: Connect via HTML5 WebSocket to C++ uWebSockets server
     if (resultEl) resultEl.innerHTML = `<span style="color:#60a5fa;">4/6단계: uWebSockets(포트 ${allocatedWsPort}) 브라우저 웹소켓 실시간 연결 중...</span>`;
-    const wsHost = allocatedCppIp || '127.0.0.1';
+    let wsHost = allocatedCppIp || '127.0.0.1';
+    if (wsHost === '127.0.0.1' || wsHost === 'localhost') wsHost = window.location.hostname;
     const wsPort = allocatedWsPort || '8001';
     const wsUrl = `ws://${wsHost}:${wsPort}/ws/canvas/${testCid}?token=${currentToken || ''}&user_id=${currentUser ? currentUser.user_id : 1}`;
 
@@ -904,7 +906,8 @@ async function bcAddClient(customUserId) {
   // 접속 전 토큰 등록 및 로드밸런싱 포트 할당을 위해 Access API 호출
   await callSpringAccess(canvasId);
 
-  const host = allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  let host = allocatedCppIp || document.getElementById('bcWsHost').value || '127.0.0.1';
+  if (host === '127.0.0.1' || host === 'localhost') host = window.location.hostname;
   const port = allocatedWsPort || document.getElementById('bcWsPort').value || '8001';
   const userId = customUserId || Number(document.getElementById('bcUserId').value);
 
