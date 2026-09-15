@@ -42,6 +42,9 @@ class AuthServiceTest {
     @Mock
     private JwtTokenProvider jwtTokenProvider;
 
+    @Mock
+    private com.endpoint.frelog.domain.user.repository.UserSessionRepository userSessionRepository;
+
     @InjectMocks
     private AuthService authService;
 
@@ -63,6 +66,7 @@ class AuthServiceTest {
         given(passwordEncoder.matches("password123", "encodedPassword123")).willReturn(true);
         given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1L), eq("아고라유저"), eq("ROLE_USER")))
                 .willReturn("mock-jwt-token");
+        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(activeUser)));
 
         // when
         LoginResponse response = authService.login(request);

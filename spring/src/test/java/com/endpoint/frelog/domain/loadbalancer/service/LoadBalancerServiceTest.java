@@ -5,6 +5,8 @@ import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.DatabaseAddressResponse;
+import com.endpoint.frelog.domain.loadbalancer.dto.RegisterServerRequest;
+import com.endpoint.frelog.domain.loadbalancer.dto.ServerResponse;
 import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
@@ -102,8 +104,8 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("서버가 2대일 때 Power of Two Choices 알고리즘으로 부하(캔버스 수)가 더 적은 서버 선택")
     void allocateServer_P2C_PicksLowerLoad() {
-        RegisterServerRequest request = new RegisterServerRequest("192.168.1.10", "8080", "8082", "TestServer");
-        ServerInfo s1 = new ServerInfo(request);
+        RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "8002", "Server-1");
+        ServerInfo s1 = new ServerInfo(request.serverIp(), request.serverPort(), request.wsPort(), request.serverName());
         s1.setIsActivated(true);
         ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "8003", "Server-2");
         s2.setIsActivated(true);
@@ -128,8 +130,8 @@ class LoadBalancerServiceTest {
         given(redisInfoRepository.findAll()).willReturn(List.of(r1, r2));
 
         // 자바 내 CanvasInfoRepository 카운트 기준: r1은 12개, r2는 4개
-        given(canvasInfoRepository.countByRedisIpAndRedisPort("127.0.0.1", "6379")).willReturn(12L);
-        given(canvasInfoRepository.countByRedisIpAndRedisPort("127.0.0.1", "6380")).willReturn(4L);
+        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort("127.0.0.1", "6379")).willReturn(12L);
+        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort("127.0.0.1", "6380")).willReturn(4L);
 
         AllocateRedisResponse response = loadBalancerService.allocateRedis();
 

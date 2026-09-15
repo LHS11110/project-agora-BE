@@ -104,8 +104,8 @@ class LoadBalancerControllerTest {
     @Test
     @DisplayName("Server 신규 등록 API 성공 시 201 Created")
     void registerServer_Success() throws Exception {
-        RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "8002", "Python-1");
-        ServerResponse response = new ServerResponse(1, "127.0.0.1", "8000", "8002", "Python-1", true, 0);
+        RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "8002", "Cpp-1");
+        ServerResponse response = new ServerResponse(1, "127.0.0.1", "8000", "8002", "Cpp-1", true, 0);
         given(loadBalancerService.registerServer(any(RegisterServerRequest.class))).willReturn(response);
 
         mockMvc.perform(post("/api/servers")
@@ -121,7 +121,7 @@ class LoadBalancerControllerTest {
     @DisplayName("Redis 신규 등록 API 성공 시 201 Created")
     void registerRedis_Success() throws Exception {
         RegisterRedisRequest request = new RegisterRedisRequest("127.0.0.1", "6379", "Redis-1");
-        RedisResponse response = new RedisResponse(1L, "127.0.0.1", "6379", "Redis-1", true, 0);
+        RedisResponse response = new RedisResponse(1, "127.0.0.1", "6379", "Redis-1", true, 0);
         given(loadBalancerService.registerRedis(any(RegisterRedisRequest.class))).willReturn(response);
 
         mockMvc.perform(post("/api/redis")
