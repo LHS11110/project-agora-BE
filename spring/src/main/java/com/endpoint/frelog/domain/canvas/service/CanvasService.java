@@ -503,10 +503,10 @@ public class CanvasService {
                     canvasId, serverAlloc.serverIp(), serverAlloc.serverPort(), redisAlloc.redisIp(), redisAlloc.redisPort());
         }
 
-        // 3. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록
+        // 3. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록하고 캔버스 활성화
         String serverIp = canvasInfo.getServerIp();
         String serverPort = canvasInfo.getServerPort();
-        cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken);
+        cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken, canvasId);
 
         // 4. user 테이블 상태 갱신 (접속 중 상태로 기록)
         userRepository.findById(userId).ifPresent(user -> {
