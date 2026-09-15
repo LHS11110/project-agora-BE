@@ -35,17 +35,17 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
 │   Spring Boot Server    │   Internal HTTP     │    C++ Real-Time Server │
 │   (Java 26 / Port 8080) │────────────────────>│    (uWebSockets / :8000)│
 │                         │<────────────────────│                         │
-│  - JWT 인증 및 회원 관리 │  Lifecycle Cleanup  │  - CanvasPool 메모리 관리│
-│  - P2C 로드밸런싱       │   (User Count: 0)   │  - 초고속 WS 브로드캐스트│
-│  - 캔버스 라이프사이클  │                     │  - 실시간 세션/채널 추적 │
+│  - JWT 인증 및 회원 관리    │  Lifecycle Cleanup  │  - CanvasPool 메모리 관리  │
+│  - P2C 로드밸런싱          │   (User Count: 0)   │  - 초고속 WS 브로드캐스트    │
+│  - 캔버스 라이프사이클       │                     │  - 실시간 세션/채널 추적     │
 └──────────┬──────────────┘                     └────────────┬────────────┘
            │                                                 │
      ┌─────┴────────────────────────┐                        │
      ▼                              ▼                        ▼
 ┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
 │  MS SQL Server   │      │  Elasticsearch   │      │   Redis Stack    │
-│  (Users/Cache/   │      │  (캔버스 문서 영구│      │  (인메모리 캐시,  │
-│   Servers/Redis) │      │   보관 및 검색)   │      │   JSON & Search) │
+│  (Users/Cache/   │      │  (캔버스 문서 영구   │      │  (인메모리 캐시,    │
+│   Servers/Redis) │      │   보관 및 검색)     │      │   JSON & Search) │
 └──────────────────┘      └──────────────────┘      └──────────────────┘
 ```
 
