@@ -42,11 +42,7 @@ public class CppServerClient {
 
     private String getBaseUrl(String serverIp, String serverPort) {
         String host = (serverIp != null && !serverIp.isBlank()) ? serverIp.trim() : "127.0.0.1";
-        // Hairpin NAT 우회: 내부망 통신 시 공인 IP를 로컬 루프백으로 변환 (테스트 환경 단일 노드 기준)
-        if (host.matches("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$") && !host.startsWith("10.") && !host.startsWith("172.") && !host.startsWith("192.168.") && !host.equals("127.0.0.1")) {
-            log.info("Hairpin NAT 우회 적용: 공인 IP {} -> 127.0.0.1 로 변환하여 C++ 서버 호출", host);
-            host = "127.0.0.1";
-        }
+
         String port = (serverPort != null && !serverPort.isBlank()) ? serverPort.trim() : "8000";
         return "http://" + host + ":" + port;
     }
