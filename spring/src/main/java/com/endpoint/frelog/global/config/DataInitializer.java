@@ -1,13 +1,13 @@
 package com.endpoint.frelog.global.config;
 
-import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
-import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
+
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
 import com.endpoint.frelog.domain.user.entity.UserStatus;
 import com.endpoint.frelog.domain.user.repository.UserRepository;
 import com.endpoint.frelog.domain.user.entity.UserSession;
 import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -22,7 +22,7 @@ public class DataInitializer implements CommandLineRunner {
 
     private final UserRepository userRepository;
     private final UserSessionRepository userSessionRepository;
-    private final CanvasInfoRepository canvasInfoRepository;
+
     private final PasswordEncoder passwordEncoder;
 
     @Value("${app.admin.email:admin@agora.com}")
@@ -36,11 +36,9 @@ public class DataInitializer implements CommandLineRunner {
 
     public DataInitializer(UserRepository userRepository,
                            UserSessionRepository userSessionRepository,
-                           CanvasInfoRepository canvasInfoRepository,
                            PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
         this.userSessionRepository = userSessionRepository;
-        this.canvasInfoRepository = canvasInfoRepository;
         this.passwordEncoder = passwordEncoder;
     }
 
@@ -58,12 +56,6 @@ public class DataInitializer implements CommandLineRunner {
 
             log.info("초기 관리자 계정 1건 생성 완료: {}", adminEmail);
 
-            // 초기 샘플 캔버스 생성 (초기 is_cached=false)
-            if (canvasInfoRepository.count() == 0) {
-                CanvasInfo sampleCanvas = new CanvasInfo();
-                canvasInfoRepository.save(sampleCanvas);
-                log.info("초기 테스트 캔버스 1건 생성 완료: #{} (is_cached=false)", sampleCanvas.getCanvasId());
-            }
         }
     }
 }
