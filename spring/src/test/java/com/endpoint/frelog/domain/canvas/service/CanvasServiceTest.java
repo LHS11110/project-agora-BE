@@ -181,26 +181,20 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 삭제 시 Elasticsearch, MS SQL, 리소스 디렉토리 및 C++ 서버에서 삭제된다")
-    void deleteCanvas_Cached_Success() {
+    @DisplayName("캔버스 삭제 시 is_cached가 true라면 CustomException(BAD_REQUEST)을 던진다")
+    void deleteCanvas_Cached_ThrowsException() {
         // given
         CanvasDocument doc = new CanvasDocument("Delete Canvas", 200, 1L, null, "default");
         given(canvasElasticsearchService.getCanvasDocumentById(200)).willReturn(Optional.of(doc));
 
         CanvasInfo info = new CanvasInfo(200);
         info.setIsCached(true);
-        info.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        info.setRedisInfo(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379"));
         given(canvasInfoRepository.findById(200)).willReturn(Optional.of(info));
 
-        // when
-        canvasService.deleteCanvas(200, userDetails);
-
-        // then
-        verify(cppServerClient).deleteCanvasFromServerAndRedis("127.0.0.1", "8000", 200, "127.0.0.1", "6379");
-        verify(canvasElasticsearchService).deleteCanvas(200, "Delete Canvas");
-        verify(canvasInfoRepository).delete(info);
-        verify(canvasResourceService).deleteCanvasResourceDirectory(200);
+        // when & then
+        assertThatThrownBy(() -> canvasService.deleteCanvas(200, userDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.BAD_REQUEST);
     }
 
     @Test

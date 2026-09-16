@@ -17,7 +17,9 @@ import org.springframework.web.context.WebApplicationContext;
 
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import org.springframework.http.MediaType;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest
@@ -62,9 +64,10 @@ class SecurityIntegrationTest {
     @Test
     @DisplayName("보호된 엔드포인트(/api/auth/me)에 토큰 없이 접근 시 401 Unauthorized")
     void protectedEndpoint_WithoutToken_Unauthorized() throws Exception {
-        mockMvc.perform(get("/api/auth/me"))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH_005"));
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -83,8 +86,9 @@ class SecurityIntegrationTest {
         );
 
         // when & then
-        mockMvc.perform(get("/api/auth/me")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token))
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + token + "\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.email").value("jwtuser@agora.com"))
                 .andExpect(jsonPath("$.nickname").value("JWT테스터"));
@@ -93,9 +97,9 @@ class SecurityIntegrationTest {
     @Test
     @DisplayName("보호된 엔드포인트에 잘못된 JWT 토큰으로 접근 시 401 Unauthorized")
     void protectedEndpoint_WithInvalidToken_Unauthorized() throws Exception {
-        mockMvc.perform(get("/api/auth/me")
-                        .header(HttpHeaders.AUTHORIZATION, "Bearer invalid-token-string"))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.code").value("AUTH_005"));
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"invalid-token-string\"}"))
+                .andExpect(status().isUnauthorized());
     }
 }
