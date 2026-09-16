@@ -52,7 +52,7 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("등록된 활성 서버가 없을 때 예외 발생")
     void allocateServer_EmptyList_ThrowsException() {
-        given(serverInfoRepository.findAll()).willReturn(Collections.emptyList());
+        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(Collections.emptyList());
 
         assertThatThrownBy(() -> loadBalancerService.allocateServer())
                 .isInstanceOf(CustomException.class)
@@ -63,7 +63,7 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("등록된 활성 Redis가 없을 때 예외 발생")
     void allocateRedis_EmptyList_ThrowsException() {
-        given(redisInfoRepository.findAll()).willReturn(Collections.emptyList());
+        given(redisInfoRepository.findByIsActivatedTrue()).willReturn(Collections.emptyList());
 
         assertThatThrownBy(() -> loadBalancerService.allocateRedis())
                 .isInstanceOf(CustomException.class)
@@ -76,7 +76,7 @@ class LoadBalancerServiceTest {
     void allocateServer_SingleServer_ReturnsDirectly() {
         ServerInfo single = new ServerInfo("127.0.0.1", "8000", "8002", "Main-Cpp");
         single.setIsActivated(true);
-        given(serverInfoRepository.findAll()).willReturn(List.of(single));
+        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(List.of(single));
 
         AllocateServerResponse response = loadBalancerService.allocateServer();
 
@@ -91,7 +91,7 @@ class LoadBalancerServiceTest {
     void allocateRedis_SingleRedis_ReturnsDirectly() {
         RedisInfo single = new RedisInfo("127.0.0.1", "6379", "Main-Redis");
         single.setIsActivated(true);
-        given(redisInfoRepository.findAll()).willReturn(List.of(single));
+        given(redisInfoRepository.findByIsActivatedTrue()).willReturn(List.of(single));
 
         AllocateRedisResponse response = loadBalancerService.allocateRedis();
 
@@ -109,7 +109,7 @@ class LoadBalancerServiceTest {
         s1.setIsActivated(true);
         ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "8003", "Server-2");
         s2.setIsActivated(true);
-        given(serverInfoRepository.findAll()).willReturn(List.of(s1, s2));
+        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(List.of(s1, s2));
 
         // s1: 부하 10, s2: 부하 3
         given(cppServerClient.getCanvasCountFromServer("127.0.0.1", "8000")).willReturn(10);
@@ -127,7 +127,7 @@ class LoadBalancerServiceTest {
         r1.setIsActivated(true);
         RedisInfo r2 = new RedisInfo("127.0.0.1", "6380", "Redis-2");
         r2.setIsActivated(true);
-        given(redisInfoRepository.findAll()).willReturn(List.of(r1, r2));
+        given(redisInfoRepository.findByIsActivatedTrue()).willReturn(List.of(r1, r2));
 
         // 자바 내 CanvasInfoRepository 카운트 기준: r1은 12개, r2는 4개
         given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort("127.0.0.1", "6379")).willReturn(12L);
