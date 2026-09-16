@@ -192,60 +192,39 @@ sequenceDiagram
 
 ## 5. 주요 API 명세
 
-### (1) 회원 및 인증 API
+### (1) 회원 및 인증 API (Spring Boot)
+- **회원가입**: `POST /api/auth/signup` (Body: `email`, `password`, `nickname`)
+- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken` 발급)
+- **내 정보 조회**: `POST /api/auth/me` (Body: `token`)
 
-- **회원가입**: `POST /api/auth/signup`
-  - Body: `{"email": "user@agora.com", "password": "password1234", "nickname": "아고라"}`
-  - Response: `201 Created`
-- **로그인**: `POST /api/auth/login`
-  - Body: `{"email": "user@agora.com", "password": "password1234"}`
-  - Response: `200 OK` (`accessToken`, `user` 객체 반환)
-- **내 정보 조회**: `GET /api/auth/me` (헤더: `Authorization: Bearer <token>`)
-- **인증 헬스체크**: `GET /api/auth/health`
-
-### (2) 클라이언트 Access API
-
-- **캔버스 접속 진입**: `POST /api/access`
-  - Headers: `Authorization: Bearer <token>`
-  - Body: `{"canvasId": 1001}`
-  - Response (`200 OK`):
-    ```json
-    {
-      "canvasId": 1001,
-      "serverIp": "127.0.0.1",
-      "serverPort": "8000",
-      "wsPort": "8002",
-      "redisIp": "127.0.0.1",
-      "redisPort": "6379",
-      "status": "ALLOCATED"
-    }
-    ```
-
-### (3) 캔버스 관리 및 동기화 API
-
+### (2) 캔버스 관리 및 접속 API (Spring Boot)
 - **캔버스 생성**: `POST /api/canvases`
-  - Body: `{"canvasName": "Team Agora", "canvasId": 1001}`
 - **전체 목록 조회**: `GET /api/canvases`
 - **단건 조회**: `GET /api/canvases/{canvasId}`
-- **캐시 수동 업데이트**: `PATCH /api/canvases/{canvasId}/cache`
-- **미세 필드 동기화 (Granular Reflection)**: `PATCH /api/canvases/{canvasId}/granular`
-  - Body: `{"title": "Updated Title", "metadata": {"status": "active"}}`
-  - Redis 및 ES를 업데이트하고 연결된 C++ 서버로 실시간 브로드캐스트 전파.
-- **사용자 0명 정리 콜백 (내부 호출)**: `POST /api/canvases/cleanup/user-count-zero`
-  - Body: `{"canvasId": 1001}`
-  - C++ CanvasPool 해제, Redis -> ES 최종 동기화, MSSQL `is_cached = false` 및 IP/Port `'none'` 처리.
+- **캔버스 삭제**: `DELETE /api/canvases/{canvasId}` (DB, ES, Redis에서 영구 삭제. 단, 현재 활성화(캐시) 상태인 캔버스는 삭제 거부됨)
+- **접속 진입 (로드밸런싱)**: `POST /api/canvases/{canvasId}/access`
+  - P2C 알고리즘 기반으로 최적의 C++ 서버와 Redis를 할당받고, 내부적으로 C++ 서버에 토큰을 등록(`POST /api/auth/token`)합니다.
+- **접속 종료**: `POST /api/canvases/{canvasId}/disconnect`
+- **참여자 제어**: `POST /api/canvases/{canvasId}/people`, `DELETE /api/canvases/{canvasId}/people/{userId}`
+- **그룹 제어**: `POST /api/canvases/{canvasId}/groups` 등 세밀한 그룹/멤버 관리 API 지원
 
-### (4) C++ 실시간 서버 내부 HTTP 엔드포인트 (:8000)
+### (3) 인프라 관리 및 로드밸런서 API (Spring Boot / ADMIN 전용)
+- **C++ 서버 관리**: `GET|POST|PUT|DELETE /api/servers/...`
+- **Redis 관리**: `GET|POST|PUT|DELETE /api/redis/...`
+- **할당 테스트**: `POST /api/load-balancer/allocate/server` (P2C 로직 수동 검증)
 
-- `POST /init_canvas`: `{"canvas_id": 1001, "redis_ip": "127.0.0.1", "redis_port": 6379}`
-- `POST /update_canvas`: `{"canvas_id": 1001, "payload": {...}}` (등록된 웹소켓에 즉시 브로드캐스트)
-- `POST /delete_canvas`: `{"canvas_id": 1001}`
-- `GET /health`: 서버 상태 확인
+### (4) C++ 실시간 통신 제어 API (Internal REST :8000)
+> 주로 Spring Boot 서버가 내부적으로(Internal) 호출하여 C++ 서버의 메모리를 제어하는 용도입니다.
+- **토큰 등록**: `POST /api/auth/token` (웹소켓 연결 전 사전 인증 등록)
+- **실시간 리플렉트 (브로드캐스트)**: `POST /api/canvas/{canvasId}/reflect/...` 
+  - `name`, `owner`, `description`, `password`, `people`, `inner-group`, `group-member`, `init-group` 등 Spring Boot에서 처리된 변경 사항을 C++ 메모리에 동기화하고 웹소켓 클라이언트들에게 즉각 전파합니다.
+- **사용자 강제 퇴장**: `POST /api/users/{userId}/disconnect`, `POST /api/canvas/{canvasId}/users/{userId}/disconnect`
+- **메모리 강제 해제**: `DELETE /api/canvas/{canvasId}`
+- **모니터링 및 부하 확인**: `GET /api/canvas/count`, `GET /api/canvas/active`, `GET /health`
 
-### (5) C++ 실시간 WebSocket 엔드포인트 (:8002)
-
-- `ws://<server_ip>:<ws_port>/ws?canvasId=1001&userId=1` (기본 `ws_port`는 `8002`)
-- 동일 `canvasId`로 연결된 모든 소켓 세션 간 양방향 실시간 메시지 브로드캐스트 지원.
+### (5) 실시간 웹소켓 엔드포인트 (Nginx WSS)
+- **접속 주소**: `wss://<Domain_or_IP>:443/ws/canvas/{canvasId}?token=<JWT>&user_id=<ID>`
+- **특징**: 보안을 위해 Nginx 리버스 프록시와 SSL(`wss://`)을 거쳐 내부 C++ 웹소켓 포트(`8002`)로 포워딩됩니다. 연결 과정과 쿼리 스트링의 토큰은 네트워크 상에 노출되지 않으며 안전하게 C++ 서버에서 검증됩니다.
 
 ---
 

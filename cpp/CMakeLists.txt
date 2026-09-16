@@ -43,6 +43,8 @@ target_link_libraries(agora_cpp_server
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/uSockets.a
     z
     ${HTTPLIB_LIBRARIES}
+    crypto
+    ssl
     sybdb
 )
 

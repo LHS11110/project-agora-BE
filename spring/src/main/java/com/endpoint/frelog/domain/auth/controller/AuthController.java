@@ -6,6 +6,7 @@ import com.endpoint.frelog.domain.auth.dto.SignupRequest;
 import com.endpoint.frelog.domain.auth.dto.UserResponse;
 import com.endpoint.frelog.domain.auth.service.AuthService;
 import jakarta.validation.Valid;
+import com.endpoint.frelog.global.security.JwtTokenProvider;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -23,9 +24,11 @@ import java.util.Map;
 public class AuthController {
 
     private final AuthService authService;
+    private final JwtTokenProvider jwtTokenProvider;
 
-    public AuthController(AuthService authService) {
+    public AuthController(AuthService authService, JwtTokenProvider jwtTokenProvider) {
         this.authService = authService;
+        this.jwtTokenProvider = jwtTokenProvider;
     }
 
     @PostMapping("/login")
@@ -40,9 +43,14 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    @GetMapping("/me")
-    public ResponseEntity<UserResponse> getMe(@AuthenticationPrincipal UserDetails userDetails) {
-        UserResponse response = authService.getMe(userDetails.getUsername());
+    @PostMapping("/me")
+    public ResponseEntity<UserResponse> getMe(@RequestBody Map<String, String> body) {
+        String token = body.get("token");
+        if (token == null || !jwtTokenProvider.validateToken(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        String email = jwtTokenProvider.getEmailFromToken(token);
+        UserResponse response = authService.getMe(email);
         return ResponseEntity.ok(response);
     }
 

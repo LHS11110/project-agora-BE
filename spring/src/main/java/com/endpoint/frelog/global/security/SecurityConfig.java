@@ -67,6 +67,7 @@ public class SecurityConfig {
                                 "/favicon.png",
                                 "/api/auth/login",
                                 "/api/auth/signup",
+                                "/api/auth/me",
                                 "/api/auth/health",
                                 "/api/canvases/*/image",
                                 "/api/database/**",

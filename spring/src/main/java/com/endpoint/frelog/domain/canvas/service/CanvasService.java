@@ -453,13 +453,8 @@ public class CanvasService {
         boolean isCached = Boolean.TRUE.equals(canvasInfo.getIsCached());
 
         if (isCached) {
-            String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
-            String serverPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerPort() : "none";
-            String redisIp = canvasInfo.getRedisInfo() != null ? canvasInfo.getRedisInfo().getRedisIp() : "none";
-            String redisPort = canvasInfo.getRedisInfo() != null ? canvasInfo.getRedisInfo().getRedisPort() : "none";
-
-            log.info("캔버스 #{} 삭제: C++ 실시간 서버({}:{}) 및 Redis({}:{}) 캐시 정리 요청", canvasId, serverIp, serverPort, redisIp, redisPort);
-            cppServerClient.deleteCanvasFromServerAndRedis(serverIp, serverPort, canvasId, redisIp, redisPort);
+            log.warn("캔버스 #{} 삭제 실패: 활성화(캐시) 상태인 캔버스는 삭제할 수 없습니다.", canvasId);
+            throw new CustomException(ErrorCode.BAD_REQUEST, "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
         // MS SQL 삭제

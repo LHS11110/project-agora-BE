@@ -12,6 +12,13 @@ HttpServer::~HttpServer() {
 }
 
 void HttpServer::start() {
+    int thread_pool_size = 16;
+    if (const char* env_pool = std::getenv("REST_THREAD_POOL")) {
+        thread_pool_size = std::stoi(env_pool);
+    }
+    std::cout << "[HttpServer] Configuring REST Thread Pool with " << thread_pool_size << " threads.\n";
+    server_.new_task_queue = [thread_pool_size] { return new httplib::ThreadPool(thread_pool_size); };
+
     std::cout << "[HttpServer] Starting Agora C++ Server on " << host_ << ":" << port_ << "...\n";
     server_.listen(host_.c_str(), port_);
 }
