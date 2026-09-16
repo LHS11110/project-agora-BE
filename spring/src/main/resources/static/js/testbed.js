@@ -313,14 +313,13 @@ async function connectActiveCanvas() {
         return;
     }
 
-    state.cppIp = accessRes.data.server_ip;
-    state.cppPort = accessRes.data.server_port;
+    state.cppServerId = accessRes.data.server_id;
     state.wsPort = accessRes.data.ws_port;
 
-    addSystemMessage(`할당된 실시간 서버: ${state.cppIp}:${state.wsPort}. WebSocket 연결 시도...`);
+    addSystemMessage(`할당된 실시간 서버: (서버 ID: ${state.cppServerId}). WebSocket 연결 시도...`);
 
     // 2. WebSocket Connect (Route through Nginx using wss://)
-    const wsUrl = `wss://${window.location.host}/wss/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
+    const wsUrl = `wss://${window.location.host}/wss/server/${state.cppServerId}/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
 
     try {
         state.ws = new WebSocket(wsUrl);

@@ -532,9 +532,10 @@ public class CanvasService {
         session.setCppServer(canvasInfo.getCppServer());
         userSessionRepository.save(session);
 
-        // 5. C++ 실시간 서버의 IP와 Port 반환
+        // 5. C++ 실시간 서버의 ID와 Port 반환
+        Integer serverId = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerId() : null;
         String wsPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getWsPort() : "none";
-        return new CanvasUpdateDtos.AccessResponse(serverIp, serverPort, wsPort);
+        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort);
     }
 
     /**

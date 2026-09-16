@@ -67,11 +67,8 @@ public class CanvasUpdateDtos {
     ) {}
 
     public record AccessResponse(
-            @JsonProperty("server_ip")
-            String serverIp,
-
-            @JsonProperty("server_port")
-            String serverPort,
+            @JsonProperty("server_id")
+            Integer serverId,
 
             @JsonProperty("ws_port")
             String wsPort
