@@ -109,82 +109,7 @@ void HttpServer::setupRoutes() {
         }
     });
 
-    // 2. Access API (POST /api/access)
-    server_.Post("/api/access", [this](const httplib::Request& req, httplib::Response& res) {
-        try {
-            int canvas_id = 0;
-            int user_id = -1;
-            std::string token = "";
-
-            if (!req.body.empty()) {
-                auto body = nlohmann::json::parse(req.body);
-                canvas_id = body.value("canvas_id", 0);
-                if (canvas_id == 0) canvas_id = body.value("canvas-id", 0);
-                user_id = body.value("user_id", -1);
-                token = body.value("token", "");
-            }
-
-            if (canvas_id == 0 && req.has_param("canvas_id")) {
-                canvas_id = std::stoi(req.get_param_value("canvas_id"));
-            }
-
-            if (token.empty()) {
-                auto auth_header = req.get_header_value("Authorization");
-                if (auth_header.rfind("Bearer ", 0) == 0) {
-                    token = auth_header.substr(7);
-                }
-            }
-
-            if (canvas_id <= 0) {
-                res.status = 400;
-                res.set_content("{\"error\":\"canvas_id is required\"}", "application/json");
-                return;
-            }
-
-            // A token may only create sockets for canvases assigned by Spring.
-            int auth_uid = authenticateToken(token);
-            if (auth_uid <= 0) {
-                res.status = 401;
-                res.set_content("{\"error\":\"Invalid or unregistered JWT token\"}", "application/json");
-                return;
-            }
-            if (authenticateTokenForCanvas(token, canvas_id) <= 0) {
-                res.status = 403;
-                res.set_content("{\"error\":\"Token is not authorized for this canvas\"}", "application/json");
-                return;
-            }
-            user_id = auth_uid;
-
-            // 캔버스 풀에서 캔버스 선택 또는 생성 (Redis 캐싱 포함)
-            auto canvas = canvas_pool_.getOrCreateCanvas(canvas_id);
-            if (!canvas) {
-                res.status = 500;
-                res.set_content("{\"error\":\"Failed to initialize canvas in pool\"}", "application/json");
-                return;
-            }
-
-            // RX 및 TX 포트 쌍 할당
-            auto [rx_port, tx_port] = canvas_pool_.allocatePortPair();
-
-            // 사용자 소켓 생성 및 캔버스 풀 연결
-            canvas->connectUser(user_id, rx_port, tx_port);
-
-            nlohmann::json resp = {
-                {"status", "success"},
-                {"canvas_id", canvas_id},
-                {"user_id", user_id},
-                {"rx_port", rx_port},
-                {"tx_port", tx_port},
-                {"ws_port", port_ + 1}
-            };
-
-            res.status = 200;
-            res.set_content(resp.dump(), "application/json");
-        } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
+    // POST /api/access removed as per user request (봇용 API 제거)
 
     // 3.1 캔버스 이름 즉시 반영 API
     server_.Post(R"(/api/canvas/(\d+)/reflect/name)", [this](const httplib::Request& req, httplib::Response& res) {
@@ -571,70 +496,7 @@ void HttpServer::setupRoutes() {
         res.set_content("{\"status\":\"success\",\"message\":\"User disconnected from canvas\"}", "application/json");
     });
 
-    // 실시간 세션 접속 중단 API (POST /api/access/disconnect)
-    server_.Post("/api/access/disconnect", [this](const httplib::Request& req, httplib::Response& res) {
-        try {
-            int canvas_id = 0;
-            int user_id = -1;
-            std::string token = "";
-
-            if (!req.body.empty()) {
-                auto body = nlohmann::json::parse(req.body);
-                canvas_id = body.value("canvas_id", 0);
-                if (canvas_id == 0) canvas_id = body.value("canvasId", 0);
-                user_id = body.value("user_id", -1);
-                if (user_id <= 0) user_id = body.value("userId", -1);
-                token = body.value("token", "");
-            }
-
-            if (canvas_id == 0 && req.has_param("canvas_id")) {
-                canvas_id = std::stoi(req.get_param_value("canvas_id"));
-            }
-
-            if (token.empty()) {
-                auto auth_header = req.get_header_value("Authorization");
-                if (auth_header.rfind("Bearer ", 0) == 0) {
-                    token = auth_header.substr(7);
-                }
-            }
-
-            int auth_uid = authenticateToken(token);
-            if (auth_uid <= 0) {
-                res.status = 401;
-                res.set_content("{\"error\":\"Invalid or unregistered JWT token\"}", "application/json");
-                return;
-            }
-            if (user_id > 0 && user_id != auth_uid) {
-                res.status = 403;
-                res.set_content("{\"error\":\"Cannot disconnect another user\"}", "application/json");
-                return;
-            }
-            if (canvas_id > 0 && authenticateTokenForCanvas(token, canvas_id) <= 0) {
-                res.status = 403;
-                res.set_content("{\"error\":\"Token is not authorized for this canvas\"}", "application/json");
-                return;
-            }
-            user_id = auth_uid;
-
-            if (canvas_id > 0) {
-                canvas_pool_.disconnectUser(canvas_id, user_id);
-            } else {
-                canvas_pool_.disconnectUserFromAll(user_id);
-            }
-
-            nlohmann::json resp = {
-                {"status", "success"},
-                {"message", "User session disconnected"},
-                {"canvas_id", canvas_id},
-                {"user_id", user_id}
-            };
-            res.status = 200;
-            res.set_content(resp.dump(), "application/json");
-        } catch (const std::exception& e) {
-            res.status = 500;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
+    // POST /api/access/disconnect removed as per user request (봇용 API 제거)
 
     // 캔버스 제거 API (Spring 캔버스 삭제 시 호출)
     server_.Delete(R"(/api/canvas/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {

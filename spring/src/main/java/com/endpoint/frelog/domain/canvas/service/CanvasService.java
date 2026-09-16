@@ -521,13 +521,18 @@ public class CanvasService {
                     canvasId, serverAlloc.serverIp(), serverAlloc.serverPort(), redisAlloc.redisIp(), redisAlloc.redisPort());
         }
 
-        // 3. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록하고 캔버스 활성화
+        // 3. 중복 접속 검사 (user_sessions 테이블)
+        UserSession session = userSessionRepository.findById(userId).orElseGet(() -> new UserSession(userRepository.findById(userId).orElseThrow()));
+        if (Boolean.TRUE.equals(session.getIsAccessed())) {
+            throw new CustomException(ErrorCode.CONFLICT, "이미 캔버스에 접속 중인 사용자입니다. (다중 탭 접속 차단)");
+        }
+
+        // 4. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록하고 캔버스 활성화
         String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
         String serverPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerPort() : "none";
         cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken, canvasId);
 
-        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
-        UserSession session = userSessionRepository.findById(userId).orElseGet(() -> new UserSession(userRepository.findById(userId).orElseThrow()));
+        // 5. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
         session.setIsAccessed(true);
         session.setCppServer(canvasInfo.getCppServer());
         userSessionRepository.save(session);
