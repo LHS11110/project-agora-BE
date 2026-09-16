@@ -16,6 +16,7 @@ public enum ErrorCode {
 
     CANVAS_NOT_FOUND(HttpStatus.NOT_FOUND, "CANVAS_001", "캔버스를 찾을 수 없습니다."),
     CANVAS_ALREADY_EXISTS(HttpStatus.CONFLICT, "CANVAS_002", "이미 존재하는 캔버스입니다."),
+    ALREADY_CONNECTED(HttpStatus.CONFLICT, "CANVAS_003", "이미 캔버스에 접속 중입니다."),
 
     ELASTICSEARCH_INDEX_NOT_FOUND(HttpStatus.INTERNAL_SERVER_ERROR, "ES_001", "Elasticsearch 인덱스가 존재하지 않습니다."),
 

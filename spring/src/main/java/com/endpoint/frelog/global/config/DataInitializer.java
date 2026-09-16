@@ -53,9 +53,9 @@ public class DataInitializer implements CommandLineRunner {
 
             // 초기 샘플 캔버스 생성 (초기 is_cached=false)
             if (canvasInfoRepository.count() == 0) {
-                CanvasInfo sampleCanvas = new CanvasInfo(1);
+                CanvasInfo sampleCanvas = new CanvasInfo();
                 canvasInfoRepository.save(sampleCanvas);
-                log.info("초기 테스트 캔버스 1건 생성 완료: #1 (is_cached=false)");
+                log.info("초기 테스트 캔버스 1건 생성 완료: #{} (is_cached=false)", sampleCanvas.getCanvasId());
             }
         }
     }
