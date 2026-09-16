@@ -214,7 +214,9 @@ class CanvasServiceTest {
         given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000", "8002"));
         given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));
 
-        given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1")));
+        com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo sInfo = new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1");
+        sInfo.setServerId(1);
+        given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(sInfo));
         given(redisInfoRepository.findByRedisIpAndRedisPort("127.0.0.1", "6379")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379", "Redis-1")));
 
         // when
@@ -222,8 +224,8 @@ class CanvasServiceTest {
 
         // then
         assertThat(response).isNotNull();
-        assertThat(response.serverIp()).isEqualTo("127.0.0.1");
-        assertThat(response.serverPort()).isEqualTo("8000");
+        assertThat(response.serverId()).isEqualTo(1);
+        assertThat(response.wsPort()).isEqualTo("8002");
 
         verify(cppServerClient).registerJwtToken("127.0.0.1", "8000", 1L, "jwt.token.here", 300);
         assertThat(info.getIsCached()).isTrue();

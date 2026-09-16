@@ -45,17 +45,20 @@ public class DataInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) {
         if (userRepository.count() == 0) {
-            log.info("초기 관리자 계정 데이터를 생성합니다.");
+            log.info("초기 관리자 계정 데이터를 생성합니다. 닉네임: {}", adminNickname);
 
-            // 1. 관리자 (ACTIVE)
-            User admin = new User(adminEmail, passwordEncoder.encode(adminPassword), adminNickname, Role.ROLE_ADMIN);
+            User admin = new User(
+                    adminEmail,
+                    passwordEncoder.encode(adminPassword),
+                    adminNickname,
+                    Role.ROLE_ADMIN
+            );
             admin.setStatus(UserStatus.ACTIVE);
             User savedAdmin = userRepository.save(admin);
-            
+
             userSessionRepository.save(new UserSession(savedAdmin));
 
             log.info("초기 관리자 계정 1건 생성 완료: {}", adminEmail);
-
         }
     }
 }

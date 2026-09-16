@@ -189,6 +189,18 @@ sequenceDiagram
 | **ES 호스트** | `app.elasticsearch.host` | `ES_HOST` | `127.0.0.1` |
 | **ES 포트** | `app.elasticsearch.port` | `ES_PORT` | `9200` |
 
+### UTF-8 문자 인코딩 및 다국어(한글) 처리 구성
+시스템 전반(설정 파일, DB 커넥션, 엔티티, HTTP 서블릿)에서 한글 깨짐(Mojibake) 현상을 원천 방지하도록 UTF-8 표준 인코딩이 통합 적용되어 있습니다:
+
+1. **`.properties` 파일 UTF-8 로더 (`Utf8PropertiesPropertySourceLoader`)**:
+   - Java 표준 및 Spring Boot 기본 프로퍼티 로더는 `.properties` 파일을 `ISO-8859-1`로 해석하여 한글이 깨지는 문제가 있습니다.
+   - Spring SPI를 통해 [Utf8PropertiesPropertySourceLoader](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/global/config/Utf8PropertiesPropertySourceLoader.java)를 최우선 순위(`Ordered.HIGHEST_PRECEDENCE`)로 등록하여 `application.properties`의 설정값(예: `app.admin.nickname=아고라관리자`)을 유니코드 이스케이프(`\uXXXX`) 없이도 순수 UTF-8로 안전하게 로드합니다.
+2. **MS SQL JDBC 유니코드 전송 및 JPA `@Nationalized`**:
+   - [DataSourceConfig.java](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/global/config/DataSourceConfig.java)의 JDBC URL에 `;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8` 파라미터를 강제 적용하여 문자열이 `NVARCHAR` 규격으로 전송됩니다.
+   - JPA 엔티티 [User.java](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/domain/user/entity/User.java)의 `nickname`, `email` 등 다국어 필드에 `@org.hibernate.annotations.Nationalized`가 명시되어 있어 MS SQL 유니코드 컬럼과 완벽하게 호환됩니다.
+3. **HTTP 요청/응답 서블릿 UTF-8 강제**:
+   - `server.servlet.encoding.charset=UTF-8`, `server.servlet.encoding.force=true` 설정을 통해 모든 HTTP API 응답 및 예외 처리(Error Response) 메시지의 캐릭터셋을 UTF-8로 보장합니다.
+
 ---
 
 ## 5. 주요 API 명세
