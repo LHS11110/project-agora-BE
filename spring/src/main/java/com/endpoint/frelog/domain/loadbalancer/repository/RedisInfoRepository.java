@@ -10,7 +10,7 @@ import java.util.Optional;
 @Repository
 public interface RedisInfoRepository extends JpaRepository<RedisInfo, Long> {
 
-    List<RedisInfo> findByIsActiveTrue();
+    List<RedisInfo> findByIsActivatedTrue();
 
     Optional<RedisInfo> findByRedisIpAndRedisPort(String redisIp, String redisPort);
 

@@ -61,9 +61,7 @@ public class LoadBalancerService {
      */
     @Transactional(readOnly = true)
     public AllocateServerResponse allocateServer() {
-        List<ServerInfo> servers = serverInfoRepository.findAll().stream()
-                .filter(s -> Boolean.TRUE.equals(s.getIsActivated()))
-                .toList();
+        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrue();
 
         if (servers.isEmpty()) {
             throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "활성화된 C++ 서버가 없습니다.");
@@ -104,9 +102,7 @@ public class LoadBalancerService {
      */
     @Transactional(readOnly = true)
     public AllocateRedisResponse allocateRedis() {
-        List<RedisInfo> redisList = redisInfoRepository.findAll().stream()
-                .filter(r -> Boolean.TRUE.equals(r.getIsActivated()))
-                .toList();
+        List<RedisInfo> redisList = redisInfoRepository.findByIsActivatedTrue();
 
         if (redisList.isEmpty()) {
             throw new CustomException(ErrorCode.NO_REDIS_AVAILABLE, "활성화된 Redis 서버가 없습니다.");

@@ -10,7 +10,7 @@ import java.util.Optional;
 @Repository
 public interface ServerInfoRepository extends JpaRepository<ServerInfo, Long> {
 
-    List<ServerInfo> findByIsActiveTrue();
+    List<ServerInfo> findByIsActivatedTrue();
 
     Optional<ServerInfo> findByServerIpAndServerPort(String serverIp, String serverPort);
 
