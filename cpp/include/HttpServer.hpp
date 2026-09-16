@@ -15,6 +15,8 @@ public:
     void start();
     void stop();
 
+    CanvasPool* getPool() { return &canvas_pool_; }
+
     int authenticateToken(const std::string& token);
     int authenticateTokenForCanvas(const std::string& token, int canvas_id);
 

@@ -13,6 +13,8 @@ public:
 
     // Register this server to DB (cpp_server table)
     bool registerServer(const std::string& ip, int rest_port, int ws_port);
+    bool unregisterServer(const std::string& ip, int rest_port);
+    bool setServerInactive(const std::string& ip, int rest_port);
 
     // Returns pair of <redis_ip, redis_port>
     std::pair<std::string, int> getAssignedRedis(int canvasId);

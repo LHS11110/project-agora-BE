@@ -61,6 +61,46 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
     return true;
 }
 
+bool MssqlClient::unregisterServer(const std::string& ip, int rest_port) {
+    LOGINREC *login = dblogin();
+    DBSETLUSER(login, user_.c_str());
+    DBSETLPWD(login, pass_.c_str());
+    DBSETLAPP(login, "AgoraCppServer");
+    std::string server_str = host_ + ":" + std::to_string(port_);
+    DBPROCESS *dbproc = dbopen(login, server_str.c_str());
+    dbloginfree(login);
+    if (!dbproc) return false;
+    if (dbuse(dbproc, db_.c_str()) == FAIL) {
+        dbclose(dbproc);
+        return false;
+    }
+    std::string sql = "DELETE FROM cpp_server WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'";
+    dbcmd(dbproc, sql.c_str());
+    bool res = (dbsqlexec(dbproc) != FAIL && dbresults(dbproc) != FAIL);
+    dbclose(dbproc);
+    return res;
+}
+
+bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
+    LOGINREC *login = dblogin();
+    DBSETLUSER(login, user_.c_str());
+    DBSETLPWD(login, pass_.c_str());
+    DBSETLAPP(login, "AgoraCppServer");
+    std::string server_str = host_ + ":" + std::to_string(port_);
+    DBPROCESS *dbproc = dbopen(login, server_str.c_str());
+    dbloginfree(login);
+    if (!dbproc) return false;
+    if (dbuse(dbproc, db_.c_str()) == FAIL) {
+        dbclose(dbproc);
+        return false;
+    }
+    std::string sql = "UPDATE cpp_server SET is_activated = 0 WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'";
+    dbcmd(dbproc, sql.c_str());
+    bool res = (dbsqlexec(dbproc) != FAIL && dbresults(dbproc) != FAIL);
+    dbclose(dbproc);
+    return res;
+}
+
 std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
     static bool dbinit_done = false;
     if (!dbinit_done) {
