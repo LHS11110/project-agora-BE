@@ -36,7 +36,6 @@ int main(int argc, char* argv[]) {
 
     if (const char* env_host = std::getenv("HOST")) host = env_host;
     if (const char* env_adv_ip = std::getenv("PUBLIC_IP")) advertise_ip = env_adv_ip;
-    else advertise_ip = (host == "0.0.0.0" ? "127.0.0.1" : host);
     if (const char* env_port = std::getenv("PORT")) port = std::stoi(env_port);
     if (const char* env_db_host = std::getenv("DB_HOST")) db_host = env_db_host;
     if (const char* env_db_port = std::getenv("DB_PORT")) db_port = std::stoi(env_db_port);
@@ -45,17 +44,27 @@ int main(int argc, char* argv[]) {
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
     if (const char* env_java_port = std::getenv("JAVA_PORT")) java_port = std::stoi(env_java_port);
 
-    // Command line args override: ./agora_cpp_server [port] [host] [ws_port]
+    // Command line args override: ./agora_cpp_server [bind_ip] [advertise_ip] [port] [ws_port]
     if (argc > 1) {
-        port = std::stoi(argv[1]);
+        host = argv[1];
     }
     if (argc > 2) {
-        host = argv[2];
+        advertise_ip = argv[2];
+    }
+    if (argc > 3) {
+        port = std::stoi(argv[3]);
     }
     int ws_port = port + 2; // Default to 8002 if port is 8000, avoiding 8001 (Redis Stack)
     if (const char* env_ws_port = std::getenv("WS_PORT")) ws_port = std::stoi(env_ws_port);
-    if (argc > 3) {
-        ws_port = std::stoi(argv[3]);
+    if (argc > 4) {
+        ws_port = std::stoi(argv[4]);
+    }
+
+    if (advertise_ip == "127.0.0.1" && host != "0.0.0.0") {
+        advertise_ip = host;
+    }
+    if (advertise_ip == "127.0.0.1" && std::getenv("PUBLIC_IP") == nullptr && argc <= 2) {
+        advertise_ip = (host == "0.0.0.0" ? "127.0.0.1" : host);
     }
 
     std::cout << "========================================" << std::endl;

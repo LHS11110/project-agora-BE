@@ -6,8 +6,8 @@
 #include <unistd.h>
 #include <cstring>
 
-RedisClient::RedisClient(const std::string& host, int port, const std::string& password)
-    : host_(host), port_(port), password_(password), socket_fd_(-1) {
+RedisClient::RedisClient(const std::string& host, int port, const std::string& user, const std::string& password)
+    : host_(host), port_(port), user_(user), password_(password), socket_fd_(-1) {
 }
 
 RedisClient::~RedisClient() {
@@ -49,7 +49,11 @@ bool RedisClient::connect() {
     }
 
     if (!password_.empty()) {
-        sendCommand({"AUTH", password_});
+        if (!user_.empty()) {
+            sendCommand({"AUTH", user_, password_});
+        } else {
+            sendCommand({"AUTH", password_});
+        }
         std::string auth_res = readResponse();
         if (auth_res.find("ERR") != std::string::npos && auth_res.find("no password is set") == std::string::npos) {
             std::cerr << "[RedisClient] Auth warning: " << auth_res << "\n";

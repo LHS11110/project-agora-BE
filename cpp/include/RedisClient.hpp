@@ -7,7 +7,7 @@
 
 class RedisClient {
 public:
-    RedisClient(const std::string& host = "127.0.0.1", int port = 6379, const std::string& password = "AgoraRedisSecret@Passw0rd!2026");
+    RedisClient(const std::string& host = "127.0.0.1", int port = 6379, const std::string& user = "agora_user", const std::string& password = "AgoraUserSecret@Passw0rd!2026");
     ~RedisClient();
 
     bool connect();
@@ -26,6 +26,7 @@ public:
 private:
     std::string host_;
     int port_;
+    std::string user_;
     std::string password_;
     int socket_fd_;
 

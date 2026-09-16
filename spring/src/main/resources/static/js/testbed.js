@@ -191,12 +191,12 @@ async function signup() {
     btn.disabled = false;
 }
 
-function logout() {
+async function logout() {
+    await disconnectWebSocket();
     state.token = '';
     state.user = null;
     localStorage.removeItem('agora_token');
     localStorage.removeItem('agora_user');
-    disconnectWebSocket();
     
     el.dashboardView.classList.remove('active');
     setTimeout(() => { showAuth(); }, 300);
@@ -368,13 +368,13 @@ async function connectActiveCanvas() {
     }
 }
 
-function disconnectWebSocket() {
+async function disconnectWebSocket() {
     if (state.ws) {
         state.ws.close();
         state.ws = null;
     }
     if (state.currentCanvas) {
-        apiCall('/api/access/disconnect', 'POST', { canvas_id: state.currentCanvas.canvas_id });
+        await apiCall('/api/access/disconnect', 'POST', { canvas_id: state.currentCanvas.canvas_id });
     }
     resetConnectionUI();
 }

@@ -179,7 +179,7 @@ sequenceDiagram
 | **DB 포트** | `app.db.port` | `DB_PORT` | `1433` |
 | **DB 이름** | `app.db.name` | `DB_NAME` | `agora_db` |
 | **DB 사용자** | `app.db.username` | `DB_USER` | `agora_user` |
-| **DB 비밀번호** | `app.db.password` | `DB_PASSWORD` | `AgoraUserSecret@Passw0rd!2026` |
+| **DB 비밀번호** | `app.db.password` | `DB_PASSWORD` | `YourStrongPassword!1234` |
 
 ### Elasticsearch 접속 설정
 
@@ -300,8 +300,8 @@ cmake -B build -S .
 cmake --build build
 
 # 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
-# 사용법: ./build/agora_cpp_server [REST_PORT] [HOST] [WS_PORT]
-./build/agora_cpp_server 8000 0.0.0.0 8002
+# 사용법: ./build/agora_cpp_server [BIND_IP] [ADVERTISE_IP] [REST_PORT] [WS_PORT]
+./build/agora_cpp_server 0.0.0.0 203.0.113.50 8000 8002
 ```
 
 ---
