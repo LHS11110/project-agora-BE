@@ -199,3 +199,7 @@ bin/
 !**/requirements.txt
 !CMakeLists.txt
 !**/CMakeLists.txt
+
+# Nginx
+nginx/ssl/
+nginx/agora.conf
