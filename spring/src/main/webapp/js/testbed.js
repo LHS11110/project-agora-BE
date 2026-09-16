@@ -320,10 +320,10 @@ async function connectActiveCanvas() {
     addSystemMessage(`할당된 실시간 서버: ${state.cppIp}:${state.wsPort}. WebSocket 연결 시도...`);
 
     // 2. WebSocket Connect
-    const wsUrl = `ws://${state.cppIp}:${state.wsPort}/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
+    const wsUrl = `ws://${state.cppIp}:${state.wsPort}/ws/canvas/${state.currentCanvas.canvas_id}?user_id=${state.user.user_id}`;
 
     try {
-        state.ws = new WebSocket(wsUrl);
+        state.ws = new WebSocket(wsUrl, [state.token]);
 
         state.ws.onopen = () => {
             el.connectionText.innerText = '실시간 접속 중';

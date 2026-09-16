@@ -219,7 +219,10 @@ void WebSocketServer::runServer() {
             }
 
             int user_id = -1;
-            std::string token = getQueryParam(query, "token");
+            std::string token(req->getHeader("sec-websocket-protocol"));
+            if (token.empty()) {
+                token = getQueryParam(query, "token");
+            }
             if (token_validator_ && !token.empty()) {
                 user_id = token_validator_(token, canvas_id);
             }
