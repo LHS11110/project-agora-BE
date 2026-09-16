@@ -319,8 +319,8 @@ async function connectActiveCanvas() {
 
     addSystemMessage(`할당된 실시간 서버: ${state.cppIp}:${state.wsPort}. WebSocket 연결 시도...`);
 
-    // 2. WebSocket Connect
-    const wsUrl = `ws://${state.cppIp}:${state.wsPort}/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
+    // 2. WebSocket Connect (Route through Nginx using wss://)
+    const wsUrl = `wss://${window.location.host}/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
 
     try {
         state.ws = new WebSocket(wsUrl);
