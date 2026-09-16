@@ -92,6 +92,9 @@ public class AuthService {
         String encodedPassword = passwordEncoder.encode(request.password());
         User newUser = new User(request.email(), encodedPassword, request.nickname(), Role.ROLE_USER);
         User savedUser = userRepository.save(newUser);
+        
+        UserSession newSession = new UserSession(savedUser);
+        userSessionRepository.save(newSession);
 
         return UserResponse.from(savedUser);
     }
