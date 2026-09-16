@@ -89,6 +89,13 @@ int main(int argc, char* argv[]) {
     std::cout << " MSSQL:                  " << g_db_host << ":" << g_db_port << "\n";
     std::cout << " ES:                     " << es_host << ":" << es_port << "\n";
     std::cout << " Java API:               " << java_host << ":" << java_port << "\n";
+    std::cout << "----------------------------------------\n";
+    std::cout << " [OSS Licenses & Attributions]\n";
+    std::cout << " - uWebSockets & uSockets (Apache-2.0, (c) Alex Hultman)\n";
+    std::cout << " - cpp-httplib & nlohmann/json (MIT)\n";
+    std::cout << " - FreeTDS sybdb (LGPL-2.1+, see https://www.freetds.org/)\n";
+    std::cout << " - zlib (zlib license)\n";
+    std::cout << " See THIRD_PARTY_LICENSES.md for full license texts.\n";
     std::cout << "========================================\n";
 
     CanvasPool canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port);

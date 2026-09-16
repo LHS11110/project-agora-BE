@@ -168,7 +168,8 @@ sequenceDiagram
 
 ### 설정 파일 위치
 - Spring: [spring/src/main/resources/application.properties](file:///home/ubuntu/github/project-agora-BE/spring/src/main/resources/application.properties)
-- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 8000 0.0.0.0 8002`)
+- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 127.0.0.1 203.0.113.50 8000 8002`)
+- Nginx: 리버스 프록시 및 SSL 설정 (`nginx/agora.conf`)
 
 ### MS SQL 접속 환경 변수 매핑
 요구사항에 따라 **데이터베이스 IP와 포트를 손쉽게 분리 변경**할 수 있도록 설계되었습니다:
@@ -223,8 +224,8 @@ sequenceDiagram
 - **모니터링 및 부하 확인**: `GET /api/canvas/count`, `GET /api/canvas/active`, `GET /health`
 
 ### (5) 실시간 웹소켓 엔드포인트 (Nginx WSS)
-- **접속 주소**: `wss://<Domain_or_IP>:443/ws/canvas/{canvasId}?token=<JWT>&user_id=<ID>`
-- **특징**: 보안을 위해 Nginx 리버스 프록시와 SSL(`wss://`)을 거쳐 내부 C++ 웹소켓 포트(`8002`)로 포워딩됩니다. 연결 과정과 쿼리 스트링의 토큰은 네트워크 상에 노출되지 않으며 안전하게 C++ 서버에서 검증됩니다.
+- **접속 주소**: `wss://<Domain_or_IP>/ws/canvas/{canvasId}?token=<JWT>&user_id=<ID>`
+- **특징**: 보안을 위해 Nginx 리버스 프록시와 SSL(`wss://`)을 거쳐 내부 C++ 웹소켓 포트(`127.0.0.1:8002`)로 포워딩됩니다. 연결 과정과 쿼리 스트링의 토큰은 네트워크 상에 노출되지 않으며 안전하게 C++ 서버에서 검증됩니다.
 
 ---
 
@@ -233,8 +234,8 @@ sequenceDiagram
 브라우저에서 Agora 백엔드의 전체 파이프라인과 웹소켓 브로드캐스트를 직관적으로 테스트할 수 있는 내장 테스트베드를 제공합니다.
 
 - **접속 URL**:
-  - `http://localhost:8080/test.jsp`
-  - `http://localhost:8080/test`
+  - `https://<Domain_or_IP>/test`
+  - Nginx가 포트 443(HTTPS)으로 받은 후 `127.0.0.1:8080`으로 라우팅합니다.
 - **테스트베드 기능**:
   1. **인증 관리**: 원클릭 테스트 계정 로그인 및 JWT 발급 상태 표시.
   2. **서버 & Redis 인스턴스 관리**: C++ 서버 및 Redis 정보 등록/조회.
@@ -280,8 +281,23 @@ cmake --build build
 
 # 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
 # 사용법: ./build/agora_cpp_server [BIND_IP] [ADVERTISE_IP] [REST_PORT] [WS_PORT]
-./build/agora_cpp_server 0.0.0.0 203.0.113.50 8000 8002
+# (보안을 위해 외부 직접 노출을 막고 Nginx를 통한 접속만 허용하도록 BIND_IP는 127.0.0.1 사용을 권장합니다)
+./build/agora_cpp_server 127.0.0.1 203.0.113.50 8000 8002
 ```
+
+### (3) Nginx 리버스 프록시 (SSL 적용 및 외부망 보호)
+
+웹 서버인 Nginx는 클라이언트의 모든 HTTPS 요청을 가로채어 적절한 내부 백엔드 서버(Spring Boot 또는 C++ Server)로 포워딩합니다.
+
+```bash
+# Nginx 설정 파일 문법 검증 및 서비스 재기동
+sudo nginx -t
+sudo systemctl reload nginx
+```
+**주요 역할:**
+- **포트 바인딩 보호**: Spring Boot(`127.0.0.1:8080`)와 C++ 서버(`127.0.0.1:8000`, `127.0.0.1:8002`)는 로컬에서만 띄워 외부 공격을 차단합니다.
+- **REST & 정적 라우팅**: `/api/` 및 `/` 경로에 대한 접근을 모두 Spring Boot 8080 포트로 중계합니다.
+- **웹소켓(WSS) 라우팅**: `/ws/` 에 대한 통신은 C++ 웹소켓 서버(8002)로 Upgrade 하여 터널을 뚫어줍니다.
 
 ---
 
