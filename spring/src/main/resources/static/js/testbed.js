@@ -259,29 +259,14 @@ function selectCanvas(canvas) {
     
     el.activeCanvasTitle.innerText = `🎨 #${canvas.canvas_id} ${canvas.canvas_name}`;
     el.activeCanvasMeta.innerText = `현재 선택된 캔버스입니다. 우측 상단의 접속 버튼을 눌러 통신을 시작하세요.`;
-    document.getElementById('settingsBtn').style.display = 'block';
     
-    // Fetch participants list
+    const settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) settingsBtn.style.display = 'none'; // Settings API removed
+    
+    // Update participant count
     const participantsEl = document.getElementById('activeCanvasParticipants');
     if (participantsEl) {
-        participantsEl.innerText = '참여자 정보 불러오는 중...';
-        Promise.all([
-            apiCall(`/api/canvases/${canvas.canvas_id}/document`),
-            apiCall('/api/users')
-        ]).then(([docRes, usersRes]) => {
-            if (docRes.ok && usersRes.ok) {
-                const peopleIds = docRes.data.people || docRes.data.peoples || [];
-                const users = usersRes.data || [];
-                const userMap = new Map(users.map(u => [u.userId, u.nickname]));
-                
-                const participantNames = peopleIds.map(id => userMap.get(id) || `알수없음(ID:${id})`);
-                participantsEl.innerHTML = `<strong>👥 초대된 참여자:</strong> ${participantNames.length > 0 ? participantNames.join(', ') : '없음'}`;
-            } else {
-                participantsEl.innerText = '참여자 정보를 불러오지 못했습니다.';
-            }
-        }).catch(() => {
-            participantsEl.innerText = '';
-        });
+        participantsEl.innerHTML = `<strong>👥 참여자 수:</strong> ${canvas.user_count || 0}명`;
     }
     
     disconnectWebSocket();
@@ -304,9 +289,9 @@ async function connectActiveCanvas() {
     addSystemMessage('Spring Boot P2C 로드밸런싱 API 호출 중...');
 
     // 1. Spring Access API
-    const accessRes = await apiCall('/api/access', 'POST', { canvas_id: state.currentCanvas.canvas_id });
+    const accessRes = await apiCall(`/api/canvases/${state.currentCanvas.canvas_id}/access`, 'POST');
     if (!accessRes.ok) {
-        alert('Access API 실패: ' + (accessRes.data.message || '알 수 없는 오류'));
+        alert('Access API 실패: ' + (accessRes.data?.message || '알 수 없는 오류'));
         resetConnectionUI();
         return;
     }
@@ -373,7 +358,7 @@ async function disconnectWebSocket() {
         wasConnected = true;
     }
     if (wasConnected && state.currentCanvas) {
-        await apiCall('/api/access/disconnect', 'POST', { canvas_id: state.currentCanvas.canvas_id });
+        // No explicit disconnect API call needed; server handles WebSocket close internally
     }
     resetConnectionUI();
 }
@@ -434,63 +419,11 @@ function closeSettingsModal() {
 }
 
 async function updateCanvasSetting(type) {
-    if (!state.currentCanvas) return;
-    const cid = state.currentCanvas.canvas_id;
-    let url, value;
-
-    if (type === 'name') {
-        value = document.getElementById('settingCanvasName').value;
-        url = `/api/canvases/${cid}/name`;
-    } else if (type === 'description') {
-        value = document.getElementById('settingCanvasDesc').value;
-        url = `/api/canvases/${cid}/description`;
-    } else if (type === 'password') {
-        value = document.getElementById('settingCanvasPwd').value;
-        url = `/api/canvases/${cid}/password`;
-    }
-
-    if (!value) return alert('값을 입력해주세요.');
-
-    const payload = {};
-    if (type === 'name') payload.canvasName = value;
-    if (type === 'description') payload.description = value;
-    if (type === 'password') payload.password = value;
-
-    const res = await apiCall(url, 'PATCH', payload);
-    if (res.ok) {
-        alert('성공적으로 변경되었습니다.');
-        loadCanvases();
-        if (type === 'name') {
-            state.currentCanvas.canvas_name = value;
-            document.getElementById('activeCanvasTitle').innerText = `🎨 #${cid} ${value}`;
-        }
-    } else {
-        alert('변경 실패: ' + (res.data?.message || '권한이 없거나 오류가 발생했습니다.'));
-    }
+    alert('현재 API 버전에서는 설정 변경을 지원하지 않습니다.');
 }
 
 async function manageParticipant(action) {
-    if (!state.currentCanvas) return;
-    const cid = state.currentCanvas.canvas_id;
-    const targetUserId = document.getElementById('settingParticipantId').value;
-    
-    if (!targetUserId) return alert('유저 ID를 입력해주세요.');
-
-    let url = `/api/canvases/${cid}/people`;
-    let method = 'POST';
-    
-    if (action === 'remove') {
-        url = `/api/canvases/${cid}/people/${targetUserId}`;
-        method = 'DELETE';
-    }
-
-    const res = await apiCall(url, method, action === 'add' ? { userId: parseInt(targetUserId) } : null);
-    if (res.ok) {
-        alert(`참여자가 성공적으로 ${action === 'add' ? '추가' : '제외'}되었습니다.`);
-        selectCanvas(state.currentCanvas); // Refresh participant list
-    } else {
-        alert('처리 실패: ' + (res.data?.message || '오류가 발생했습니다.'));
-    }
+    alert('현재 API 버전에서는 참여자 관리를 지원하지 않습니다.');
 }
 
 function addChatMessage(sender, text, isMe) {
