@@ -215,8 +215,14 @@ sequenceDiagram
 - **내 정보 조회**: `POST /api/auth/me`
   - **Input (Body)**: `{"token": "<JWT>"}`
   - **Output (200 OK)**: `UserResponse` 객체
-- **회원 탈퇴(삭제)**: `DELETE /api/users/{userId}`
-  - **Input (Path)**: `userId` (헤더에 어드민 또는 본인 JWT 필요)
+- **회원 단건 조회**: `GET /api/users/{nickname}/{tagNumber}`
+  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
+  - **Output (200 OK)**: `UserResponse` 객체
+- **회원 정보 수정**: `PUT/PATCH /api/users/{nickname}/{tagNumber}`
+  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
+  - **Output (200 OK)**: `UserResponse` 객체
+- **회원 탈퇴(삭제)**: `DELETE /api/users/{nickname}/{tagNumber}`
+  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
   - **Output (204 No Content)**: 없음 (상태만 WITHDRAWN 변경 후 닉네임 난독화, 웹소켓 강제 종료)
 
 > **※ `UserResponse` 구조 예시:**

@@ -37,34 +37,38 @@ public class UserController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    @GetMapping("/{userId}")
-    public ResponseEntity<UserResponse> getUserById(
-            @PathVariable Long userId,
+    @GetMapping("/{nickname}/{tagNumber}")
+    public ResponseEntity<UserResponse> getUserByNicknameAndTagNumber(
+            @PathVariable String nickname,
+            @PathVariable Integer tagNumber,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        return ResponseEntity.ok(authService.getUserById(userId, currentUser));
+        return ResponseEntity.ok(authService.getUserByNicknameAndTagNumber(nickname, tagNumber, currentUser));
     }
 
-    @PutMapping("/{userId}")
+    @PutMapping("/{nickname}/{tagNumber}")
     public ResponseEntity<UserResponse> updateUserPut(
-            @PathVariable Long userId,
+            @PathVariable String nickname,
+            @PathVariable Integer tagNumber,
             @Valid @RequestBody UpdateUserRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        return ResponseEntity.ok(authService.updateUser(userId, request, currentUser));
+        return ResponseEntity.ok(authService.updateUser(nickname, tagNumber, request, currentUser));
     }
 
-    @PatchMapping("/{userId}")
+    @PatchMapping("/{nickname}/{tagNumber}")
     public ResponseEntity<UserResponse> updateUserPatch(
-            @PathVariable Long userId,
+            @PathVariable String nickname,
+            @PathVariable Integer tagNumber,
             @Valid @RequestBody UpdateUserRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        return ResponseEntity.ok(authService.updateUser(userId, request, currentUser));
+        return ResponseEntity.ok(authService.updateUser(nickname, tagNumber, request, currentUser));
     }
 
-    @DeleteMapping("/{userId}")
+    @DeleteMapping("/{nickname}/{tagNumber}")
     public ResponseEntity<Void> deleteUser(
-            @PathVariable Long userId,
+            @PathVariable String nickname,
+            @PathVariable Integer tagNumber,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        authService.deleteUser(userId, currentUser);
+        authService.deleteUser(nickname, tagNumber, currentUser);
         return ResponseEntity.noContent().build();
     }
 

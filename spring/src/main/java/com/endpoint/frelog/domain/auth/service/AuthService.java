@@ -112,11 +112,11 @@ public class AuthService {
      * 사용자 조회 (해당 사용자 본인 또는 ROLE_ADMIN 만 허용)
      */
     @Transactional(readOnly = true)
-    public UserResponse getUserById(Long userId, CustomUserDetails currentUser) {
-        validateSelfOrAdmin(userId, currentUser);
-
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
+    public UserResponse getUserByNicknameAndTagNumber(String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        User user = userRepository.findByNicknameAndTagNumber(nickname, tagNumber)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다."));
+        
+        validateSelfOrAdmin(user.getUserId(), currentUser);
         return UserResponse.from(user);
     }
 
@@ -124,11 +124,11 @@ public class AuthService {
      * 사용자 정보 변경 (해당 사용자 본인 또는 ROLE_ADMIN 만 허용)
      */
     @Transactional
-    public UserResponse updateUser(Long userId, UpdateUserRequest request, CustomUserDetails currentUser) {
-        validateSelfOrAdmin(userId, currentUser);
+    public UserResponse updateUser(String nickname, Integer tagNumber, UpdateUserRequest request, CustomUserDetails currentUser) {
+        User user = userRepository.findByNicknameAndTagNumber(nickname, tagNumber)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다."));
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
+        validateSelfOrAdmin(user.getUserId(), currentUser);
 
         if (user.getStatus() == UserStatus.WITHDRAWN) {
             throw new CustomException(ErrorCode.USER_WITHDRAWN, "탈퇴한 회원은 수정할 수 없습니다.");
@@ -159,11 +159,12 @@ public class AuthService {
      * - 모든 삭제는 유저명을 `deleted user-[hash value]`로 바꾸고 상태를 `WITHDRAWN`으로 변경만 하고 실제 데이터는 유지 (소프트 딜리트)
      */
     @Transactional
-    public void deleteUser(Long userId, CustomUserDetails currentUser) {
-        validateSelfOrAdmin(userId, currentUser);
+    public void deleteUser(String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        User user = userRepository.findByNicknameAndTagNumber(nickname, tagNumber)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다."));
 
-        User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND, "사용자를 찾을 수 없습니다: " + userId));
+        Long userId = user.getUserId();
+        validateSelfOrAdmin(userId, currentUser);
 
         if (user.getStatus() == UserStatus.WITHDRAWN) {
             return; // 이미 탈퇴된 계정

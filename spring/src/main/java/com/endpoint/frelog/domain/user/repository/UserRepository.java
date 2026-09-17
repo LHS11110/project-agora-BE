@@ -18,4 +18,6 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     @Query("SELECT COALESCE(MAX(u.tagNumber), 0) FROM User u WHERE u.nickname = :nickname")
     Integer findMaxTagNumberByNickname(@Param("nickname") String nickname);
+
+    Optional<User> findByNicknameAndTagNumber(String nickname, Integer tagNumber);
 }
