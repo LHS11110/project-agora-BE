@@ -245,3 +245,31 @@ bool MssqlClient::updateCanvasUncached(int canvasId) {
     return true;
 }
 
+bool MssqlClient::updateUserSessionDisconnected(int userId) {
+
+    PooledConnection dbproc;
+    if (!dbproc.get()) return false;
+
+    std::string sql = 
+        "BEGIN TRAN; "
+        "BEGIN TRY "
+        "UPDATE user_sessions SET is_accessed = 0, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
+        "COMMIT TRAN; "
+        "END TRY "
+        "BEGIN CATCH "
+        "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "END CATCH;";
+    dbcmd(dbproc, sql.c_str());
+
+    if (dbsqlexec(dbproc) == FAIL) {
+        std::cerr << "[MssqlClient] Failed to execute updateUserSessionDisconnected for user #" << userId << "\n";
+            return false;
+    }
+
+    while (dbresults(dbproc) != NO_MORE_RESULTS) {
+        // consume result sets if any
+    }
+
+    std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL\n";
+    return true;
+}

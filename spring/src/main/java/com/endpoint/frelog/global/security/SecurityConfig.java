@@ -69,10 +69,8 @@ public class SecurityConfig {
                                 "/api/auth/signup",
                                 "/api/auth/me",
                                 "/api/auth/health",
-                                "/api/canvases/*/image",
                                 "/api/database/**",
                                 "/api/test/**",
-                                "/api/access/internal/**",
                                 "/api/internal/**",
                                 "/error"
                         ).permitAll()
@@ -80,7 +78,6 @@ public class SecurityConfig {
                         .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**").hasRole("ADMIN")
                         .requestMatchers("/api/users/**").authenticated()
                         .requestMatchers("/api/canvases/**").authenticated()
-                        .requestMatchers("/api/access/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

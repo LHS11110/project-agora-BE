@@ -331,28 +331,14 @@ void WebSocketServer::runServer() {
             // One socket closing must not terminate another tab or device for the same user.
             pool_.disconnectWebSocketConnection(canvas_id, user_id);
 
-            // Notify Java API to reflect user disconnect & session release.
-            std::string j_host = java_host_;
-            int j_port = java_port_;
-            std::thread([j_host, j_port, canvas_id, user_id]() {
+            std::string db_h = pool_.getDbHost();
+            int db_p = pool_.getDbPort();
+            std::thread([db_h, db_p, canvas_id, user_id]() {
                 try {
-                    httplib::Client cli(j_host, j_port);
-                    cli.set_connection_timeout(2, 0);
-                    cli.set_read_timeout(2, 0);
-                    nlohmann::json body = {
-                        {"canvas_id", canvas_id},
-                        {"user_id", user_id}
-                    };
-                    auto res = cli.Post("/api/access/internal/disconnect", body.dump(), "application/json");
-                    if (res && res->status == 200) {
-                        std::cout << "[uWebSockets] Successfully reflected disconnect to Java API for User #"
-                                  << user_id << " on Canvas #" << canvas_id << "\n";
-                    } else {
-                        std::cerr << "[uWebSockets] Java API disconnect reflection responded with status "
-                                  << (res ? std::to_string(res->status) : "connection error") << "\n";
-                    }
+                    MssqlClient mssql(db_h, db_p);
+                    mssql.updateUserSessionDisconnected(user_id);
                 } catch (const std::exception& e) {
-                    std::cerr << "[uWebSockets] Failed to notify Java API of disconnect: " << e.what() << "\n";
+                    std::cerr << "[uWebSockets] Failed to update DB for user disconnect: " << e.what() << "\n";
                 }
             }).detach();
         }

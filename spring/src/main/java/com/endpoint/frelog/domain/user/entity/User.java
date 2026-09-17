@@ -34,6 +34,9 @@ public class User {
     @Column(name = "nickname", nullable = false, length = 100)
     private String nickname;
 
+    @Column(name = "tag_number", nullable = false)
+    private Integer tagNumber;
+
     @org.hibernate.annotations.Nationalized
     @Enumerated(EnumType.STRING)
     @Column(name = "role", nullable = false, length = 20)
@@ -64,10 +67,11 @@ public class User {
     public User() {
     }
 
-    public User(String email, String passwordHash, String nickname, Role role) {
+    public User(String email, String passwordHash, String nickname, Integer tagNumber, Role role) {
         this.email = email;
         this.passwordHash = passwordHash;
         this.nickname = nickname;
+        this.tagNumber = tagNumber;
         this.role = role != null ? role : Role.ROLE_USER;
         this.status = UserStatus.ACTIVE;
     }
@@ -135,6 +139,14 @@ public class User {
 
     public void setNickname(String nickname) {
         this.nickname = nickname;
+    }
+
+    public Integer getTagNumber() {
+        return tagNumber;
+    }
+
+    public void setTagNumber(Integer tagNumber) {
+        this.tagNumber = tagNumber;
     }
 
     public Role getRole() {

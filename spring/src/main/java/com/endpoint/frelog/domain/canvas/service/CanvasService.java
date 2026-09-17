@@ -449,7 +449,7 @@ public class CanvasService {
         CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
         validateCanvasOwnerOrSystemAdmin(doc, currentUser);
 
-        CanvasInfo canvasInfo = getCanvasInfoOrThrow(canvasId);
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
         boolean isCached = Boolean.TRUE.equals(canvasInfo.getIsCached());
 
         if (isCached) {
@@ -497,8 +497,8 @@ public class CanvasService {
             throw new CustomException(ErrorCode.ACCESS_DENIED, "초대된 사용자 리스트(people)에 속한 경우에만 접근할 수 있습니다.");
         }
 
-        // 2. MS SQL canvas_info 확인
-        CanvasInfo canvasInfo = getCanvasInfoOrThrow(canvasId);
+        // 2. MS SQL canvas_info 확인 (동시 삭제/할당 방지를 위한 비관적 락 사용)
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
 
         if (!Boolean.TRUE.equals(canvasInfo.getIsCached())) {
             // 로드 밸런싱 수행 (is_activated == true 인 행 대상)
@@ -652,6 +652,11 @@ public class CanvasService {
 
     private CanvasInfo getCanvasInfoOrThrow(Integer canvasId) {
         return canvasInfoRepository.findById(canvasId)
+                .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스 메타데이터를 찾을 수 없습니다: " + canvasId));
+    }
+
+    private CanvasInfo getCanvasInfoWithLockOrThrow(Integer canvasId) {
+        return canvasInfoRepository.findByIdWithPessimisticLock(canvasId)
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스 메타데이터를 찾을 수 없습니다: " + canvasId));
     }
 

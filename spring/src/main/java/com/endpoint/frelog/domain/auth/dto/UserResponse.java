@@ -18,6 +18,9 @@ public record UserResponse(
         @JsonProperty("nickname")
         String nickname,
 
+        @JsonProperty("tag_number")
+        Integer tagNumber,
+
         @JsonProperty("role")
         Role role,
 
@@ -44,6 +47,7 @@ public record UserResponse(
                 user.getUserId(),
                 user.getEmail(),
                 user.getNickname(),
+                user.getTagNumber(),
                 user.getRole(),
                 user.getStatus(),
                 user.getStatus() != null ? user.getStatus().name() : null,

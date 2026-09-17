@@ -51,6 +51,7 @@ public class DataInitializer implements CommandLineRunner {
                     adminEmail,
                     passwordEncoder.encode(adminPassword),
                     adminNickname,
+                    1,
                     Role.ROLE_ADMIN
             );
             admin.setStatus(UserStatus.ACTIVE);

@@ -207,8 +207,9 @@ sequenceDiagram
 
 ### (1) 회원 및 인증 API (Spring Boot)
 - **회원가입**: `POST /api/auth/signup` (Body: `email`, `password`, `nickname`)
-- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken` 발급)
+- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken`, `userId` 발급)
 - **내 정보 조회**: `POST /api/auth/me` (Body: `token`)
+- **회원 탈퇴(삭제)**: `DELETE /api/users/{userId}` (Soft Delete: 상태만 변경 후 닉네임 난독화, 웹소켓 강제 종료)
 
 ### (2) 캔버스 관리 및 접속 API (Spring Boot)
 - **캔버스 생성**: `POST /api/canvases`
@@ -217,9 +218,6 @@ sequenceDiagram
 - **캔버스 삭제**: `DELETE /api/canvases/{canvasId}` (DB, ES, Redis에서 영구 삭제. 단, 현재 활성화(캐시) 상태인 캔버스는 삭제 거부됨)
 - **접속 진입 (로드밸런싱)**: `POST /api/canvases/{canvasId}/access`
   - P2C 알고리즘 기반으로 최적의 C++ 서버와 Redis를 할당받고, 내부적으로 C++ 서버에 토큰을 등록(`POST /api/auth/token`)합니다.
-- **접속 종료**: `POST /api/canvases/{canvasId}/disconnect`
-- **참여자 제어**: `POST /api/canvases/{canvasId}/people`, `DELETE /api/canvases/{canvasId}/people/{userId}`
-- **그룹 제어**: `POST /api/canvases/{canvasId}/groups` 등 세밀한 그룹/멤버 관리 API 지원
 
 ### (3) 인프라 관리 및 로드밸런서 API (Spring Boot / ADMIN 전용)
 - **C++ 서버 관리**: `GET|POST|PUT|DELETE /api/servers/...`
@@ -229,8 +227,6 @@ sequenceDiagram
 ### (4) C++ 실시간 통신 제어 API (Internal REST :8000)
 > 주로 Spring Boot 서버가 내부적으로(Internal) 호출하여 C++ 서버의 메모리를 제어하는 용도입니다.
 - **토큰 등록**: `POST /api/auth/token` (웹소켓 연결 전 사전 인증 등록)
-- **실시간 리플렉트 (브로드캐스트)**: `POST /api/canvas/{canvasId}/reflect/...` 
-  - `name`, `owner`, `description`, `password`, `people`, `inner-group`, `group-member`, `init-group` 등 Spring Boot에서 처리된 변경 사항을 C++ 메모리에 동기화하고 웹소켓 클라이언트들에게 즉각 전파합니다.
 - **사용자 강제 퇴장**: `POST /api/users/{userId}/disconnect`, `POST /api/canvas/{canvasId}/users/{userId}/disconnect`
 - **메모리 강제 해제**: `DELETE /api/canvas/{canvasId}`
 - **모니터링 및 부하 확인**: `GET /api/canvas/count`, `GET /api/canvas/active`, `GET /health`

@@ -22,6 +22,9 @@ public:
     // Updates canvas_info: is_cached=0, redis_ip=NULL, redis_port=NULL, server_ip=NULL, server_port=NULL
     bool updateCanvasUncached(int canvasId);
 
+    // Updates user_sessions: is_accessed=0, cpp_server_id=NULL
+    bool updateUserSessionDisconnected(int userId);
+
 private:
     std::string host_;
     int port_;

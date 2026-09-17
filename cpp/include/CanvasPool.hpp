@@ -45,6 +45,9 @@ public:
     std::string getJavaHost() const { return java_host_; }
     int getJavaPort() const { return java_port_; }
 
+    std::string getDbHost() const { return db_host_; }
+    int getDbPort() const { return db_port_; }
+
 private:
     void unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
