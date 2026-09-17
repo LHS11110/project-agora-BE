@@ -31,18 +31,18 @@ Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층�
 flowchart TD
     Client[Web Browser / Client]
     
-    subgraph Spring API Server (Java 26)
+    subgraph Spring_API ["Spring API Server (Java 26)"]
         Auth[JWT 인증 & 회원 관리]
         P2C[P2C 로드밸런싱]
         CanvasCtrl[캔버스 생명주기 관리]
     end
     
-    subgraph C++ Real-Time Server
+    subgraph CPP_Server ["C++ Real-Time Server"]
         Memory[CanvasPool 메모리 관리]
         WS[초고속 WebSocket 브로드캐스트]
     end
     
-    subgraph Databases & Storage
+    subgraph DB_Storage ["Databases & Storage"]
         MSSQL[(MS SQL Server)]
         Redis[(Redis Stack)]
         ES[(Elasticsearch)]
