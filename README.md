@@ -206,33 +206,65 @@ sequenceDiagram
 ## 5. 주요 API 명세
 
 ### (1) 회원 및 인증 API (Spring Boot)
-- **회원가입**: `POST /api/auth/signup` (Body: `email`, `password`, `nickname`)
-- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken` 발급)
-- **내 정보 조회**: `POST /api/auth/me` (Body: `token`)
-- **회원 탈퇴(삭제)**: `DELETE /api/users/{userId}` (Soft Delete: 상태만 변경 후 닉네임 난독화, 웹소켓 강제 종료)
+- **회원가입**: `POST /api/auth/signup`
+  - **Input (Body)**: `{"email": "...", "password": "...", "nickname": "..."}`
+  - **Output (201 Created)**: `UserResponse` 객체 (하단 참고)
+- **로그인**: `POST /api/auth/login`
+  - **Input (Body)**: `{"email": "...", "password": "..."}`
+  - **Output (200 OK)**: `{"tokenType": "Bearer", "accessToken": "<JWT>", "user": {UserResponse}}`
+- **내 정보 조회**: `POST /api/auth/me`
+  - **Input (Body)**: `{"token": "<JWT>"}`
+  - **Output (200 OK)**: `UserResponse` 객체
+- **회원 탈퇴(삭제)**: `DELETE /api/users/{userId}`
+  - **Input (Path)**: `userId` (헤더에 어드민 또는 본인 JWT 필요)
+  - **Output (204 No Content)**: 없음 (상태만 WITHDRAWN 변경 후 닉네임 난독화, 웹소켓 강제 종료)
+
+> **※ `UserResponse` 구조 예시:**
+> `{"email": "test@agora.com", "nickname": "홍길동", "tag_number": 1, "role": "ROLE_USER", "status": "ACTIVE", "created_at": "...", "updated_at": "..."}`
 
 ### (2) 캔버스 관리 및 접속 API (Spring Boot)
 - **캔버스 생성**: `POST /api/canvases`
+  - **Input (Body)**: `{"canvas_name": "...", "canvas_password": "...", "init_group": "..."}`
+  - **Output (201 Created)**: `CanvasResponse` 객체 (`{"canvasId": 1, "canvasName": "...", "createdAt": "...", ...}`)
 - **전체 목록 조회**: `GET /api/canvases`
+  - **Output (200 OK)**: `[CanvasSummaryResponse]` 배열 (`[{"canvas_id": 1, "canvas_name": "...", "user_count": 0, "description": "...", "image": "..."}]`)
 - **단건 조회**: `GET /api/canvases/{canvasId}`
-- **캔버스 삭제**: `DELETE /api/canvases/{canvasId}` (DB, ES, Redis에서 영구 삭제. 단, 현재 활성화(캐시) 상태인 캔버스는 삭제 거부됨)
+  - **Input (Path)**: `canvasId`
+  - **Output (200 OK)**: `CanvasSummaryResponse` 객체
+- **캔버스 삭제**: `DELETE /api/canvases/{canvasId}`
+  - **Input (Path)**: `canvasId`
+  - **Output (204 No Content)**: 없음 (DB, ES, Redis에서 영구 삭제. 단, 현재 활성화(캐시) 상태인 캔버스는 삭제 거부)
 - **접속 진입 (로드밸런싱)**: `POST /api/canvases/{canvasId}/access`
-  - P2C 알고리즘 기반으로 최적의 C++ 서버와 Redis를 할당받고, 내부적으로 C++ 서버에 토큰을 등록(`POST /api/auth/token`)합니다.
+  - **Input (Path)**: `canvasId` (헤더 JWT 인증)
+  - **Output (200 OK)**: `{"server_id": 1, "ws_port": "8080"}`
+  - *참고: P2C 알고리즘 기반으로 최적의 C++ 서버와 Redis를 할당받고, 내부적으로 C++ 서버에 토큰을 등록(`POST /api/auth/token`)합니다.*
 
 ### (3) 인프라 관리 및 로드밸런서 API (Spring Boot / ADMIN 전용)
-- **C++ 서버 관리**: `GET|POST|PUT|DELETE /api/servers/...`
-- **Redis 관리**: `GET|POST|PUT|DELETE /api/redis/...`
-- **할당 테스트**: `POST /api/load-balancer/allocate/server` (P2C 로직 수동 검증)
+- **할당 테스트**: `POST /api/load-balancer/allocate/server`
+  - **Input**: 없음 (어드민 인증 필요)
+  - **Output (200 OK)**: `{"serverId": 1, "address": "10.0.0.1", "port": 8000}` (P2C 로직 수동 검증)
 
 ### (4) C++ 실시간 통신 제어 API (Internal REST :8000)
 > 주로 Spring Boot 서버가 내부적으로(Internal) 호출하여 C++ 서버의 메모리를 제어하는 용도입니다.
-- **토큰 등록**: `POST /api/auth/token` (웹소켓 연결 전 사전 인증 등록)
-- **사용자 강제 퇴장**: `POST /api/users/{userId}/disconnect`, `POST /api/canvas/{canvasId}/users/{userId}/disconnect`
+- **토큰 등록**: `POST /api/auth/token`
+  - **Input (Body)**: `{"user_id": 1, "token": "<JWT>"}`
+  - **Output (200 OK)**: 없음 (웹소켓 연결 전 사전 인증 등록)
+- **사용자 강제 퇴장**: `POST /api/users/{userId}/disconnect`
+  - **Input (Path)**: `userId`
+  - **Output (204 No Content)**: 없음
+- **특정 캔버스 사용자 퇴장**: `POST /api/canvas/{canvasId}/users/{userId}/disconnect`
+  - **Input (Path)**: `canvasId`, `userId`
+  - **Output (204 No Content)**: 없음
 - **메모리 강제 해제**: `DELETE /api/canvas/{canvasId}`
+  - **Input (Path)**: `canvasId`
+  - **Output (204 No Content)**: 없음
 - **모니터링 및 부하 확인**: `GET /api/canvas/count`, `GET /api/canvas/active`, `GET /health`
+  - **Output**: 각각 활성 유저 수(`200 OK, {"count": 10}`), 활성 캔버스 목록(`200 OK, {"active_canvases": [...]}`), 서버 헬스체크(`204 No Content`) 반환
 
 ### (5) 실시간 웹소켓 엔드포인트 (Nginx WSS)
 - **접속 주소**: `wss://<Domain_or_IP>/ws/canvas/{canvasId}?token=<JWT>&user_id=<ID>`
+  - **Input (Query Params)**: `token`, `user_id`
+  - **Output**: 성공 시 웹소켓 연결 수립
 - **특징**: 보안을 위해 Nginx 리버스 프록시와 SSL(`wss://`)을 거쳐 내부 C++ 웹소켓 포트(`127.0.0.1:8002`)로 포워딩됩니다. 연결 과정과 쿼리 스트링의 토큰은 네트워크 상에 노출되지 않으며 안전하게 C++ 서버에서 검증됩니다.
 
 ---
