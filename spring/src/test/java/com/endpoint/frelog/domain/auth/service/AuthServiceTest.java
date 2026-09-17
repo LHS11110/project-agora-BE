@@ -52,7 +52,7 @@ class AuthServiceTest {
 
     @BeforeEach
     void setUp() {
-        activeUser = new User("user@agora.com", "encodedPassword123", "아고라유저", Role.ROLE_USER);
+        activeUser = new User("user@agora.com", "encodedPassword123", "아고라유저", 1, Role.ROLE_USER);
         activeUser.setUserId(1L);
         activeUser.setStatus(UserStatus.ACTIVE);
     }
@@ -129,7 +129,7 @@ class AuthServiceTest {
         given(userRepository.existsByEmail(request.email())).willReturn(false);
         given(passwordEncoder.encode(request.password())).willReturn("hashedSecret123");
 
-        User savedUser = new User(request.email(), "hashedSecret123", request.nickname(), Role.ROLE_USER);
+        User savedUser = new User(request.email(), "hashedSecret123", request.nickname(), 1, Role.ROLE_USER);
         savedUser.setUserId(2L);
         given(userRepository.save(any(User.class))).willReturn(savedUser);
 

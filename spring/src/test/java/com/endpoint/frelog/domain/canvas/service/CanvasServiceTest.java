@@ -73,7 +73,7 @@ class CanvasServiceTest {
 
     @BeforeEach
     void setUp() {
-        testUser = new User("user@agora.com", "encodedPassword", "아고라유저", Role.ROLE_USER);
+        testUser = new User("user@agora.com", "encodedPassword", "아고라유저", 1, Role.ROLE_USER);
         testUser.setStatus(UserStatus.ACTIVE);
         ReflectionTestUtils.setField(testUser, "userId", 1L);
         userDetails = new CustomUserDetails(testUser);
@@ -170,7 +170,7 @@ class CanvasServiceTest {
         CanvasDocument doc = new CanvasDocument("Test Canvas", 100, 1L, null, "default");
         given(canvasElasticsearchService.getCanvasDocumentById(100)).willReturn(Optional.of(doc));
 
-        User otherUser = new User("other@agora.com", "pass", "다른유저", Role.ROLE_USER);
+        User otherUser = new User("other@agora.com", "pass", "다른유저", 1, Role.ROLE_USER);
         ReflectionTestUtils.setField(otherUser, "userId", 2L);
         CustomUserDetails otherDetails = new CustomUserDetails(otherUser);
 
@@ -189,7 +189,7 @@ class CanvasServiceTest {
 
         CanvasInfo info = new CanvasInfo(200);
         info.setIsCached(true);
-        given(canvasInfoRepository.findById(200)).willReturn(Optional.of(info));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(200)).willReturn(Optional.of(info));
 
         // when & then
         assertThatThrownBy(() -> canvasService.deleteCanvas(200, userDetails))
@@ -209,7 +209,7 @@ class CanvasServiceTest {
 
         CanvasInfo info = new CanvasInfo(300);
         info.setIsCached(false);
-        given(canvasInfoRepository.findById(300)).willReturn(Optional.of(info));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(300)).willReturn(Optional.of(info));
 
         given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000", "8002"));
         given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));

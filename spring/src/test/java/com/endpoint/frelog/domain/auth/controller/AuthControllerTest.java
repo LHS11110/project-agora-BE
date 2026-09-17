@@ -57,7 +57,7 @@ class AuthControllerTest {
         // given
         LoginRequest request = new LoginRequest("user@agora.com", "password123");
         UserResponse userResponse = new UserResponse(
-                1L, "user@agora.com", "아고라유저", Role.ROLE_USER, UserStatus.ACTIVE, "ACTIVE", LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
+                "user@agora.com", "아고라유저", 1, Role.ROLE_USER, UserStatus.ACTIVE, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
         );
         LoginResponse response = LoginResponse.of("mock-access-token", userResponse);
 
@@ -95,7 +95,7 @@ class AuthControllerTest {
         // given
         SignupRequest request = new SignupRequest("new@agora.com", "password123", "새유저");
         UserResponse userResponse = new UserResponse(
-                2L, "new@agora.com", "새유저", Role.ROLE_USER, UserStatus.ACTIVE, "ACTIVE", null, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
+                "new@agora.com", "새유저", 1, Role.ROLE_USER, UserStatus.ACTIVE, null, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
         );
 
         given(authService.signup(any(SignupRequest.class))).willReturn(userResponse);

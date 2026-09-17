@@ -74,7 +74,7 @@ class SecurityIntegrationTest {
     @DisplayName("보호된 엔드포인트(/api/auth/me)에 유효한 JWT 토큰으로 접근 시 200 OK")
     void protectedEndpoint_WithValidToken_Success() throws Exception {
         // given
-        User user = new User("jwtuser@agora.com", passwordEncoder.encode("secret123"), "JWT테스터", Role.ROLE_USER);
+        User user = new User("jwtuser@agora.com", passwordEncoder.encode("secret123"), "JWT테스터", 1, Role.ROLE_USER);
         user.setStatus(UserStatus.ACTIVE);
         User savedUser = userRepository.save(user);
 
