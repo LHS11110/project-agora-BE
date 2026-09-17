@@ -294,7 +294,7 @@ cmake --build build
 # 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
 # 사용법: ./build/agora_cpp_server [BIND_IP] [ADVERTISE_IP] [REST_PORT] [WS_PORT]
 # (보안을 위해 외부 직접 노출을 막고 Nginx를 통한 접속만 허용하도록 BIND_IP는 127.0.0.1 사용을 권장합니다)
-./build/agora_cpp_server 127.0.0.1 203.0.113.50 8000 8002
+./build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
 ```
 
 ### (3) Nginx 리버스 프록시 (SSL 적용 및 외부망 보호)

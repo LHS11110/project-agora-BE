@@ -97,9 +97,7 @@ async function showDashboard() {
     el.userNameText.innerText = `👋 ${state.user.nickname} (${state.user.email})`;
     el.userNameText.style.color = 'var(--text-main)';
 
-    // Auto setup servers for seamless testing
-    await apiCall('/api/servers', 'POST', { serverIp: window.location.hostname, serverPort: '8000', wsPort: '8002' });
-    await apiCall('/api/redis', 'POST', { redisIp: window.location.hostname, redisPort: '6379' });
+
 
     loadCanvases();
 }
@@ -369,11 +367,13 @@ async function connectActiveCanvas() {
 }
 
 async function disconnectWebSocket() {
+    let wasConnected = false;
     if (state.ws) {
         state.ws.close();
         state.ws = null;
+        wasConnected = true;
     }
-    if (state.currentCanvas) {
+    if (wasConnected && state.currentCanvas) {
         await apiCall('/api/access/disconnect', 'POST', { canvas_id: state.currentCanvas.canvas_id });
     }
     resetConnectionUI();
