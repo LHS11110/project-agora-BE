@@ -149,12 +149,12 @@ sequenceDiagram
 5. MS SQL `canvas_cache`의 캐시 상태 갱신: `is_cached = true`, `server_ip`, `server_port`, `redis_ip`, `redis_port`.
 6. 클라이언트에게 할당된 WebSocket 접속 정보(`server_ip`, `ws_port`) 및 포트 정보 반환.
 
-### (3) 실시간 협업 및 미세 변경 반영 (`PATCH /api/canvases/{canvasId}/granular`)
-- 캔버스 속성이나 세부 필드가 변경되면 Redis와 Elasticsearch에 반영함과 동시에, C++ 서버의 `/update_canvas`를 호출하여 현재 채널에 접속 중인 모든 웹소켓 클라이언트에게 델타 변경점을 실시간 브로드캐스트합니다.
+### (3) 실시간 협업 및 미세 변경 반영 (내부 메서드 연동)
+- 캔버스 속성이나 세부 필드가 변경되면 Redis와 Elasticsearch에 반영함과 동시에, C++ 서버의 `/api/canvas/{canvasId}/reflect/...` API들을 백그라운드로 호출하여 현재 채널에 접속 중인 모든 웹소켓 클라이언트에게 변경점을 실시간 브로드캐스트합니다. (기존 단일 `granular` REST API 노출 방식에서 백엔드 내부 연동 로직으로 개편됨)
 
 ### (4) 활성 사용자 0명 자동 해제 (Teardown & Cleanup Lifecycle)
 1. **웹소켓 닫힘 감지**: C++ WebSocket 서버에서 클라이언트의 연결이 종료되면 해당 캔버스의 활성 연결 수를 즉시 검사.
-2. **Java API 자동 통지**: 캔버스 내 활성 사용자가 0명이 되면 C++ 서버가 백그라운드 비동기로 Spring Boot의 `POST /api/canvases/cleanup/user-count-zero` 엔드포인트를 호출.
+2. **Spring Boot 상태 자동 정리**: 캔버스 내 활성 사용자가 0명이 되면 외부 노출 API 호출 없이, 내부 세션 해제 로직(`handleInternalDisconnect`)이 작동하여 메모리 및 DB 캐시 상태 정리를 안전하게 수행합니다.
 3. **C++ 메모리 해제**: C++ `CanvasPool`에서 캔버스를 언로드하여 서버 리소스 회수.
 4. **Redis -> Elasticsearch 최종 동기화**: Redis에 남아있는 최신 캔버스 JSON 데이터를 Elasticsearch에 저장하여 데이터 유실 방지.
 5. **MS SQL 상태 복원**: MS SQL `canvas_cache` 테이블의 레코드를 업데이트:
@@ -286,7 +286,7 @@ sequenceDiagram
   1. **인증 관리**: 원클릭 테스트 계정 로그인 및 JWT 발급 상태 표시.
   2. **서버 & Redis 인스턴스 관리**: C++ 서버 및 Redis 정보 등록/조회.
   3. **캔버스 라이프사이클 테스트**:
-     - 캔버스 생성 -> Access 진입(P2C 서버 할당) -> Granular 수정 -> 활성 사용자 0명 자동 해제 검증.
+     - 캔버스 생성 -> Access 진입(P2C 서버 할당) -> 활성 사용자 0명 시 자동 세션 해제 및 상태 초기화(`handleInternalDisconnect`) 검증.
   4. **듀얼 웹소켓 브로드캐스트 검증 (Dual WebSocket Clients)**:
      - **클라이언트 A**와 **클라이언트 B**를 독립적으로 연결.
      - 클라이언트 A에서 전송한 메시지가 C++ 웹소켓 서버를 거쳐 클라이언트 B로 정상 브로드캐스트되는지 양방향 패킷 로그로 실시간 확인.
