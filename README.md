@@ -207,7 +207,7 @@ sequenceDiagram
 
 ### (1) 회원 및 인증 API (Spring Boot)
 - **회원가입**: `POST /api/auth/signup` (Body: `email`, `password`, `nickname`)
-- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken`, `userId` 발급)
+- **로그인**: `POST /api/auth/login` (Body: `email`, `password` -> `accessToken` 발급)
 - **내 정보 조회**: `POST /api/auth/me` (Body: `token`)
 - **회원 탈퇴(삭제)**: `DELETE /api/users/{userId}` (Soft Delete: 상태만 변경 후 닉네임 난독화, 웹소켓 강제 종료)
 
