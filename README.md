@@ -149,10 +149,10 @@ sequenceDiagram
 5. MS SQL `canvas_cache`의 캐시 상태 갱신: `is_cached = true`, `server_ip`, `server_port`, `redis_ip`, `redis_port`.
 6. 클라이언트에게 할당된 WebSocket 접속 정보(`server_ip`, `ws_port`) 및 포트 정보 반환.
 
-### (4) 활성 사용자 0명 자동 해제 (Teardown & Cleanup Lifecycle)
-1. **웹소켓 닫힘 감지**: C++ WebSocket 서버에서 클라이언트의 연결이 종료되면 해당 캔버스의 활성 연결 수를 즉시 검사.
-2. **Spring Boot 상태 자동 정리**: 캔버스 내 활성 사용자가 0명이 되면 외부 노출 API 호출 없이, 내부 세션 해제 로직(`handleInternalDisconnect`)이 작동하여 메모리 및 DB 캐시 상태 정리를 안전하게 수행합니다.
-3. **C++ 메모리 해제**: C++ `CanvasPool`에서 캔버스를 언로드하여 서버 리소스 회수.
+### (4) 30분 단위 활성 사용자 자동 검사 및 해제 (Teardown & Cleanup Lifecycle)
+1. **정기적인 백그라운드 검사**: C++ WebSocket 서버의 백그라운드 스레드가 30분 주기로 동작하며 메모리에 로드된 각 캔버스의 활성 여부를 검사합니다.
+2. **DB 세션 상태 확인 (`user_sessions`)**: MS SQL의 `user_sessions` 테이블을 직접 쿼리하여 해당 `canvas_id`를 참조 중이고 `is_accessed=1`인 활성 접속자가 있는지 조회합니다.
+3. **C++ 메모리 해제**: 접속 중인 유저가 0명으로 확인되면, C++ `CanvasPool`에서 캔버스를 즉각 언로드하여 서버 리소스를 회수합니다.
 4. **Redis -> Elasticsearch 최종 동기화**: Redis에 남아있는 최신 캔버스 JSON 데이터를 Elasticsearch에 저장하여 데이터 유실 방지.
 5. **MS SQL 상태 복원**: MS SQL `canvas_cache` 테이블의 레코드를 업데이트:
    - `is_cached = false`

@@ -228,47 +228,4 @@ class CanvasServiceTest {
         // assertThat(testUser.getServerPort()).isNull();
     }
 
-    @Test
-    @DisplayName("C++ 웹소켓 종료 내부 알림 시 사용자 접속 상태가 해제된다")
-    void handleInternalDisconnect_UserOnly_Success() {
-        // given
-        // testUser.setIsAccessed(true);
-        // testUser.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
-
-        // when
-        canvasService.handleInternalDisconnect(300, 1L, 2);
-
-        // then
-        // assertThat(testUser.getIsAccessed()).isFalse();
-        // assertThat(testUser.getServerIp()).isNull();
-        // assertThat(testUser.getServerPort()).isNull();
-        verify(userSessionRepository).save(org.mockito.ArgumentMatchers.any(com.endpoint.frelog.domain.user.entity.UserSession.class));
-    }
-
-    @Test
-    @DisplayName("C++ 웹소켓 종료 시 활성 사용자가 0명이면 캔버스 캐시 상태(is_cached=false, IP/Port=none)를 초기화한다")
-    void handleInternalDisconnect_ZeroActiveUsers_UnloadCanvas() {
-        // given
-        // testUser.setIsAccessed(true);
-        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
-
-        CanvasInfo info = new CanvasInfo(300);
-        info.setIsCached(true);
-        info.setRedisInfo(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379"));
-        info.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        given(canvasInfoRepository.findById(300)).willReturn(Optional.of(info));
-
-        // when
-        canvasService.handleInternalDisconnect(300, 1L, 0);
-
-        // then
-        // assertThat(testUser.getIsAccessed()).isFalse();
-        assertThat(info.getIsCached()).isFalse();
-        assertThat(info.getRedisIp()).isNull();
-        assertThat(info.getRedisPort()).isNull();
-        assertThat(info.getServerIp()).isNull();
-        assertThat(info.getServerPort()).isNull();
-        verify(canvasInfoRepository).save(info);
-    }
 }

@@ -329,9 +329,6 @@ void WebSocketServer::runServer() {
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
                       << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
 
-            // One socket closing must not terminate another tab or device for the same user.
-            pool_.disconnectWebSocketConnection(canvas_id, user_id);
-
             std::string db_h = pool_.getDbHost();
             int db_p = pool_.getDbPort();
             std::thread([db_h, db_p, canvas_id, user_id]() {

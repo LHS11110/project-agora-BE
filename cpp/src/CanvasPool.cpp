@@ -172,16 +172,6 @@ void CanvasPool::disconnectUser(int canvas_id, int user_id) {
     }
 }
 
-void CanvasPool::disconnectWebSocketConnection(int canvas_id, int user_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
-    auto it = canvases_.find(canvas_id);
-    if (it != canvases_.end() && it->second) {
-        it->second->disconnectUser(user_id);
-        std::cout << "[CanvasPool] WebSocket connection closed for user #" << user_id
-                  << " on Canvas #" << canvas_id << "\n";
-    }
-}
-
 int CanvasPool::getActiveCanvasCount() {
     std::lock_guard<std::mutex> lock(pool_mutex_);
     return (int)canvases_.size();

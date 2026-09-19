@@ -330,39 +330,7 @@ public class CanvasService {
         log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
     }
 
-    /**
-     * C++ 실시간 서버에서 웹소켓이 닫혔을 때 호출되는 내부 세션 해제 처리 API
-     * - user 테이블: is_accessed=false, server_ip=null, server_port=null
-     * - activeUsersCount가 0이거나 활성 사용자가 없는 경우:
-     *   canvas_info 테이블의 is_cached=false, redis_ip/port=none(null), server_ip/port=none(null) 반영
-     */
-    @Transactional
-    public void handleInternalDisconnect(Integer canvasId, Long userId, Integer activeUsersCount) {
-        if (userId != null) {
-            userSessionRepository.findById(userId).ifPresent(session -> {
-                session.setIsAccessed(false);
-                session.setCppServer(null);
-                session.setCanvas(null);
-                userSessionRepository.save(session);
-                log.info("[InternalDisconnect] C++ 웹소켓 종료 반영: 사용자 #{} isAccessed=false 설정 완료", userId);
-            });
-        }
 
-        if (canvasId != null && activeUsersCount != null && activeUsersCount <= 0) {
-            canvasInfoRepository.findById(canvasId).ifPresent(canvasInfo -> {
-                canvasInfo.setIsCached(false);
-                canvasInfo.setRedisInfo(null);
-                canvasInfo.setCppServer(null);
-                canvasInfoRepository.save(canvasInfo);
-                log.info("[InternalDisconnect] 캔버스 #{} 활성 사용자 0명 감지: is_cached=false 및 ip/port=none(null) 반영 완료", canvasId);
-            });
-        }
-    }
-
-    @Transactional
-    public void handleInternalDisconnect(Integer canvasId, Long userId) {
-        handleInternalDisconnect(canvasId, userId, null);
-    }
 
     /**
      * 캔버스 캐시 상태 및 할당 정보 업데이트 (PATCH /api/canvases/{canvasId}/cache)

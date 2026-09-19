@@ -30,9 +30,6 @@ public:
     // Disconnect a user from a specific canvas (unloads canvas if no active users remain)
     void disconnectUser(int canvas_id, int user_id);
 
-    // Record one WebSocket connection closing without terminating a user's other connections.
-    void disconnectWebSocketConnection(int canvas_id, int user_id);
-
     // Configure WebSocket delivery for existing and future canvases.
     void setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks);
 
