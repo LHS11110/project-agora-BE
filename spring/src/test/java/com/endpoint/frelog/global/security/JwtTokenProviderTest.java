@@ -27,7 +27,7 @@ class JwtTokenProviderTest {
         String role = "ROLE_USER";
 
         // when
-        String token = jwtTokenProvider.createToken(email, userId, nickname, role);
+        String token = jwtTokenProvider.createToken(email, userId, nickname, role, "127.0.0.1");
 
         // then
         assertThat(token).isNotBlank();
@@ -51,7 +51,7 @@ class JwtTokenProviderTest {
     void validateToken_Expired() {
         // given: 만료 시간이 -1000ms인 provider
         JwtTokenProvider expiredProvider = new JwtTokenProvider(SECRET, -1000);
-        String token = expiredProvider.createToken("test@agora.com", 1L, "테스터", "ROLE_USER");
+        String token = expiredProvider.createToken("test@agora.com", 1L, "테스터", "ROLE_USER", "127.0.0.1");
 
         // when & then
         assertThat(jwtTokenProvider.validateToken(token)).isFalse();

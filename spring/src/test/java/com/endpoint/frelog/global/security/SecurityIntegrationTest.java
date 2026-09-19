@@ -82,7 +82,8 @@ class SecurityIntegrationTest {
                 savedUser.getEmail(),
                 savedUser.getUserId(),
                 savedUser.getNickname(),
-                savedUser.getRole().name()
+                savedUser.getRole().name(),
+                "127.0.0.1"
         );
 
         // when & then

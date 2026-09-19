@@ -20,6 +20,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,12 +65,14 @@ class AuthServiceTest {
         LoginRequest request = new LoginRequest("user@agora.com", "password123");
         given(userRepository.findByEmail(request.email())).willReturn(Optional.of(activeUser));
         given(passwordEncoder.matches("password123", "encodedPassword123")).willReturn(true);
-        given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1L), eq("아고라유저"), eq("ROLE_USER")))
+        HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
+        given(httpRequest.getRemoteAddr()).willReturn("127.0.0.1");
+        given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1L), eq("아고라유저"), eq("ROLE_USER"), eq("127.0.0.1")))
                 .willReturn("mock-jwt-token");
         given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(activeUser)));
 
         // when
-        LoginResponse response = authService.login(request);
+        LoginResponse response = authService.login(request, httpRequest);
 
         // then
         assertThat(response).isNotNull();
@@ -89,7 +92,8 @@ class AuthServiceTest {
         given(passwordEncoder.matches("wrongPassword", "encodedPassword123")).willReturn(false);
 
         // when & then
-        assertThatThrownBy(() -> authService.login(request))
+        HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
+        assertThatThrownBy(() -> authService.login(request, httpRequest))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_CREDENTIALS);
     }
@@ -102,7 +106,8 @@ class AuthServiceTest {
         given(userRepository.findByEmail(request.email())).willReturn(Optional.empty());
 
         // when & then
-        assertThatThrownBy(() -> authService.login(request))
+        HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
+        assertThatThrownBy(() -> authService.login(request, httpRequest))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_CREDENTIALS);
     }
@@ -116,7 +121,8 @@ class AuthServiceTest {
         given(userRepository.findByEmail(request.email())).willReturn(Optional.of(activeUser));
 
         // when & then
-        assertThatThrownBy(() -> authService.login(request))
+        HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
+        assertThatThrownBy(() -> authService.login(request, httpRequest))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.USER_SUSPENDED);
     }

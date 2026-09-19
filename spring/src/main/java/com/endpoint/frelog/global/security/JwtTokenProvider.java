@@ -23,7 +23,7 @@ public class JwtTokenProvider {
     private final long expirationMs;
 
     public JwtTokenProvider(
-            @Value("${jwt.secret:c29tZS12ZXJ5LXNlY3VyZS1hbmQtbG9uZy1zZWNyZXQta2V5LWZvci1hZ29yYS1qd3QtYXV0aC0yMDI2}") String secret,
+            @Value("${jwt.secret:testSecretKey~c29tZS12ZXJ5LXNlY3VyZS1hbmQtbG9uZy1zZWNyZXQta2V5LWZvci1hZ29yYS1qd3QtYXV0aC0yMDI2}") String secret,
             @Value("${jwt.expiration-ms:86400000}") long expirationMs) {
         // JJWT HMAC-SHA algorithms require at least 256 bits (32 bytes)
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
@@ -37,7 +37,7 @@ public class JwtTokenProvider {
         this.expirationMs = expirationMs;
     }
 
-    public String createToken(String email, Long userId, String nickname, String role) {
+    public String createToken(String email, Long userId, String nickname, String role, String clientIp) {
         Date now = new Date();
         Date validity = new Date(now.getTime() + expirationMs);
 
@@ -46,6 +46,7 @@ public class JwtTokenProvider {
                 .claim("userId", userId)
                 .claim("nickname", nickname)
                 .claim("role", role)
+                .claim("clientIp", clientIp)
                 .issuedAt(now)
                 .expiration(validity)
                 .signWith(key)
@@ -54,6 +55,10 @@ public class JwtTokenProvider {
 
     public String getEmailFromToken(String token) {
         return getClaims(token).getSubject();
+    }
+
+    public String getClientIpFromToken(String token) {
+        return getClaims(token).get("clientIp", String.class);
     }
 
     public Long getUserIdFromToken(String token) {

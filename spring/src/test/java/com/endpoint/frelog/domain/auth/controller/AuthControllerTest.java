@@ -61,7 +61,7 @@ class AuthControllerTest {
         );
         LoginResponse response = LoginResponse.of("mock-access-token", userResponse);
 
-        given(authService.login(any(LoginRequest.class))).willReturn(response);
+        given(authService.login(any(LoginRequest.class), any(jakarta.servlet.http.HttpServletRequest.class))).willReturn(response);
 
         // when & then
         mockMvc.perform(post("/api/auth/login")
@@ -78,7 +78,7 @@ class AuthControllerTest {
     void loginApi_InvalidCredentials() throws Exception {
         // given
         LoginRequest request = new LoginRequest("user@agora.com", "wrongPass");
-        given(authService.login(any(LoginRequest.class)))
+        given(authService.login(any(LoginRequest.class), any(jakarta.servlet.http.HttpServletRequest.class)))
                 .willThrow(new CustomException(ErrorCode.INVALID_CREDENTIALS));
 
         // when & then

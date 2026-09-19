@@ -27,6 +27,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
+import jakarta.servlet.http.HttpServletRequest;
 
 @Service
 public class AuthService {
@@ -52,7 +53,7 @@ public class AuthService {
     }
 
     @Transactional
-    public LoginResponse login(LoginRequest request) {
+    public LoginResponse login(LoginRequest request, HttpServletRequest httpRequest) {
         User user = userRepository.findByEmail(request.email())
                 .orElseThrow(() -> new CustomException(ErrorCode.INVALID_CREDENTIALS));
 
@@ -73,11 +74,13 @@ public class AuthService {
         userSessionRepository.save(session);
 
         // Multi-session login: stateless JWT issued per login request
+        String clientIp = httpRequest.getRemoteAddr();
         String token = jwtTokenProvider.createToken(
                 user.getEmail(),
                 user.getUserId(),
                 user.getNickname(),
-                user.getRole().name()
+                user.getRole().name(),
+                clientIp
         );
 
         return LoginResponse.of(token, UserResponse.from(user));

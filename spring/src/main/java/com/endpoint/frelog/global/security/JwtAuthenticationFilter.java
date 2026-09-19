@@ -33,6 +33,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
             String email = tokenProvider.getEmailFromToken(token);
+            String tokenIp = tokenProvider.getClientIpFromToken(token);
+            String currentIp = request.getRemoteAddr();
+
+            if (tokenIp != null && !tokenIp.equals(currentIp)) {
+                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "IP address mismatch. Token stolen or environment changed.");
+                return;
+            }
+
             UserDetails userDetails = userDetailsService.loadUserByUsername(email);
 
             if (userDetails.isEnabled() && userDetails.isAccountNonLocked()) {
