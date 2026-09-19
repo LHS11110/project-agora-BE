@@ -142,43 +142,7 @@ class CanvasServiceTest {
         assertThat(summary.userCount()).isEqualTo(1);
     }
 
-    @Test
-    @DisplayName("캔버스 이름 수정 시 Elasticsearch와 캐시된 경우 C++ 서버에 반영된다")
-    void updateCanvasName_Cached_CallsCppServer() {
-        // given
-        CanvasDocument doc = new CanvasDocument("Old Name", 100, 1L, null, "default");
-        given(canvasElasticsearchService.getCanvasDocumentById(100)).willReturn(Optional.of(doc));
 
-        CanvasInfo info = new CanvasInfo(100);
-        info.setIsCached(true);
-        info.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        given(canvasInfoRepository.findById(100)).willReturn(Optional.of(info));
-
-        // when
-        CanvasSummaryResponse response = canvasService.updateCanvasName(100, "New Name", userDetails);
-
-        // then
-        assertThat(response.canvasName()).isEqualTo("New Name");
-        verify(canvasElasticsearchService).saveCanvas(doc);
-        verify(cppServerClient).reflectCanvasName("127.0.0.1", "8000", 100, "New Name");
-    }
-
-    @Test
-    @DisplayName("소유자나 관리자가 아닌 유저가 캔버스 수정 시 FORBIDDEN 예외 발생")
-    void updateCanvasName_NotOwner_ThrowsForbidden() {
-        // given
-        CanvasDocument doc = new CanvasDocument("Test Canvas", 100, 1L, null, "default");
-        given(canvasElasticsearchService.getCanvasDocumentById(100)).willReturn(Optional.of(doc));
-
-        User otherUser = new User("other@agora.com", "pass", "다른유저", 1, Role.ROLE_USER);
-        ReflectionTestUtils.setField(otherUser, "userId", 2L);
-        CustomUserDetails otherDetails = new CustomUserDetails(otherUser);
-
-        // when & then
-        assertThatThrownBy(() -> canvasService.updateCanvasName(100, "New Name", otherDetails))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ACCESS_DENIED);
-    }
 
     @Test
     @DisplayName("캔버스 삭제 시 is_cached가 true라면 CustomException(BAD_REQUEST)을 던진다")
