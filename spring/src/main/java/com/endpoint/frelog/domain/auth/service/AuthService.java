@@ -77,7 +77,7 @@ public class AuthService {
         String clientIp = httpRequest.getRemoteAddr();
         String token = jwtTokenProvider.createToken(
                 user.getEmail(),
-                user.getUserId(),
+                user.getTagNumber(),
                 user.getNickname(),
                 user.getRole().name(),
                 clientIp

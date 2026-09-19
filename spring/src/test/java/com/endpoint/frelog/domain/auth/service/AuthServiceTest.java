@@ -67,7 +67,7 @@ class AuthServiceTest {
         given(passwordEncoder.matches("password123", "encodedPassword123")).willReturn(true);
         HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
         given(httpRequest.getRemoteAddr()).willReturn("127.0.0.1");
-        given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1L), eq("아고라유저"), eq("ROLE_USER"), eq("127.0.0.1")))
+        given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1), eq("아고라유저"), eq("ROLE_USER"), eq("127.0.0.1")))
                 .willReturn("mock-jwt-token");
         given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(activeUser)));
 

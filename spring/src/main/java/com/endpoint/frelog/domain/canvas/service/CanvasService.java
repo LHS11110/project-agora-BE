@@ -15,6 +15,7 @@ import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.service.LoadBalancerService;
+import com.endpoint.frelog.global.security.JwtTokenProvider;
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
 import com.endpoint.frelog.domain.user.entity.UserSession;
@@ -53,6 +54,7 @@ public class CanvasService {
     private final RedisInfoRepository redisInfoRepository;
     private final ServerInfoRepository serverInfoRepository;
     private final UserSessionRepository userSessionRepository;
+    private final JwtTokenProvider jwtTokenProvider;
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
@@ -63,7 +65,8 @@ public class CanvasService {
             LoadBalancerService loadBalancerService,
             RedisInfoRepository redisInfoRepository,
             ServerInfoRepository serverInfoRepository,
-            UserSessionRepository userSessionRepository) {
+            UserSessionRepository userSessionRepository,
+            JwtTokenProvider jwtTokenProvider) {
         this.canvasInfoRepository = canvasInfoRepository;
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
@@ -73,6 +76,7 @@ public class CanvasService {
         this.redisInfoRepository = redisInfoRepository;
         this.serverInfoRepository = serverInfoRepository;
         this.userSessionRepository = userSessionRepository;
+        this.jwtTokenProvider = jwtTokenProvider;
     }
 
     /**
@@ -216,7 +220,7 @@ public class CanvasService {
      * - 로드 밸런싱된 C++ 서버의 아이피와 포트만 반환
      */
     @Transactional
-    public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, String jwtToken, CustomUserDetails currentUser) {
+    public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest, CustomUserDetails currentUser) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
@@ -254,20 +258,38 @@ public class CanvasService {
             throw new CustomException(ErrorCode.ALREADY_CONNECTED, "이미 캔버스에 접속 중인 사용자입니다. (다중 탭 접속 차단)");
         }
 
-        // 4. 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록하고 캔버스 활성화
-        String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
-        String serverPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerPort() : "none";
-        cppServerClient.registerJwtToken(serverIp, serverPort, userId, jwtToken, canvasId);
-
-        // 5. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
+        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
         session.setIsAccessed(true);
         session.setCppServer(canvasInfo.getCppServer());
         userSessionRepository.save(session);
 
-        // 5. C++ 실시간 서버의 ID와 Port 반환
-        Integer serverId = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerId() : null;
+        // 5. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
+        String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
         String wsPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getWsPort() : "none";
-        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort);
+        
+        String serverHash = "none";
+        if (!"none".equals(serverIp) && !"none".equals(wsPort)) {
+            try {
+                String raw = serverIp + ":" + wsPort;
+                java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+                byte[] hash = digest.digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                serverHash = java.util.HexFormat.of().formatHex(hash);
+            } catch (java.security.NoSuchAlgorithmException e) {
+                log.error("Failed to generate server hash", e);
+            }
+        }
+        
+        String canvasAccessToken = jwtTokenProvider.createCanvasAccessToken(
+                currentUser.getUser().getNickname(),
+                currentUser.getUser().getTagNumber(),
+                canvasId,
+                httpRequest.getRemoteAddr(), 
+                serverHash
+        );
+
+        // 6. C++ 실시간 서버의 ID, Port 및 Access Token 반환
+        Integer serverId = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerId() : null;
+        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken);
     }
 
     /**

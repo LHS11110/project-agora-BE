@@ -71,7 +71,10 @@ public class CanvasUpdateDtos {
             Integer serverId,
 
             @JsonProperty("ws_port")
-            String wsPort
+            String wsPort,
+
+            @JsonProperty("canvas_access_token")
+            String canvasAccessToken
     ) {
     }
 }

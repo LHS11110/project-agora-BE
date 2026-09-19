@@ -37,16 +37,34 @@ public class JwtTokenProvider {
         this.expirationMs = expirationMs;
     }
 
-    public String createToken(String email, Long userId, String nickname, String role, String clientIp) {
+    public String createToken(String email, Integer tagNumber, String nickname, String role, String clientIp) {
         Date now = new Date();
         Date validity = new Date(now.getTime() + expirationMs);
 
         return Jwts.builder()
                 .subject(email)
-                .claim("userId", userId)
+                .claim("tagNumber", tagNumber)
                 .claim("nickname", nickname)
                 .claim("role", role)
                 .claim("clientIp", clientIp)
+                .issuedAt(now)
+                .expiration(validity)
+                .signWith(key)
+                .compact();
+    }
+
+    public String createCanvasAccessToken(String nickname, Integer tagNumber, Integer canvasId, String clientIp, String serverHash) {
+        Date now = new Date();
+        // 캔버스 접속 토큰은 비교적 짧은 유효시간(예: 5분)을 가질 수 있지만 여기서는 편의상 동일하게 부여
+        Date validity = new Date(now.getTime() + expirationMs);
+
+        return Jwts.builder()
+                .subject("canvas-access")
+                .claim("nickname", nickname)
+                .claim("tagNumber", tagNumber)
+                .claim("canvasId", canvasId)
+                .claim("clientIp", clientIp)
+                .claim("serverHash", serverHash)
                 .issuedAt(now)
                 .expiration(validity)
                 .signWith(key)
@@ -61,10 +79,10 @@ public class JwtTokenProvider {
         return getClaims(token).get("clientIp", String.class);
     }
 
-    public Long getUserIdFromToken(String token) {
-        Object userId = getClaims(token).get("userId");
-        if (userId instanceof Number number) {
-            return number.longValue();
+    public Integer getTagNumberFromToken(String token) {
+        Object tagNumber = getClaims(token).get("tagNumber");
+        if (tagNumber instanceof Number number) {
+            return number.intValue();
         }
         return null;
     }

@@ -51,7 +51,7 @@ int main(int argc, char* argv[]) {
     int java_port = 8080;
 
     if (const char* env_host = std::getenv("HOST")) host = env_host;
-    if (const char* env_adv_ip = std::getenv("PUBLIC_IP")) g_advertise_ip = env_adv_ip;
+    if (const char* env_adv_ip = std::getenv("ADVERTISE_IP")) g_advertise_ip = env_adv_ip;
     if (const char* env_port = std::getenv("PORT")) g_port = std::stoi(env_port);
     if (const char* env_db_host = std::getenv("DB_HOST")) g_db_host = env_db_host;
     if (const char* env_db_port = std::getenv("DB_PORT")) g_db_port = std::stoi(env_db_port);
@@ -59,6 +59,9 @@ int main(int argc, char* argv[]) {
     if (const char* env_es_port = std::getenv("ES_PORT")) es_port = std::stoi(env_es_port);
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
     if (const char* env_java_port = std::getenv("JAVA_PORT")) java_port = std::stoi(env_java_port);
+
+    std::string jwt_secret = "testSecretKey~c29tZS12ZXJ5LXNlY3VyZS1hbmQtbG9uZy1zZWNyZXQta2V5LWZvci1hZ29yYS1qd3QtYXV0aC0yMDI2";
+    if (const char* env_jwt_secret = std::getenv("JWT_SECRET")) jwt_secret = env_jwt_secret;
 
     int ws_port = g_port + 2;
 
@@ -78,7 +81,7 @@ int main(int argc, char* argv[]) {
     if (g_advertise_ip == "127.0.0.1" && host != "0.0.0.0") {
         g_advertise_ip = host;
     }
-    if (g_advertise_ip == "127.0.0.1" && std::getenv("PUBLIC_IP") == nullptr && argc <= 2) {
+    if (g_advertise_ip == "127.0.0.1" && std::getenv("ADVERTISE_IP") == nullptr && argc <= 2) {
         g_advertise_ip = (host == "0.0.0.0" ? "127.0.0.1" : host);
     }
 
@@ -93,6 +96,7 @@ int main(int argc, char* argv[]) {
     std::cout << " [OSS Licenses & Attributions]\n";
     std::cout << " - uWebSockets & uSockets (Apache-2.0, (c) Alex Hultman)\n";
     std::cout << " - cpp-httplib & nlohmann/json (MIT)\n";
+    std::cout << " - jwt-cpp (MIT, (c) Thalhammer)\n";
     std::cout << " - FreeTDS sybdb (LGPL-2.1+, see https://www.freetds.org/)\n";
     std::cout << " - zlib (zlib license)\n";
     std::cout << " See THIRD_PARTY_LICENSES.md for full license texts.\n";
@@ -110,9 +114,9 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    HttpServer server(canvas_pool, host, g_port);
-    WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id) {
-        return server.authenticateTokenForCanvas(token, canvas_id);
+    HttpServer server(canvas_pool, host, g_port, jwt_secret, g_db_host, g_db_port);
+    WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id, const std::string& client_ip) {
+        return server.authenticateTokenForCanvas(token, canvas_id, client_ip, ws_port);
     }, java_host, java_port);
 
     g_server = &server;

@@ -273,3 +273,61 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
     std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL\n";
     return true;
 }
+
+int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tagNumber) {
+    PooledConnection pconn;
+    DBPROCESS* dbproc = pconn.get();
+    if (!dbproc) {
+        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: Failed to get connection." << std::endl;
+        return -1; 
+    }
+
+    std::string sql = 
+        "BEGIN TRAN; "
+        "BEGIN TRY "
+        "   SELECT user_id, status FROM users WHERE nickname = '" + nickname + "' AND tag_number = " + std::to_string(tagNumber) + "; "
+        "   COMMIT TRAN; "
+        "END TRY "
+        "BEGIN CATCH "
+        "   IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "END CATCH;";
+        
+    if (dbcmd(dbproc, sql.c_str()) != SUCCEED) {
+        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: dbcmd failed." << std::endl;
+        return -1;
+    }
+
+    if (dbsqlexec(dbproc) != SUCCEED) {
+        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: dbsqlexec failed." << std::endl;
+        return -1;
+    }
+
+    int user_id = -1;
+    int statusValue = 0; // Assuming 0 is ACTIVE, 2 is WITHDRAWN based on enum index usually, but let's check
+    // Wait, UserStatus in Java is Enum (ACTIVE, SUSPENDED, WITHDRAWN).
+    // Usually stored as TINYINT in SQL Server if @Enumerated(EnumType.ORDINAL).
+    bool withdrawn = false;
+    
+    while (dbresults(dbproc) == SUCCEED) {
+        DBINT id_val;
+        DBINT status_val;
+        
+        dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val);
+        dbbind(dbproc, 2, INTBIND, 0, (BYTE*)&status_val);
+
+        while (dbnextrow(dbproc) != NO_MORE_ROWS) {
+            user_id = id_val;
+            statusValue = status_val;
+            if (statusValue == 2) { // 2 = WITHDRAWN
+                withdrawn = true;
+            }
+        }
+    }
+
+    if (withdrawn) {
+        std::cout << "[MssqlClient] getUserIdAndCheckWithdrawn: User is WITHDRAWN. id=" << user_id << std::endl;
+        return -1;
+    }
+
+    return user_id;
+}

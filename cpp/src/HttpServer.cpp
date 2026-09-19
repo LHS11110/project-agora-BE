@@ -1,9 +1,14 @@
 #include "HttpServer.hpp"
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include "MssqlClient.hpp"
 
-HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port)
-    : canvas_pool_(canvas_pool), host_(host), port_(port) {
+#include <openssl/sha.h>
+#include <jwt-cpp/jwt.h>
+
+HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
+                       const std::string& jwt_secret, const std::string& db_host, int db_port)
+    : canvas_pool_(canvas_pool), host_(host), port_(port), jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
     setupRoutes();
 }
 
@@ -27,45 +32,82 @@ void HttpServer::stop() {
     server_.stop();
 }
 
-bool HttpServer::registerToken(int user_id, const std::string& token, int canvas_id) {
-    if (user_id <= 0 || token.empty() || canvas_id <= 0) {
-        return false;
-    }
 
-    std::lock_guard<std::mutex> lock(auth_mutex_);
-    auto [it, inserted] = token_to_user_.try_emplace(token);
-    if (!inserted && it->second.user_id != user_id) {
-        std::cerr << "[HttpServer] Rejected JWT token registration for conflicting user #" << user_id << "\n";
-        return false;
-    }
 
-    it->second.user_id = user_id;
-    it->second.canvas_ids.insert(canvas_id);
-    std::cout << "[HttpServer] Registered JWT token for user #" << user_id
-              << " on Canvas #" << canvas_id << "\n";
-    return true;
-}
-
-int HttpServer::authenticateToken(const std::string& token) {
-    std::lock_guard<std::mutex> lock(auth_mutex_);
-    auto it = token_to_user_.find(token);
-    if (it != token_to_user_.end()) {
-        return it->second.user_id;
-    }
-    return -1;
-}
-
-int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_id) {
-    if (canvas_id <= 0) {
+int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port) {
+    if (canvas_id <= 0 || token.empty()) {
         return -1;
     }
 
-    std::lock_guard<std::mutex> lock(auth_mutex_);
-    auto it = token_to_user_.find(token);
-    if (it != token_to_user_.end() && it->second.canvas_ids.count(canvas_id) > 0) {
-        return it->second.user_id;
+    try {
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256(jwt_secret_));
+        verifier.verify(decoded);
+
+        if (decoded.has_payload_claim("clientIp")) {
+            std::string token_ip = decoded.get_payload_claim("clientIp").as_string();
+            if (token_ip != client_ip) {
+                std::cerr << "[HttpServer] IP mismatch: token IP (" << token_ip << ") != client IP (" << client_ip << ")\n";
+                return -1;
+            }
+        } else {
+            std::cerr << "[HttpServer] JWT missing valid clientIp claim\n";
+            return -1;
+        }
+
+        if (decoded.has_payload_claim("serverHash")) {
+            std::string token_hash = decoded.get_payload_claim("serverHash").as_string();
+            
+            std::string raw_string = host_ + ":" + std::to_string(ws_port);
+            unsigned char hash[SHA256_DIGEST_LENGTH];
+            SHA256_CTX sha256;
+            SHA256_Init(&sha256);
+            SHA256_Update(&sha256, raw_string.c_str(), raw_string.size());
+            SHA256_Final(hash, &sha256);
+            
+            char hex_string[SHA256_DIGEST_LENGTH * 2 + 1];
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+                sprintf(&hex_string[i * 2], "%02x", hash[i]);
+            }
+            std::string generated_hash(hex_string);
+            
+            if (token_hash != generated_hash) {
+                std::cerr << "[HttpServer] Server Hash mismatch: " << token_hash << " != " << generated_hash << "\n";
+                return -1;
+            }
+        } else {
+            std::cerr << "[HttpServer] JWT missing valid serverHash claim\n";
+            return -1;
+        }
+        
+        std::string nickname = "";
+        if (decoded.has_payload_claim("nickname")) {
+            nickname = decoded.get_payload_claim("nickname").as_string();
+        }
+        
+        int tag_number = -1;
+        if (decoded.has_payload_claim("tagNumber")) {
+            tag_number = static_cast<int>(decoded.get_payload_claim("tagNumber").as_integer());
+        }
+
+        if (nickname.empty() || tag_number < 0) {
+            std::cerr << "[HttpServer] JWT missing valid nickname or tagNumber claim\n";
+            return -1;
+        }
+
+        MssqlClient mssql(db_host_, db_port_);
+        int user_id = mssql.getUserIdAndCheckWithdrawn(nickname, tag_number);
+        if (user_id <= 0) {
+            std::cerr << "[HttpServer] Rejected connection: User withdrawn or not found (" << nickname << "#" << tag_number << ")\n";
+            return -1;
+        }
+
+        return user_id;
+    } catch (const std::exception& e) {
+        std::cerr << "[HttpServer] JWT verification failed: " << e.what() << "\n";
+        return -1;
     }
-    return -1;
 }
 
 void HttpServer::setupRoutes() {
@@ -83,38 +125,7 @@ void HttpServer::setupRoutes() {
         res.set_header("Access-Control-Allow-Headers", "*");
     });
 
-    // 1. JWT 토큰 등록 API (POST /api/auth/token)
-    server_.Post("/api/auth/token", [this](const httplib::Request& req, httplib::Response& res) {
-        try {
-            auto body = nlohmann::json::parse(req.body);
-            int user_id = body.value("user_id", -1);
-            std::string token = body.value("token", "");
-            int canvas_id = body.value("canvas_id", 0);
-            if (canvas_id == 0) canvas_id = body.value("canvasId", 0);
 
-            if (user_id <= 0 || token.empty() || canvas_id <= 0) {
-                res.status = 400;
-                res.set_content("{\"error\":\"user_id, token, and canvas_id are required\"}", "application/json");
-                return;
-            }
-
-            if (!registerToken(user_id, token, canvas_id)) {
-                res.status = 409;
-                res.set_content("{\"error\":\"Token is already registered to another user\"}", "application/json");
-                return;
-            }
-
-            // C++ 메모리 풀에 캔버스 사전 로드 및 활성화
-            canvas_pool_.getOrCreateCanvas(canvas_id);
-            std::cout << "[HttpServer] Canvas #" << canvas_id << " loaded & activated in pool on token register\n";
-
-            res.status = 200;
-            res.set_content("{\"status\":\"success\",\"message\":\"Token registered\"}", "application/json");
-        } catch (const std::exception& e) {
-            res.status = 400;
-            res.set_content(std::string("{\"error\":\"") + e.what() + "\"}", "application/json");
-        }
-    });
 
     // POST /api/access removed as per user request (봇용 API 제거)
 

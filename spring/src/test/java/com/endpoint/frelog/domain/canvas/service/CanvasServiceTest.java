@@ -30,6 +30,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
@@ -64,6 +66,9 @@ class CanvasServiceTest {
 
     @Mock
     private com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository redisInfoRepository;
+
+    @Mock
+    private com.endpoint.frelog.global.security.JwtTokenProvider jwtTokenProvider;
 
     @InjectMocks
     private CanvasService canvasService;
@@ -183,15 +188,21 @@ class CanvasServiceTest {
         given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(sInfo));
         given(redisInfoRepository.findByRedisIpAndRedisPort("127.0.0.1", "6379")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379", "Redis-1")));
 
+        jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
+        given(request.getRemoteAddr()).willReturn("192.168.0.100");
+        
+        given(jwtTokenProvider.createCanvasAccessToken(
+                anyString(), anyInt(), eq(300), eq("192.168.0.100"), anyString()
+        )).willReturn("mock-canvas-token");
+
         // when
-        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, "jwt.token.here", userDetails);
+        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, request, userDetails);
 
         // then
         assertThat(response).isNotNull();
         assertThat(response.serverId()).isEqualTo(1);
         assertThat(response.wsPort()).isEqualTo("8002");
-
-        verify(cppServerClient).registerJwtToken("127.0.0.1", "8000", 1L, "jwt.token.here", 300);
+        assertThat(response.canvasAccessToken()).isEqualTo("mock-canvas-token");
         assertThat(info.getIsCached()).isTrue();
         // assertThat(testUser.getIsAccessed()).isTrue();
     }

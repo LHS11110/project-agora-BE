@@ -80,7 +80,7 @@ class SecurityIntegrationTest {
 
         String token = jwtTokenProvider.createToken(
                 savedUser.getEmail(),
-                savedUser.getUserId(),
+                savedUser.getTagNumber(),
                 savedUser.getNickname(),
                 savedUser.getRole().name(),
                 "127.0.0.1"

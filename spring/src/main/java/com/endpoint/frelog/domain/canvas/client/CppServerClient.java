@@ -47,35 +47,6 @@ public class CppServerClient {
         return "http://" + host + ":" + port;
     }
 
-    /**
-     * C++ 서버에 JWT 토큰 등록 및 캔버스 활성화 (POST /api/auth/token)
-     */
-    public boolean registerJwtToken(String serverIp, String serverPort, Long userId, String token) {
-        return registerJwtToken(serverIp, serverPort, userId, token, null);
-    }
-
-    public boolean registerJwtToken(String serverIp, String serverPort, Long userId, String token, Integer canvasId) {
-        try {
-            String url = getBaseUrl(serverIp, serverPort) + "/api/auth/token";
-            Map<String, Object> body = new HashMap<>();
-            body.put("user_id", userId);
-            body.put("token", token);
-            if (canvasId != null) {
-                body.put("canvas_id", canvasId);
-            }
-            restClient.post()
-                    .uri(URI.create(url))
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
-                    .retrieve()
-                    .toBodilessEntity();
-            log.info("C++ 서버({}:{}) 사용자 #{} JWT 토큰 등록 및 캔버스 #{} 활성화 완료", serverIp, serverPort, userId, canvasId);
-            return true;
-        } catch (Exception e) {
-            log.warn("C++ 서버({}:{}) 사용자 #{} JWT 토큰 등록 실패: {}", serverIp, serverPort, userId, e.getMessage());
-            return false;
-        }
-    }
 
     /**
      * C++ 서버에서 사용자 연결 즉시 종료 (POST /api/users/{userId}/disconnect)

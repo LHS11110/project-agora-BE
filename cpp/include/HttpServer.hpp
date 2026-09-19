@@ -9,33 +9,25 @@
 
 class HttpServer {
 public:
-    HttpServer(CanvasPool& canvas_pool, const std::string& host = "0.0.0.0", int port = 8000);
+    HttpServer(CanvasPool& canvas_pool, const std::string& host, int port, 
+               const std::string& jwt_secret, const std::string& db_host, int db_port);
     ~HttpServer();
 
     void start();
     void stop();
 
+    int authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port);
+
     CanvasPool* getPool() { return &canvas_pool_; }
 
-    int authenticateToken(const std::string& token);
-    int authenticateTokenForCanvas(const std::string& token, int canvas_id);
-
 private:
+    void setupRoutes();
+
     CanvasPool& canvas_pool_;
     std::string host_;
     int port_;
+    std::string jwt_secret_;
+    std::string db_host_;
+    int db_port_;
     httplib::Server server_;
-
-    struct TokenRegistration {
-        int user_id{0};
-        std::unordered_set<int> canvas_ids;
-    };
-
-    // JWT token registry: a token is only valid for canvases allocated through Spring.
-    std::unordered_map<std::string, TokenRegistration> token_to_user_;
-    std::mutex auth_mutex_;
-
-    void setupRoutes();
-
-    bool registerToken(int user_id, const std::string& token, int canvas_id);
 };

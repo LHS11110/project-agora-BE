@@ -123,7 +123,7 @@ public class CanvasController {
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
         String token = (authHeader != null && authHeader.startsWith("Bearer ")) ? authHeader.substring(7) : "";
-        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, token, currentUser);
+        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, request, currentUser);
         return ResponseEntity.ok(response);
     }
 

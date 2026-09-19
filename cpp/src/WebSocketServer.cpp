@@ -221,7 +221,8 @@ void WebSocketServer::runServer() {
             int user_id = -1;
             std::string token = getQueryParam(query, "token");
             if (token_validator_ && !token.empty()) {
-                user_id = token_validator_(token, canvas_id);
+                std::string client_ip = std::string(res->getRemoteAddressAsText());
+                user_id = token_validator_(token, canvas_id, client_ip);
             }
 
             if (user_id <= 0) {

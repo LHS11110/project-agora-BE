@@ -26,14 +26,14 @@ class JwtTokenProviderTest {
         String nickname = "테스터";
         String role = "ROLE_USER";
 
-        // when
-        String token = jwtTokenProvider.createToken(email, userId, nickname, role, "127.0.0.1");
+        Integer tagNumber = 1234;
+        String token = jwtTokenProvider.createToken(email, tagNumber, nickname, role, "127.0.0.1");
 
         // then
         assertThat(token).isNotBlank();
         assertThat(jwtTokenProvider.validateToken(token)).isTrue();
         assertThat(jwtTokenProvider.getEmailFromToken(token)).isEqualTo(email);
-        assertThat(jwtTokenProvider.getUserIdFromToken(token)).isEqualTo(userId);
+        assertThat(jwtTokenProvider.getTagNumberFromToken(token)).isEqualTo(tagNumber);
     }
 
     @Test
@@ -51,7 +51,7 @@ class JwtTokenProviderTest {
     void validateToken_Expired() {
         // given: 만료 시간이 -1000ms인 provider
         JwtTokenProvider expiredProvider = new JwtTokenProvider(SECRET, -1000);
-        String token = expiredProvider.createToken("test@agora.com", 1L, "테스터", "ROLE_USER", "127.0.0.1");
+        String token = expiredProvider.createToken("test@agora.com", 1234, "테스터", "ROLE_USER", "127.0.0.1");
 
         // when & then
         assertThat(jwtTokenProvider.validateToken(token)).isFalse();

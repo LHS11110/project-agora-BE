@@ -25,6 +25,9 @@ public:
     // Updates user_sessions: is_accessed=0, cpp_server_id=NULL
     bool updateUserSessionDisconnected(int userId);
 
+    // Checks if the user is deleted (status = 'WITHDRAWN')
+    int getUserIdAndCheckWithdrawn(const std::string& nickname, int tagNumber);
+
 private:
     std::string host_;
     int port_;

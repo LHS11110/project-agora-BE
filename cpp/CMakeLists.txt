@@ -15,6 +15,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/src
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jwt-cpp/include
     ${HTTPLIB_INCLUDE_DIRS}
     /usr/include
 )
