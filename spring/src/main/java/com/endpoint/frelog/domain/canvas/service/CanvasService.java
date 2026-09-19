@@ -261,6 +261,7 @@ public class CanvasService {
         // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
         session.setIsAccessed(true);
         session.setCppServer(canvasInfo.getCppServer());
+        session.setCanvas(canvasInfo);
         userSessionRepository.save(session);
 
         // 5. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
@@ -323,6 +324,7 @@ public class CanvasService {
         if (session != null) {
             session.setIsAccessed(false);
             session.setCppServer(null);
+            session.setCanvas(null);
             userSessionRepository.save(session);
         }
         log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
@@ -340,6 +342,7 @@ public class CanvasService {
             userSessionRepository.findById(userId).ifPresent(session -> {
                 session.setIsAccessed(false);
                 session.setCppServer(null);
+                session.setCanvas(null);
                 userSessionRepository.save(session);
                 log.info("[InternalDisconnect] C++ 웹소켓 종료 반영: 사용자 #{} isAccessed=false 설정 완료", userId);
             });

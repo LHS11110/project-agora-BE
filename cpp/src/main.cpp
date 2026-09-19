@@ -4,6 +4,8 @@
 #include <csignal>
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
@@ -11,6 +13,9 @@
 
 static HttpServer* g_server = nullptr;
 static WebSocketServer* g_ws_server = nullptr;
+static std::atomic<bool> g_cleanup_running{true};
+static std::mutex g_cleanup_mutex;
+static std::condition_variable g_cleanup_cv;
 
 static std::string g_advertise_ip = "127.0.0.1";
 static int g_port = 8000;
@@ -40,6 +45,12 @@ void signal_handler(int signal) {
     if (g_server) {
         g_server->stop();
     }
+    
+    {
+        std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+        g_cleanup_running = false;
+    }
+    g_cleanup_cv.notify_all();
 }
 
 int main(int argc, char* argv[]) {
@@ -122,8 +133,27 @@ int main(int argc, char* argv[]) {
     g_server = &server;
     g_ws_server = &ws_server;
 
+    std::thread cleanup_thread([&]() {
+        while (g_cleanup_running) {
+            std::cout << "[Agora C++ Server] Running 30-min canvas cleanup task...\n";
+            canvas_pool.cleanupInactiveCanvases();
+
+            std::unique_lock<std::mutex> lock(g_cleanup_mutex);
+            g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running; });
+        }
+    });
+
     ws_server.start();
     server.start();
+
+    {
+        std::lock_guard<std::mutex> lock(g_cleanup_mutex);
+        g_cleanup_running = false;
+    }
+    g_cleanup_cv.notify_all();
+    if (cleanup_thread.joinable()) {
+        cleanup_thread.join();
+    }
 
     std::cout << "[Agora C++ Server] Server stopped gracefully." << std::endl;
     return 0;

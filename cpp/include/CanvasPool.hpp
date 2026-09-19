@@ -39,6 +39,9 @@ public:
     int getActiveCanvasCount();
     std::vector<int> getActiveCanvasIds();
 
+    // Check DB every 30 mins and unload if no users
+    void cleanupInactiveCanvases();
+
     // Port allocation for RX and TX sockets
     std::pair<int, int> allocatePortPair();
 

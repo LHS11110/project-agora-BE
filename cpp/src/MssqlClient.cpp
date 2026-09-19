@@ -274,6 +274,45 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
     return true;
 }
 
+bool MssqlClient::isCanvasActiveInDb(int canvasId) {
+    PooledConnection pconn;
+    DBPROCESS* dbproc = pconn.get();
+    if (!dbproc) {
+        std::cerr << "[MssqlClient] isCanvasActiveInDb: Failed to get connection." << std::endl;
+        return true; // fail-safe, assume active
+    }
+
+    std::string sql = 
+        "BEGIN TRAN; "
+        "BEGIN TRY "
+        "   SELECT COUNT(*) FROM user_sessions WHERE canvas_id = " + std::to_string(canvasId) + " AND is_accessed = 1; "
+        "   COMMIT TRAN; "
+        "END TRY "
+        "BEGIN CATCH "
+        "   IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "END CATCH;";
+        
+    if (dbcmd(dbproc, sql.c_str()) != SUCCEED) {
+        std::cerr << "[MssqlClient] isCanvasActiveInDb: dbcmd failed." << std::endl;
+        return true;
+    }
+
+    if (dbsqlexec(dbproc) != SUCCEED) {
+        std::cerr << "[MssqlClient] isCanvasActiveInDb: dbsqlexec failed." << std::endl;
+        return true;
+    }
+
+    int active_count = 0;
+    while (dbresults(dbproc) != NO_MORE_RESULTS) {
+        dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&active_count);
+        while (dbnextrow(dbproc) != NO_MORE_ROWS) {
+            // fetched
+        }
+    }
+
+    return active_count > 0;
+}
+
 int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tagNumber) {
     PooledConnection pconn;
     DBPROCESS* dbproc = pconn.get();

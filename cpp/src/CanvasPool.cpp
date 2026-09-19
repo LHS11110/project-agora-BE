@@ -154,66 +154,31 @@ bool CanvasPool::removeCanvas(int canvas_id) {
 }
 
 void CanvasPool::disconnectUserFromAll(int user_id) {
-    std::vector<std::pair<int, std::shared_ptr<Canvas>>> to_unload;
-    {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        for (auto it = canvases_.begin(); it != canvases_.end();) {
-            if (it->second && it->second->isUserActive(user_id)) {
-                it->second->disconnectUserCompletely(user_id);
-                std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << it->first << "\n";
-                if (it->second->getActiveUsers().empty()) {
-                    to_unload.push_back({it->first, it->second});
-                    it = canvases_.erase(it);
-                    continue;
-                }
-            }
-            ++it;
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    for (auto it = canvases_.begin(); it != canvases_.end(); ++it) {
+        if (it->second && it->second->isUserActive(user_id)) {
+            it->second->disconnectUserCompletely(user_id);
+            std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << it->first << "\n";
         }
-    }
-
-    for (auto& [id, canvas] : to_unload) {
-        unloadCanvas(id, canvas);
     }
 }
 
 void CanvasPool::disconnectUser(int canvas_id, int user_id) {
-    std::shared_ptr<Canvas> canvas_to_unload;
-    {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        auto it = canvases_.find(canvas_id);
-        if (it != canvases_.end() && it->second) {
-            it->second->disconnectUserCompletely(user_id);
-            std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
-            if (it->second->getActiveUsers().empty()) {
-                canvas_to_unload = it->second;
-                canvases_.erase(it);
-            }
-        }
-    }
-
-    if (canvas_to_unload) {
-        unloadCanvas(canvas_id, canvas_to_unload);
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = canvases_.find(canvas_id);
+    if (it != canvases_.end() && it->second) {
+        it->second->disconnectUserCompletely(user_id);
+        std::cout << "[CanvasPool] Disconnected user #" << user_id << " from Canvas #" << canvas_id << "\n";
     }
 }
 
 void CanvasPool::disconnectWebSocketConnection(int canvas_id, int user_id) {
-    std::shared_ptr<Canvas> canvas_to_unload;
-    {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        auto it = canvases_.find(canvas_id);
-        if (it != canvases_.end() && it->second) {
-            it->second->disconnectUser(user_id);
-            std::cout << "[CanvasPool] WebSocket connection closed for user #" << user_id
-                      << " on Canvas #" << canvas_id << "\n";
-            if (it->second->getActiveUsers().empty()) {
-                canvas_to_unload = it->second;
-                canvases_.erase(it);
-            }
-        }
-    }
-
-    if (canvas_to_unload) {
-        unloadCanvas(canvas_id, canvas_to_unload);
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = canvases_.find(canvas_id);
+    if (it != canvases_.end() && it->second) {
+        it->second->disconnectUser(user_id);
+        std::cout << "[CanvasPool] WebSocket connection closed for user #" << user_id
+                  << " on Canvas #" << canvas_id << "\n";
     }
 }
 
@@ -230,6 +195,18 @@ std::vector<int> CanvasPool::getActiveCanvasIds() {
         ids.push_back(id);
     }
     return ids;
+}
+
+void CanvasPool::cleanupInactiveCanvases() {
+    std::vector<int> active_ids = getActiveCanvasIds();
+    MssqlClient mssql(db_host_, db_port_);
+    
+    for (int canvas_id : active_ids) {
+        if (!mssql.isCanvasActiveInDb(canvas_id)) {
+            std::cout << "[CanvasPool] Cleanup task found no active users for Canvas #" << canvas_id << ". Unloading.\n";
+            removeCanvas(canvas_id);
+        }
+    }
 }
 
 std::pair<int, int> CanvasPool::allocatePortPair() {

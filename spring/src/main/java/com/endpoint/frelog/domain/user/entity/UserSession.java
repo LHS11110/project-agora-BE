@@ -1,5 +1,6 @@
 package com.endpoint.frelog.domain.user.entity;
 
+import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -39,6 +40,10 @@ public class UserSession implements Persistable<Long> {
     @ManyToOne
     @JoinColumn(name = "cpp_server_id")
     private ServerInfo cppServer;
+
+    @ManyToOne
+    @JoinColumn(name = "canvas_id")
+    private CanvasInfo canvas;
 
     @Column(name = "is_accessed", nullable = false)
     private Boolean isAccessed = false;
@@ -109,6 +114,14 @@ public class UserSession implements Persistable<Long> {
 
     public void setCppServer(ServerInfo cppServer) {
         this.cppServer = cppServer;
+    }
+
+    public CanvasInfo getCanvas() {
+        return canvas;
+    }
+
+    public void setCanvas(CanvasInfo canvas) {
+        this.canvas = canvas;
     }
 
     public Boolean getIsAccessed() {
