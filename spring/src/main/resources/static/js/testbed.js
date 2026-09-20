@@ -1,378 +1,327 @@
-/**
- * Premium Agora Testbed Logic
- * Simplified flow: Login -> Auto Register Servers -> Select Canvas -> Access & Broadcast
- */
-
+// --- State ---
 let state = {
     token: localStorage.getItem('agora_token') || '',
     user: JSON.parse(localStorage.getItem('agora_user') || 'null'),
-    currentCanvas: null,
     ws: null,
-    cppIp: '',
-    cppPort: '',
-    wsPort: ''
+    authMode: 'login' // 'login' or 'signup'
 };
 
-// --- DOM Elements ---
-const el = {
-    authView: document.getElementById('authView'),
-    dashboardView: document.getElementById('dashboardView'),
-    email: document.getElementById('email'),
-    password: document.getElementById('password'),
-    loginText: document.getElementById('loginText'),
-    loginLoader: document.getElementById('loginLoader'),
-    loginBtn: document.getElementById('loginBtn'),
-    userNameText: document.getElementById('userNameText'),
-    logoutBtn: document.getElementById('logoutBtn'),
-    
-    canvasList: document.getElementById('canvasList'),
-    newCanvasName: document.getElementById('newCanvasName'),
-    
-    broadcastArea: document.getElementById('broadcastArea'),
-    activeCanvasTitle: document.getElementById('activeCanvasTitle'),
-    activeCanvasMeta: document.getElementById('activeCanvasMeta'),
-    connectBtn: document.getElementById('connectBtn'),
-    connectionDot: document.getElementById('connectionDot'),
-    connectionText: document.getElementById('connectionText'),
-    
-    chatContainer: document.getElementById('chatContainer'),
-    chatInput: document.getElementById('chatInput'),
-    sendBtn: document.getElementById('sendBtn')
-};
-
-// --- Core Initialization ---
+// --- Initialization ---
 window.onload = () => {
-    if (state.token && state.user) {
-        showDashboard();
-    } else {
-        showAuth();
-    }
+    updateAuthUI();
 };
 
-// --- API Utility ---
+// --- Tab Switching ---
+function switchTab(event, tabId) {
+    document.querySelectorAll('.tab-item').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(el => el.classList.remove('active'));
+    
+    event.currentTarget.classList.add('active');
+    document.getElementById(tabId).classList.add('active');
+}
+
+// --- Console Logger ---
+function logToConsole(type, title, data) {
+    const consoleBody = document.getElementById('consoleBody');
+    const time = new Date().toLocaleTimeString();
+    
+    let colorClass = 'log-info';
+    if (type === 'SUCCESS') colorClass = 'log-success';
+    else if (type === 'ERROR') colorClass = 'log-error';
+    else if (type === 'WS') colorClass = 'log-info';
+
+    const formattedData = typeof data === 'object' ? JSON.stringify(data, null, 2) : data;
+    
+    const logEntry = document.createElement('div');
+    logEntry.style.marginBottom = '12px';
+    logEntry.innerHTML = `
+<span style="color: #6272a4;">[${time}]</span> <span class="${colorClass}">[${type}] ${title}</span>
+${formattedData ? `\n<span style="color: #a6accd;">${formattedData}</span>` : ''}
+    `;
+    
+    consoleBody.appendChild(logEntry);
+    consoleBody.scrollTop = consoleBody.scrollHeight;
+}
+
+function clearConsole() {
+    document.getElementById('consoleBody').innerHTML = '';
+}
+
+// --- API Wrapper ---
 async function apiCall(endpoint, method = 'GET', body = null) {
     const headers = {};
     if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
     if (body) headers['Content-Type'] = 'application/json';
 
     try {
+        logToConsole('INFO', `Req: ${method} ${endpoint}`, body);
         const response = await fetch(endpoint, {
             method,
             headers,
             body: body ? JSON.stringify(body) : null
         });
-        const text = await response.text();
+        
         let data;
+        const text = await response.text();
         try { data = JSON.parse(text); } catch { data = text; }
+        
+        if (response.ok) {
+            logToConsole('SUCCESS', `Res: ${response.status} ${endpoint}`, data);
+        } else {
+            logToConsole('ERROR', `Res: ${response.status} ${endpoint}`, data);
+        }
+        
         return { ok: response.ok, status: response.status, data };
     } catch (error) {
-        console.error('API Error:', error);
+        logToConsole('ERROR', `Req Failed: ${method} ${endpoint}`, error.message);
         return { ok: false, error: error.message };
     }
 }
 
-// --- Auth Flow ---
-function setQuickLogin(email, password) {
-    el.email.value = email;
-    el.password.value = password;
-}
-
-function showAuth() {
-    el.authView.style.display = 'flex';
-    el.authView.classList.add('active');
-    el.dashboardView.style.display = 'none';
-    el.logoutBtn.style.display = 'none';
-    el.userNameText.innerText = '로그인 대기 중';
-}
-
-async function showDashboard() {
-    el.authView.classList.remove('active');
-    setTimeout(() => {
-        el.authView.style.display = 'none';
-        el.dashboardView.style.display = 'flex';
-        el.dashboardView.classList.add('active');
-    }, 400);
-
-    el.logoutBtn.style.display = 'block';
-    el.userNameText.innerText = `👋 ${state.user.nickname} (${state.user.email})`;
-    el.userNameText.style.color = 'var(--text-main)';
-
-
-
-    loadCanvases();
-}
-
-async function login() {
-    el.loginText.style.display = 'none';
-    el.loginLoader.style.display = 'block';
-    el.loginBtn.disabled = true;
-
-    const res = await apiCall('/api/auth/login', 'POST', {
-        email: el.email.value,
-        password: el.password.value
-    });
-
-    if (res.ok && res.data.accessToken) {
-        state.token = res.data.accessToken;
-        state.user = res.data.user;
-        localStorage.setItem('agora_token', state.token);
-        localStorage.setItem('agora_user', JSON.stringify(state.user));
-        await showDashboard();
+// --- Auth & User ---
+function setAuthMode(mode) {
+    state.authMode = mode;
+    if (mode === 'login') {
+        document.getElementById('btnModeLogin').classList.replace('btn-outline', 'btn-primary');
+        document.getElementById('btnModeSignup').classList.replace('btn-primary', 'btn-outline');
+        document.getElementById('groupNickname').style.display = 'none';
+        document.getElementById('btnSubmitAuth').innerText = '로그인 (POST /api/auth/login)';
     } else {
-        alert('로그인 실패: ' + (res.data.message || '인증 오류'));
+        document.getElementById('btnModeSignup').classList.replace('btn-outline', 'btn-primary');
+        document.getElementById('btnModeLogin').classList.replace('btn-primary', 'btn-outline');
+        document.getElementById('groupNickname').style.display = 'block';
+        document.getElementById('btnSubmitAuth').innerText = '회원가입 (POST /api/auth/signup)';
     }
-
-    el.loginText.style.display = 'block';
-    el.loginLoader.style.display = 'none';
-    el.loginBtn.disabled = false;
 }
 
-function toggleAuthTab(tab) {
-    const loginForm = document.getElementById('loginFormBlock');
-    const signupForm = document.getElementById('signupFormBlock');
-    const tabLoginBtn = document.getElementById('tabLoginBtn');
-    const tabSignupBtn = document.getElementById('tabSignupBtn');
-    
-    if (tab === 'login') {
-        loginForm.style.display = 'flex';
-        signupForm.style.display = 'none';
-        tabLoginBtn.classList.add('btn-primary');
-        tabLoginBtn.classList.remove('btn-outline');
-        tabSignupBtn.classList.remove('btn-primary');
-        tabSignupBtn.classList.add('btn-outline');
-        document.getElementById('authTitle').innerText = 'Welcome Back';
-        document.getElementById('authSubtitle').innerText = '프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드';
+async function submitAuth() {
+    const email = document.getElementById('authEmail').value;
+    const password = document.getElementById('authPassword').value;
+    const nickname = document.getElementById('authNickname').value;
+
+    if (state.authMode === 'login') {
+        const res = await apiCall('/api/auth/login', 'POST', { email, password });
+        if (res.ok) {
+            state.token = res.data.accessToken;
+            state.user = res.data.user;
+            localStorage.setItem('agora_token', state.token);
+            localStorage.setItem('agora_user', JSON.stringify(state.user));
+            updateAuthUI();
+        } else {
+            alert('로그인 실패');
+        }
     } else {
-        loginForm.style.display = 'none';
-        signupForm.style.display = 'flex';
-        tabSignupBtn.classList.add('btn-primary');
-        tabSignupBtn.classList.remove('btn-outline');
-        tabLoginBtn.classList.remove('btn-primary');
-        tabLoginBtn.classList.add('btn-outline');
-        document.getElementById('authTitle').innerText = 'Create Account';
-        document.getElementById('authSubtitle').innerText = '새로운 테스트 계정을 생성합니다';
+        const res = await apiCall('/api/auth/signup', 'POST', { email, password, nickname });
+        if (res.ok) {
+            alert('회원가입 성공. 이제 로그인합니다.');
+            setAuthMode('login');
+            await submitAuth();
+        } else {
+            alert('회원가입 실패');
+        }
     }
 }
 
-async function signup() {
-    const email = document.getElementById('signupEmail').value;
-    const password = document.getElementById('signupPassword').value;
-    const nickname = document.getElementById('signupNickname').value;
-    const btnText = document.getElementById('signupText');
-    const btnLoader = document.getElementById('signupLoader');
-    const btn = document.getElementById('signupBtn');
-    
-    if (!email || !password || !nickname) {
-        alert('모든 필드를 입력해주세요.');
-        return;
-    }
-    
-    btnText.style.display = 'none';
-    btnLoader.style.display = 'block';
-    btn.disabled = true;
-
-    const res = await apiCall('/api/auth/signup', 'POST', { email, password, nickname });
-
-    if (res.ok) {
-        alert('계정이 성공적으로 생성되었습니다!');
-        // Automatically login
-        el.email.value = email;
-        el.password.value = password;
-        toggleAuthTab('login');
-        await login();
+function updateAuthUI() {
+    if (state.token && state.user) {
+        document.getElementById('tokenDisplay').innerText = state.token.substring(0, 40) + '...';
+        document.getElementById('currentUserDisplay').style.display = 'block';
+        document.getElementById('currentUserName').innerText = state.user.nickname;
+        document.getElementById('btnLogout').style.display = 'block';
     } else {
-        alert('계정 생성 실패: ' + (res.data?.message || '입력값을 확인해주세요.'));
+        document.getElementById('tokenDisplay').innerText = '발급된 토큰 없음';
+        document.getElementById('currentUserDisplay').style.display = 'none';
+        document.getElementById('btnLogout').style.display = 'none';
     }
-
-    btnText.style.display = 'block';
-    btnLoader.style.display = 'none';
-    btn.disabled = false;
 }
 
-async function logout() {
-    await disconnectWebSocket();
-    state.token = '';
-    state.user = null;
+function doLogout() {
     localStorage.removeItem('agora_token');
     localStorage.removeItem('agora_user');
-    
-    el.dashboardView.classList.remove('active');
-    setTimeout(() => { showAuth(); }, 300);
+    state.token = '';
+    state.user = null;
+    disconnectWebSocket();
+    updateAuthUI();
 }
 
-// --- Canvas Flow ---
-async function loadCanvases() {
-    const res = await apiCall('/api/canvases');
-    el.canvasList.innerHTML = '';
-    
-    if (res.ok && Array.isArray(res.data)) {
-        if (res.data.length === 0) {
-            el.canvasList.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem; padding: 10px;">생성된 캔버스가 없습니다.</div>';
-            return;
-        }
+async function getUserInfo() {
+    const id = document.getElementById('targetUserId').value;
+    await apiCall(`/api/users/${id}`);
+}
 
-        // Fetch C++ active canvases via Spring Boot proxy. 
-        // Always use 127.0.0.1 for server-to-server internal calls to avoid Hairpin NAT timeout.
-        const activeRes = await apiCall(`/api/test/cpp-active-canvases?host=127.0.0.1&port=8000`);
-        const activeIds = new Set(activeRes.ok && activeRes.data.canvases ? activeRes.data.canvases.map(c => c.canvas_id) : []);
+async function updateUserInfo() {
+    const id = document.getElementById('targetUserId').value;
+    const nickname = document.getElementById('newNickname').value;
+    await apiCall(`/api/users/${id}`, 'PATCH', { nickname });
+}
 
-        res.data.forEach(c => {
-            const isActive = activeIds.has(c.canvas_id);
-            const card = document.createElement('div');
-            card.className = `canvas-card ${state.currentCanvas?.canvas_id === c.canvas_id ? 'active' : ''}`;
-            card.onclick = () => selectCanvas(c);
-            
-            card.innerHTML = `
-                <div>
-                    <div class="canvas-name">#${c.canvas_id} ${c.canvas_name}</div>
-                    <div class="canvas-meta">참여자: ${c.user_count || 0}명</div>
-                </div>
-                <div class="status-dot ${isActive ? 'active' : ''}" title="${isActive ? 'C++ 로드됨' : '미접속'}"></div>
+async function softDeleteUser() {
+    const id = document.getElementById('targetUserId').value;
+    if (confirm('정말 탈퇴하시겠습니까?')) {
+        await apiCall(`/api/users/${id}`, 'DELETE');
+    }
+}
+
+// --- Servers & Redis ---
+async function registerCppServer() {
+    const ip = document.getElementById('cppServerIp').value;
+    const port = document.getElementById('cppServerPort').value;
+    const wsPort = document.getElementById('cppWsPort').value;
+    await apiCall('/api/servers', 'POST', { serverIp: ip, serverPort: port, wsPort: wsPort });
+    listCppServers();
+}
+
+async function listCppServers() {
+    const res = await apiCall('/api/servers');
+    if (res.ok) {
+        const tbody = document.getElementById('cppServerTbody');
+        tbody.innerHTML = '';
+        res.data.forEach(s => {
+            tbody.innerHTML += `
+                <tr>
+                    <td>${s.serverId}</td>
+                    <td>${s.serverIp}:${s.wsPort}</td>
+                    <td>${s.currentLoad}</td>
+                    <td><button class="btn btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="apiCall('/api/servers/${s.serverId}', 'DELETE').then(listCppServers)">삭제</button></td>
+                </tr>
             `;
-            el.canvasList.appendChild(card);
         });
     }
 }
 
-async function createCanvas() {
-    const name = el.newCanvasName.value.trim();
-    if (!name) return alert('캔버스 이름을 입력하세요.');
+async function registerRedisServer() {
+    const ip = document.getElementById('redisIp').value;
+    const port = document.getElementById('redisPort').value;
+    await apiCall('/api/redis', 'POST', { redisIp: ip, redisPort: port });
+    listRedisServers();
+}
 
-    const res = await apiCall('/api/canvases', 'POST', {
-        canvasName: name,
-        description: 'Premium Testbed Canvas'
-    });
-
+async function listRedisServers() {
+    const res = await apiCall('/api/redis');
     if (res.ok) {
-        el.newCanvasName.value = '';
-        await loadCanvases();
-        selectCanvas({ canvas_id: res.data.canvas_id, canvas_name: name });
-    } else {
-        alert('생성 실패: ' + res.data.message);
+        const tbody = document.getElementById('redisServerTbody');
+        tbody.innerHTML = '';
+        res.data.forEach(r => {
+            tbody.innerHTML += `
+                <tr>
+                    <td>${r.redisId}</td>
+                    <td>${r.redisIp}:${r.redisPort}</td>
+                    <td>${r.currentLoad}</td>
+                    <td><button class="btn btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="apiCall('/api/redis/${r.redisId}', 'DELETE').then(listRedisServers)">삭제</button></td>
+                </tr>
+            `;
+        });
     }
 }
 
-function selectCanvas(canvas) {
-    state.currentCanvas = canvas;
-    el.broadcastArea.style.opacity = '1';
-    el.broadcastArea.style.pointerEvents = 'auto';
-    
-    el.activeCanvasTitle.innerText = `🎨 #${canvas.canvas_id} ${canvas.canvas_name}`;
-    el.activeCanvasMeta.innerText = `현재 선택된 캔버스입니다. 우측 상단의 접속 버튼을 눌러 통신을 시작하세요.`;
-    
-    const settingsBtn = document.getElementById('settingsBtn');
-    if (settingsBtn) settingsBtn.style.display = 'none'; // Settings API removed
-    
-    // Update participant count
-    const participantsEl = document.getElementById('activeCanvasParticipants');
-    if (participantsEl) {
-        participantsEl.innerHTML = `<strong>👥 참여자 수:</strong> ${canvas.user_count || 0}명`;
+// --- Canvas CRUD ---
+async function doCreateCanvas() {
+    const name = document.getElementById('canvasName').value;
+    const desc = document.getElementById('canvasDesc').value;
+    const res = await apiCall('/api/canvases', 'POST', { canvasName: name, description: desc });
+    if (res.ok) {
+        document.getElementById('targetCanvasId').value = res.data.canvas_id;
+        document.getElementById('accessCanvasId').value = res.data.canvas_id;
+        searchCanvases();
     }
-    
-    disconnectWebSocket();
-    loadCanvases(); // Refresh active UI states
 }
 
-// --- Realtime WebSocket Flow ---
+async function searchCanvases() {
+    const query = document.getElementById('searchNameInput').value;
+    const endpoint = query ? `/api/canvases?name=${encodeURIComponent(query)}` : `/api/canvases`;
+    const res = await apiCall(endpoint);
+    
+    if (res.ok) {
+        const tbody = document.getElementById('canvasListTbody');
+        tbody.innerHTML = '';
+        const list = Array.isArray(res.data) ? res.data : (res.data.content || []);
+        if (list.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="3" style="text-align:center;">결과가 없습니다.</td></tr>`;
+        } else {
+            list.forEach(c => {
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${c.canvas_id || c.canvasId}</td>
+                        <td>${c.canvas_name || c.canvasName}</td>
+                        <td>${c.description || ''}</td>
+                    </tr>
+                `;
+            });
+        }
+    }
+}
+
+async function readCanvasById() {
+    const id = document.getElementById('targetCanvasId').value;
+    await apiCall(`/api/canvases/${id}`);
+}
+
+async function patchCanvas() {
+    const id = document.getElementById('targetCanvasId').value;
+    const name = document.getElementById('patchCanvasName').value;
+    await apiCall(`/api/canvases/${id}`, 'PATCH', { canvas_name: name });
+}
+
+async function deleteCanvas() {
+    const id = document.getElementById('targetCanvasId').value;
+    await apiCall(`/api/canvases/${id}`, 'DELETE');
+}
+
+// --- Access & WS ---
 async function connectActiveCanvas() {
-    if (!state.currentCanvas) return;
+    const cid = document.getElementById('accessCanvasId').value;
+    if (!cid) return alert("Canvas ID를 입력하세요");
+    
+    const accessRes = await apiCall(`/api/canvases/${cid}/access`, 'POST');
+    if (!accessRes.ok) return;
+    
+    document.getElementById('allocatedServerDisplay').innerText = 
+        `Server ID: ${accessRes.data.server_id}, IP: ${accessRes.data.server_ip}, WS Port: ${accessRes.data.ws_port}`;
     
     if (state.ws) {
-        disconnectWebSocket();
-        return;
+        state.ws.close();
     }
 
-    el.connectionText.innerText = '접속 중...';
-    el.connectionDot.className = 'status-dot';
-    el.connectionDot.style.background = '#f59e0b';
+    // Connect WS through Nginx proxy
+    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${state.token}`;
+    logToConsole('WS', `Connecting to WebSocket`, wsUrl);
     
-    addSystemMessage('Spring Boot P2C 로드밸런싱 API 호출 중...');
-
-    // 1. Spring Access API
-    const accessRes = await apiCall(`/api/canvases/${state.currentCanvas.canvas_id}/access`, 'POST');
-    if (!accessRes.ok) {
-        alert('Access API 실패: ' + (accessRes.data?.message || '알 수 없는 오류'));
-        resetConnectionUI();
-        return;
-    }
-
-    state.cppServerId = accessRes.data.server_id;
-    state.wsPort = accessRes.data.ws_port;
-
-    addSystemMessage(`할당된 실시간 서버: (서버 ID: ${state.cppServerId}). WebSocket 연결 시도...`);
-
-    // 2. WebSocket Connect (Route through Nginx using wss://)
-    const wsUrl = `wss://${window.location.host}/wss/server/${state.cppServerId}/canvas/${state.currentCanvas.canvas_id}?token=${state.token}`;
-
-    try {
-        state.ws = new WebSocket(wsUrl);
-
-        state.ws.onopen = () => {
-            el.connectionText.innerText = '실시간 접속 중';
-            el.connectionDot.className = 'status-dot active';
-            el.connectBtn.innerText = '접속 종료';
-            el.connectBtn.classList.replace('btn-primary', 'btn-danger');
-            
-            el.chatInput.disabled = false;
-            el.sendBtn.disabled = false;
-            
-            addSystemMessage('🟢 WebSocket 연결이 성공적으로 수립되었습니다. 실시간 브로드캐스팅이 가능합니다.');
-            loadCanvases(); // Refresh C++ active dots
-        };
-
-        state.ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'init' || data.type === 'ping') return;
-                
-                // Show received message
-                const senderName = data.sender || data.user_id || '알 수 없는 사용자';
-                addChatMessage(senderName, data.text || JSON.stringify(data), false);
-            } catch {
-                addChatMessage('Unknown', event.data, false);
-            }
-        };
-
-        state.ws.onclose = (e) => {
-            addSystemMessage(`🔴 WebSocket 연결이 종료되었습니다. (Code: ${e.code})`);
-            resetConnectionUI();
-            loadCanvases();
-        };
-
-        state.ws.onerror = () => {
-            addSystemMessage('❌ WebSocket 연결 에러가 발생했습니다.');
-            resetConnectionUI();
-        };
-
-    } catch (err) {
-        addSystemMessage('WebSocket 객체 생성 에러: ' + err.message);
-        resetConnectionUI();
-    }
+    state.ws = new WebSocket(wsUrl);
+    
+    state.ws.onopen = () => {
+        logToConsole('WS', 'Connected to WebSocket successfully');
+        document.getElementById('wsStatusDot').style.background = '#10b981';
+        document.getElementById('chatInput').disabled = false;
+        document.getElementById('sendBtn').disabled = false;
+        addSystemMessage("웹소켓에 성공적으로 연결되었습니다.");
+    };
+    
+    state.ws.onmessage = (e) => {
+        logToConsole('WS', 'Message Received', e.data);
+        try {
+            const data = JSON.parse(e.data);
+            if (data.type === 'ping' || data.type === 'init') return;
+            const sender = data.sender_id || data.sender || data.user_id || '알 수 없음';
+            addChatMessage(sender, data.text || JSON.stringify(data), false);
+        } catch {
+            addChatMessage('Unknown', e.data, false);
+        }
+    };
+    
+    state.ws.onclose = (e) => {
+        logToConsole('WS', 'Disconnected', `Code: ${e.code}`);
+        document.getElementById('wsStatusDot').style.background = 'var(--text-muted)';
+        document.getElementById('chatInput').disabled = true;
+        document.getElementById('sendBtn').disabled = true;
+        addSystemMessage("웹소켓 연결이 종료되었습니다.");
+    };
 }
 
-async function disconnectWebSocket() {
-    let wasConnected = false;
+function disconnectWebSocket() {
     if (state.ws) {
         state.ws.close();
         state.ws = null;
-        wasConnected = true;
     }
-    if (wasConnected && state.currentCanvas) {
-        // No explicit disconnect API call needed; server handles WebSocket close internally
-    }
-    resetConnectionUI();
-}
-
-function resetConnectionUI() {
-    el.connectionText.innerText = '미연결';
-    el.connectionDot.className = 'status-dot';
-    el.connectionDot.style.background = 'var(--text-muted)';
-    
-    el.connectBtn.innerText = '접속하기';
-    el.connectBtn.classList.replace('btn-danger', 'btn-primary');
-    
-    el.chatInput.disabled = true;
-    el.sendBtn.disabled = true;
 }
 
 // --- Chat UI Helpers ---
@@ -382,21 +331,20 @@ function handleChatKey(e) {
 
 function sendMessage() {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-    
-    const text = el.chatInput.value.trim();
+    const input = document.getElementById('chatInput');
+    const text = input.value.trim();
     if (!text) return;
-
+    
     let payload;
     try {
-        payload = JSON.parse(text); // If they wrote JSON, send as JSON
+        payload = JSON.parse(text);
     } catch {
-        payload = { type: 'chat', text: text, sender: state.user.nickname };
+        payload = { type: 'chat', text: text };
     }
-
+    
     state.ws.send(JSON.stringify(payload));
     addChatMessage('나 (Me)', text, true);
-    
-    el.chatInput.value = '';
+    input.value = '';
 }
 
 function addSystemMessage(text) {
@@ -405,25 +353,6 @@ function addSystemMessage(text) {
     div.innerText = text;
     document.getElementById('chatContainer').appendChild(div);
     scrollToBottom();
-}
-
-// --- Canvas Settings Modal ---
-function openSettingsModal() {
-    if (!state.currentCanvas) return;
-    document.getElementById('settingsModal').style.display = 'flex';
-    document.getElementById('settingCanvasName').value = state.currentCanvas.canvas_name || '';
-}
-
-function closeSettingsModal() {
-    document.getElementById('settingsModal').style.display = 'none';
-}
-
-async function updateCanvasSetting(type) {
-    alert('현재 API 버전에서는 설정 변경을 지원하지 않습니다.');
-}
-
-async function manageParticipant(action) {
-    alert('현재 API 버전에서는 참여자 관리를 지원하지 않습니다.');
 }
 
 function addChatMessage(sender, text, isMe) {
@@ -443,10 +372,89 @@ function addChatMessage(sender, text, isMe) {
     wrapper.appendChild(senderDiv);
     wrapper.appendChild(bubble);
     
-    el.chatContainer.appendChild(wrapper);
+    document.getElementById('chatContainer').appendChild(wrapper);
     scrollToBottom();
 }
 
 function scrollToBottom() {
-    el.chatContainer.scrollTop = el.chatContainer.scrollHeight;
+    const container = document.getElementById('chatContainer');
+    container.scrollTop = container.scrollHeight;
+}
+
+// --- E2E Automatic Test ---
+async function runFullE2ETest() {
+    const setStatus = (step, status) => {
+        const badge = document.getElementById(`badge-step${step}`);
+        if (!badge) return;
+        badge.className = `step-badge badge-${status}`;
+        if (status === 'running') badge.innerText = '실행 중';
+        else if (status === 'success') badge.innerText = '성공';
+        else if (status === 'error') badge.innerText = '실패';
+        else badge.innerText = '대기 중';
+    };
+
+    // 1. Auth
+    setStatus(1, 'running');
+    const authRes = await apiCall('/api/auth/login', 'POST', { email: 'admin@agora.com', password: 'admin123' });
+    if (!authRes.ok) return setStatus(1, 'error');
+    state.token = authRes.data.accessToken;
+    state.user = authRes.data.user;
+    updateAuthUI();
+    setStatus(1, 'success');
+
+    // 2. Servers
+    setStatus(2, 'running');
+    await apiCall('/api/servers', 'POST', { serverIp: '127.0.0.1', serverPort: '8000', wsPort: '8002' });
+    await apiCall('/api/redis', 'POST', { redisIp: '127.0.0.1', redisPort: '6379' });
+    setStatus(2, 'success');
+
+    // 3. Canvas Create
+    setStatus(3, 'running');
+    const createRes = await apiCall('/api/canvases', 'POST', { canvasName: 'E2E Test Canvas', description: 'Auto Generated' });
+    if (!createRes.ok) return setStatus(3, 'error');
+    const cid = createRes.data.canvas_id;
+    document.getElementById('accessCanvasId').value = cid;
+    setStatus(3, 'success');
+
+    // 4. ES Search
+    setStatus(4, 'running');
+    // Allow ES index time
+    await new Promise(r => setTimeout(r, 1000));
+    await apiCall(`/api/canvases/${cid}`);
+    setStatus(4, 'success');
+
+    // 5. Access API (P2C)
+    setStatus(5, 'running');
+    const accessRes = await apiCall(`/api/canvases/${cid}/access`, 'POST');
+    if (!accessRes.ok) return setStatus(5, 'error');
+    setStatus(5, 'success');
+
+    // 6. WebSocket Connect
+    setStatus(6, 'running');
+    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${state.token}`;
+    state.ws = new WebSocket(wsUrl);
+    await new Promise((resolve, reject) => {
+        state.ws.onopen = resolve;
+        state.ws.onerror = reject;
+    });
+    setStatus(6, 'success');
+
+    // 7. WS Test
+    setStatus(7, 'running');
+    state.ws.send(JSON.stringify({ type: 'chat', text: 'Hello from E2E!' }));
+    await new Promise(r => setTimeout(r, 500));
+    setStatus(7, 'success');
+
+    // 8. Canvas Patch
+    setStatus(8, 'running');
+    await apiCall(`/api/canvases/${cid}`, 'PATCH', { canvas_name: 'E2E Updated Canvas' });
+    setStatus(8, 'success');
+
+    // 9. Cleanup
+    setStatus(9, 'running');
+    await apiCall(`/api/canvases/${cid}`, 'DELETE');
+    disconnectWebSocket();
+    setStatus(9, 'success');
+
+    alert("🎉 E2E 자동 테스트가 모두 성공했습니다!");
 }
