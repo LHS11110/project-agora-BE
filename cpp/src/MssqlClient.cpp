@@ -118,7 +118,7 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
         "END "
         "ELSE "
         "BEGIN "
-        "   INSERT INTO cpp_server (server_ip, server_port, ws_port, is_activated) VALUES ('" + ip + "', '" + std::to_string(rest_port) + "', '" + std::to_string(ws_port) + "', 1); "
+        "   INSERT INTO cpp_server (server_ip, server_port, ws_port, is_activated, created_at) VALUES ('" + ip + "', '" + std::to_string(rest_port) + "', '" + std::to_string(ws_port) + "', 1, GETDATE()); "
         "END; "
         "COMMIT TRAN; "
         "END TRY "

@@ -203,3 +203,4 @@ bin/
 # Nginx
 nginx/ssl/
 nginx/agora.conf
+*.groovy

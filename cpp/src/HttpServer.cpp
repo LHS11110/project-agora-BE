@@ -1,9 +1,13 @@
 #include "HttpServer.hpp"
 #include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include "MssqlClient.hpp"
 
 #include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <jwt-cpp/jwt.h>
 
 HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
@@ -60,15 +64,19 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
             std::string token_hash = decoded.get_payload_claim("serverHash").as_string();
             
             std::string raw_string = host_ + ":" + std::to_string(ws_port);
-            unsigned char hash[SHA256_DIGEST_LENGTH];
-            SHA256_CTX sha256;
-            SHA256_Init(&sha256);
-            SHA256_Update(&sha256, raw_string.c_str(), raw_string.size());
-            SHA256_Final(hash, &sha256);
+            unsigned char hash[EVP_MAX_MD_SIZE];
+            unsigned int hash_len = 0;
+            EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+            if (ctx != nullptr) {
+                EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+                EVP_DigestUpdate(ctx, raw_string.c_str(), raw_string.size());
+                EVP_DigestFinal_ex(ctx, hash, &hash_len);
+                EVP_MD_CTX_free(ctx);
+            }
             
-            char hex_string[SHA256_DIGEST_LENGTH * 2 + 1];
-            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-                sprintf(&hex_string[i * 2], "%02x", hash[i]);
+            char hex_string[EVP_MAX_MD_SIZE * 2 + 1];
+            for (unsigned int i = 0; i < hash_len; i++) {
+                sprintf(&hex_string[i * 2], "%02x", (unsigned int)hash[i]);
             }
             std::string generated_hash(hex_string);
             
@@ -161,6 +169,7 @@ void HttpServer::setupRoutes() {
 
     // 활성 캔버스 수 조회 API (로드 밸런서 측정용)
     server_.Get("/api/canvas/count", [this](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
         int count = canvas_pool_.getActiveCanvasCount();
         nlohmann::json r = {{"status", "success"}, {"count", count}};
         res.status = 200;
@@ -169,6 +178,7 @@ void HttpServer::setupRoutes() {
 
     // 활성 캔버스 상세 목록 및 수 조회 API
     server_.Get("/api/canvas/active", [this](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
         auto ids = canvas_pool_.getActiveCanvasIds();
         nlohmann::json canvas_list = nlohmann::json::array();
         for (int cid : ids) {
@@ -194,11 +204,13 @@ void HttpServer::setupRoutes() {
 
     // 헬스체크
     server_.Get("/health", [](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
         res.status = 200;
         res.set_content("{\"status\":\"UP\",\"service\":\"Agora C++ Realtime Server\"}", "application/json");
     });
 
     server_.Get("/", [](const httplib::Request& req, httplib::Response& res) {
+        (void)req;
         res.status = 200;
         res.set_content("{\"status\":\"online\",\"service\":\"Agora C++ Server\"}", "application/json");
     });

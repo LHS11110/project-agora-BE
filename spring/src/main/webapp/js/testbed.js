@@ -64,6 +64,13 @@ async function apiCall(endpoint, method = 'GET', body = null) {
         const text = await response.text();
         let data;
         try { data = JSON.parse(text); } catch { data = text; }
+        
+        if (response.status === 401) {
+            console.warn('Unauthorized (401). Forcing logout...');
+            logout(); // Clear token and return to auth view
+            return { ok: false, status: 401, error: 'Unauthorized' };
+        }
+        
         return { ok: response.ok, status: response.status, data };
     } catch (error) {
         console.error('API Error:', error);
@@ -304,21 +311,21 @@ async function connectActiveCanvas() {
     addSystemMessage('Spring Boot P2C 로드밸런싱 API 호출 중...');
 
     // 1. Spring Access API
-    const accessRes = await apiCall('/api/access', 'POST', { canvas_id: state.currentCanvas.canvas_id });
+    const accessRes = await apiCall(`/api/canvases/${state.currentCanvas.canvas_id}/access`, 'POST');
     if (!accessRes.ok) {
-        alert('Access API 실패: ' + (accessRes.data.message || '알 수 없는 오류'));
+        alert('Access API 실패: ' + (accessRes.data?.message || '알 수 없는 오류'));
         resetConnectionUI();
         return;
     }
 
+    state.cppServerId = accessRes.data.server_id;
     state.cppIp = accessRes.data.server_ip;
-    state.cppPort = accessRes.data.server_port;
     state.wsPort = accessRes.data.ws_port;
 
-    addSystemMessage(`할당된 실시간 서버: ${state.cppIp}:${state.wsPort}. WebSocket 연결 시도...`);
+    addSystemMessage(`할당된 실시간 서버: (서버 ID: ${state.cppServerId}). WebSocket 연결 시도...`);
 
-    // 2. WebSocket Connect
-    const wsUrl = `wss://${state.cppIp}:443/ws/canvas/${state.currentCanvas.canvas_id}?token=${state.token}&user_id=${state.user.user_id}`;
+    // 2. WebSocket Connect (Route through Nginx using wss://)
+    const wsUrl = `wss://${window.location.host}/wss/server/${state.cppServerId}/canvas/${state.currentCanvas.canvas_id}?token=${state.token}`;
 
     try {
         state.ws = new WebSocket(wsUrl);
@@ -374,7 +381,7 @@ async function disconnectWebSocket() {
         wasConnected = true;
     }
     if (wasConnected && state.currentCanvas) {
-        await apiCall('/api/access/disconnect', 'POST', { canvas_id: state.currentCanvas.canvas_id });
+        // No explicit disconnect API call needed; server handles WebSocket close internally
     }
     resetConnectionUI();
 }
