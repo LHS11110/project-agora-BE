@@ -9,6 +9,16 @@
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <jwt-cpp/jwt.h>
+#include <cctype>
+
+static bool hasSpecialCharacters(const std::string& str) {
+    for (char c : str) {
+        if (std::ispunct(static_cast<unsigned char>(c)) || std::isspace(static_cast<unsigned char>(c))) {
+            return true;
+        }
+    }
+    return false;
+}
 
 HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
                        const std::string& jwt_secret, const std::string& db_host, int db_port)
@@ -101,6 +111,11 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
 
         if (nickname.empty() || tag_number < 0) {
             std::cerr << "[HttpServer] JWT missing valid nickname or tagNumber claim\n";
+            return -1;
+        }
+
+        if (hasSpecialCharacters(nickname)) {
+            std::cerr << "[HttpServer] Rejected connection: Nickname contains special characters\n";
             return -1;
         }
 

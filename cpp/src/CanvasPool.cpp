@@ -58,6 +58,12 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     std::string redis_ip = redis_info.first;
     int redis_port = redis_info.second;
 
+    if (redis_ip == "NOT_FOUND") {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Canvas does not exist in DB\n";
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
+    }
+
     if (redis_ip == "WRONG_SERVER") {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Canvas is already allocated to another C++ server\n";
         loading_mutexes_.erase(canvas_id);
@@ -248,4 +254,9 @@ std::pair<int, int> CanvasPool::allocatePortPair() {
 bool CanvasPool::updateUserSessionConnected(int user_id, int canvas_id) {
     MssqlClient mssql(db_host_, db_port_);
     return mssql.updateUserSessionConnected(user_id, canvas_id, cpp_server_ip_, cpp_server_port_);
+}
+
+bool CanvasPool::updateUserSessionDisconnected(int user_id) {
+    MssqlClient mssql(db_host_, db_port_);
+    return mssql.updateUserSessionDisconnected(user_id);
 }

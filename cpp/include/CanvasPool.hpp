@@ -25,6 +25,9 @@ public:
     // Connect user session in DB
     bool updateUserSessionConnected(int user_id, int canvas_id);
 
+    // Disconnect user session in DB (for rejected connections)
+    bool updateUserSessionDisconnected(int user_id);
+
     // Remove canvas from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
     bool removeCanvas(int canvas_id);
 

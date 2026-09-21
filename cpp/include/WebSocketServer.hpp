@@ -15,6 +15,8 @@
 struct PerSocketData {
     int canvas_id{0};
     int user_id{0};
+    int message_count{0};
+    long long last_reset_time{0};
 };
 
 class WebSocketServer {

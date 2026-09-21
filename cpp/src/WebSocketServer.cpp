@@ -188,7 +188,7 @@ void WebSocketServer::runServer() {
     auto createWsHandler = [this]() {
         return uWS::App::WebSocketBehavior<PerSocketData>{
             .compression = uWS::SHARED_COMPRESSOR,
-            .maxPayloadLength = 16 * 1024 * 1024,
+            .maxPayloadLength = 128 * 1024,
             .idleTimeout = 120,
             .maxBackpressure = 1 * 1024 * 1024,
             .closeOnBackpressureLimit = false,
@@ -260,11 +260,33 @@ void WebSocketServer::runServer() {
                 ws->end(1011, "Canvas initialization failed");
                 return;
             }
-            canvas->connectUser(data->user_id, 0, 0);
-
-            // Fetch cached items from Redis and send init_items JSON frame.
             RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
             auto cached_str = redis.get("canvas:" + std::to_string(data->canvas_id));
+            
+            bool is_authorized = false;
+            nlohmann::json doc;
+            if (cached_str && !cached_str->empty()) {
+                try {
+                    doc = nlohmann::json::parse(*cached_str);
+                    if (doc.contains("people") && doc["people"].is_array()) {
+                        for (auto& uid : doc["people"]) {
+                            if (uid.is_number_integer() && uid.get<int>() == data->user_id) {
+                                is_authorized = true;
+                                break;
+                            }
+                        }
+                    }
+                } catch (...) {}
+            }
+
+            if (!is_authorized) {
+                std::cerr << "[WebSocketServer] Unauthorized user #" << data->user_id << " tried to join Canvas #" << data->canvas_id << "\n";
+                pool_.updateUserSessionDisconnected(data->user_id);
+                ws->end(1008, "Unauthorized access to canvas");
+                return;
+            }
+
+            canvas->connectUser(data->user_id, 0, 0);
 
             nlohmann::json init_msg = {
                 {"type", "init_items"},
@@ -275,13 +297,10 @@ void WebSocketServer::runServer() {
                 {"items", nlohmann::json::object()}
             };
 
-            if (cached_str && !cached_str->empty()) {
-                try {
-                    auto doc = nlohmann::json::parse(*cached_str);
-                    if (doc.contains("items")) init_msg["items"] = doc["items"];
-                    if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
-                    if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
-                } catch (...) {}
+            if (!doc.is_null()) {
+                if (doc.contains("items")) init_msg["items"] = doc["items"];
+                if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
+                if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
             }
 
             ws->send(init_msg.dump(), uWS::OpCode::TEXT);
@@ -291,6 +310,17 @@ void WebSocketServer::runServer() {
 
         .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
             PerSocketData* data = ws->getUserData();
+            
+            long long current_time = std::time(nullptr);
+            if (current_time != data->last_reset_time) {
+                data->last_reset_time = current_time;
+                data->message_count = 0;
+            }
+            data->message_count++;
+            
+            if (data->message_count > 100) {
+                return; // Rate limit exceeded, drop message
+            }
 
             if (opCode == uWS::OpCode::TEXT) {
                 try {
