@@ -126,8 +126,11 @@ std::string RedisClient::readResponse() {
         }
         // consume \r\n
         char crlf[2];
-        if (read(socket_fd_, crlf, 2) < 0) {
-            // ignore error
+        ssize_t crlf_total = 0;
+        while (crlf_total < 2) {
+            ssize_t r = read(socket_fd_, crlf + crlf_total, 2 - crlf_total);
+            if (r <= 0) break;
+            crlf_total += r;
         }
         return std::string(buf.data(), len);
     } else if (type == '*') {
