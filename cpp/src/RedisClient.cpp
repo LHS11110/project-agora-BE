@@ -126,7 +126,9 @@ std::string RedisClient::readResponse() {
         }
         // consume \r\n
         char crlf[2];
-        read(socket_fd_, crlf, 2);
+        if (read(socket_fd_, crlf, 2) < 0) {
+            // ignore error
+        }
         return std::string(buf.data(), len);
     } else if (type == '*') {
         int count = std::stoi(prefix.substr(1));

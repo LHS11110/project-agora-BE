@@ -432,7 +432,6 @@ int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tag
     }
 
     int user_id = -1;
-    int statusValue = 0; // Assuming 0 is ACTIVE, 2 is WITHDRAWN based on enum index usually, but let's check
     // Wait, UserStatus in Java is Enum (ACTIVE, SUSPENDED, WITHDRAWN).
     // Usually stored as TINYINT in SQL Server if @Enumerated(EnumType.ORDINAL).
     bool withdrawn = false;
