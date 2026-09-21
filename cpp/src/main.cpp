@@ -166,7 +166,7 @@ int main(int argc, char* argv[]) {
             if (g_graceful_shutdown) {
                 g_cleanup_cv.wait_for(lock, std::chrono::seconds(2), [] { return !g_cleanup_running; });
             } else {
-                g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running; });
+                g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running || g_graceful_shutdown; });
             }
         }
     });
