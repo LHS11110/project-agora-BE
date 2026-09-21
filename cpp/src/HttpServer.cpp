@@ -21,8 +21,10 @@ static bool hasSpecialCharacters(const std::string& str) {
 }
 
 HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
-                       const std::string& jwt_secret, const std::string& db_host, int db_port)
-    : canvas_pool_(canvas_pool), host_(host), port_(port), jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
+                       const std::string& advertised_host, const std::string& jwt_secret,
+                       const std::string& db_host, int db_port)
+    : canvas_pool_(canvas_pool), host_(host), port_(port), advertised_host_(advertised_host),
+      jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
     setupRoutes();
 }
 
@@ -73,7 +75,10 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
         if (decoded.has_payload_claim("serverHash")) {
             std::string token_hash = decoded.get_payload_claim("serverHash").as_string();
             
-            std::string raw_string = host_ + ":" + std::to_string(ws_port);
+            // Spring signs the address registered in cpp_server.  host_ is only
+            // the local bind address (commonly 0.0.0.0), so hashing it rejects
+            // every valid token when ADVERTISE_IP is a public/private address.
+            std::string raw_string = advertised_host_ + ":" + std::to_string(ws_port);
             unsigned char hash[EVP_MAX_MD_SIZE];
             unsigned int hash_len = 0;
             EVP_MD_CTX* ctx = EVP_MD_CTX_new();

@@ -318,10 +318,10 @@ async function connectActiveCanvas() {
     };
     
     state.ws.onmessage = (e) => {
-        logToConsole('WS', 'Message Received', e.data);
         try {
             const data = JSON.parse(e.data);
-            if (data.type === 'ping' || data.type === 'init') return;
+            if (data.type === 'ping' || data.type === 'init' || data.type === 'init_items') return;
+            logToConsole('WS', 'Message Received', e.data);
             const sender = data.sender_id || data.sender || data.user_id || '알 수 없음';
             addChatMessage(sender, data.text || JSON.stringify(data), false);
         } catch {

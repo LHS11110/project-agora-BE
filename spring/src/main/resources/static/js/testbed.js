@@ -346,7 +346,7 @@ async function connectActiveCanvas() {
         state.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'init' || data.type === 'ping') return;
+                if (data.type === 'init' || data.type === 'ping' || data.type === 'init_items') return;
                 
                 // Show received message
                 const senderName = data.sender || data.user_id || '알 수 없는 사용자';

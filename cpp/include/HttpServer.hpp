@@ -9,8 +9,9 @@
 
 class HttpServer {
 public:
-    HttpServer(CanvasPool& canvas_pool, const std::string& host, int port, 
-               const std::string& jwt_secret, const std::string& db_host, int db_port);
+    HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
+               const std::string& advertised_host, const std::string& jwt_secret,
+               const std::string& db_host, int db_port);
     ~HttpServer();
 
     void start();
@@ -26,6 +27,7 @@ private:
     CanvasPool& canvas_pool_;
     std::string host_;
     int port_;
+    std::string advertised_host_;
     std::string jwt_secret_;
     std::string db_host_;
     int db_port_;

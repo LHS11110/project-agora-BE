@@ -188,9 +188,9 @@ void WebSocketServer::runServer() {
     auto createWsHandler = [this]() {
         return uWS::App::WebSocketBehavior<PerSocketData>{
             .compression = uWS::SHARED_COMPRESSOR,
-            .maxPayloadLength = 128 * 1024,
+            .maxPayloadLength = 16 * 1024 * 1024,
             .idleTimeout = 120,
-            .maxBackpressure = 1 * 1024 * 1024,
+            .maxBackpressure = 16 * 1024 * 1024,
             .closeOnBackpressureLimit = false,
             .resetIdleTimeoutOnSend = false,
             .sendPingsAutomatically = true,
@@ -363,6 +363,11 @@ void WebSocketServer::runServer() {
 
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
                       << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
+
+            auto canvas = pool_.getCanvas(canvas_id);
+            if (canvas) {
+                canvas->disconnectUser(user_id);
+            }
 
             std::string db_h = pool_.getDbHost();
             int db_p = pool_.getDbPort();

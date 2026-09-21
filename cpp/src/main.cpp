@@ -135,7 +135,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    HttpServer server(canvas_pool, host, g_port, jwt_secret, g_db_host, g_db_port);
+    HttpServer server(canvas_pool, host, g_port, g_advertise_ip, jwt_secret, g_db_host, g_db_port);
     WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id, const std::string& client_ip) {
         return server.authenticateTokenForCanvas(token, canvas_id, client_ip, ws_port);
     }, java_host, java_port);

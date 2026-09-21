@@ -37,6 +37,11 @@ public:
             pass_ = pass;
             db_ = db;
             dbinit();
+            // Authentication runs on the uWebSockets event-loop thread.  Bound
+            // DB waits prevent a database/network fault from stalling every
+            // WebSocket handshake indefinitely.
+            dbsetlogintime(5);
+            dbsettime(5);
         }
     }
 
@@ -68,6 +73,7 @@ public:
             lock.lock();
             active_connections_--;
             lock.unlock();
+            cv_.notify_one();
         }
         return dbproc;
     }
