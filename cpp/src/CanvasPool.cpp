@@ -58,6 +58,12 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     std::string redis_ip = redis_info.first;
     int redis_port = redis_info.second;
 
+    if (redis_ip == "WRONG_SERVER") {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Canvas is already allocated to another C++ server\n";
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
+    }
+
     // 2. Query Elasticsearch for canvas document
     EsClient es(es_host_, es_port_);
     auto es_doc = es.getCanvasDocument(canvas_id);
