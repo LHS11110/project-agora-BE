@@ -9,12 +9,22 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <poll.h>
+#include <algorithm>
+#include <cctype>
 
 namespace {
 std::string envOr(const char* name, const std::string& value) {
     if (!value.empty()) return value;
     const char* configured = std::getenv(name);
     return configured ? configured : "";
+}
+
+bool isWrongTypeResponse(const std::string& response) {
+    std::string normalized = response;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized.find("wrongtype") != std::string::npos
+        || normalized.find("wrong redis type") != std::string::npos;
 }
 }
 
@@ -198,7 +208,7 @@ bool RedisClient::ping() {
 bool RedisClient::set(const std::string& key, const std::string& value) {
     if (!sendCommand({"JSON.SET", key, "$", value})) return false;
     std::string res = readResponse();
-    if (res.find("WRONGTYPE") != std::string::npos) {
+    if (isWrongTypeResponse(res)) {
         if (!del(key) || !sendCommand({"JSON.SET", key, "$", value})) return false;
         res = readResponse();
     }
@@ -208,7 +218,7 @@ bool RedisClient::set(const std::string& key, const std::string& value) {
 std::optional<std::string> RedisClient::get(const std::string& key) {
     if (!sendCommand({"JSON.GET", key})) return std::nullopt;
     std::string res = readResponse();
-    if (res.find("WRONGTYPE") != std::string::npos) {
+    if (isWrongTypeResponse(res)) {
         if (!sendCommand({"GET", key})) return std::nullopt;
         res = readResponse();
     }

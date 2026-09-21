@@ -305,10 +305,14 @@ cd spring
 ./gradlew bootJar
 
 # 3. 개발 서버 실행 (포트 8080)
+# DB_PASSWORD, JWT_SECRET, ES_USER_PASSWORD, ADMIN_PASSWORD,
+# REDIS_USER_PASSWORD는 필수입니다.
+DB_HOST=127.0.0.1 DB_PORT=1433 \
+DB_USER=agora_user DB_PASSWORD='<db-password>' DB_NAME=agora_db \
+JWT_SECRET='<at-least-32-characters>' ADMIN_PASSWORD='<admin-password>' \
+ES_USER_NAME=agora_user ES_USER_PASSWORD='<es-password>' \
+REDIS_USER=agora_user REDIS_USER_PASSWORD='<redis-password>' \
 ./gradlew bootRun
-
-# (선택) 환경 변수를 통한 DB 호스트 변경 실행 예시
-DB_HOST=127.0.0.1 DB_PORT=1433 ./gradlew bootRun
 ```
 
 ### (2) C++ Real-Time Server
@@ -325,6 +329,10 @@ cmake --build build
 # 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
 # 사용법: ./build/agora_cpp_server [BIND_IP] [ADVERTISE_IP] [REST_PORT] [WS_PORT]
 # (보안을 위해 외부 직접 노출을 막고 Nginx를 통한 접속만 허용하도록 BIND_IP는 127.0.0.1 사용을 권장합니다)
+DB_USER=agora_user DB_PASSWORD='<db-password>' DB_NAME=agora_db \
+JWT_SECRET='<same-secret-as-spring>' \
+ES_USER_NAME=agora_user ES_USER_PASSWORD='<es-password>' ES_INDEX=canvas \
+REDIS_USER=agora_user REDIS_USER_PASSWORD='<redis-password>' \
 ./build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
 ```
 
@@ -340,7 +348,7 @@ sudo systemctl reload nginx
 **주요 역할:**
 - **포트 바인딩 보호**: Spring Boot(`127.0.0.1:8080`)와 C++ 서버(`127.0.0.1:8000`, `127.0.0.1:8002`)는 로컬에서만 띄워 외부 공격을 차단합니다.
 - **REST & 정적 라우팅**: `/api/` 및 `/` 경로에 대한 접근을 모두 Spring Boot 8080 포트로 중계합니다.
-- **웹소켓(WSS) 라우팅**: `/ws/` 에 대한 통신은 C++ 웹소켓 서버(8002)로 Upgrade 하여 터널을 뚫어줍니다.
+- **웹소켓(WSS) 라우팅**: Spring이 반환한 WS 포트를 사용한 `/wss/port/{wsPort}/canvas/{canvasId}` 요청을 해당 C++ 서버로 Upgrade 합니다.
 
 ---
 

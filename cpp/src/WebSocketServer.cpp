@@ -144,6 +144,28 @@ static bool hasAnyGroup(const PerSocketData* socket, const std::unordered_set<st
     return false;
 }
 
+static std::string eventItemKey(const nlohmann::json& event) {
+    const nlohmann::json* id = nullptr;
+    if (event.contains("item_id")) id = &event["item_id"];
+    else if (event.contains("item-id")) id = &event["item-id"];
+    if (!id) return {};
+    if (id->is_string()) return id->get<std::string>();
+    if (id->is_number_integer()) return std::to_string(id->get<long long>());
+    return {};
+}
+
+static nlohmann::json filterItemsForSocket(const nlohmann::json& items, const PerSocketData* socket) {
+    nlohmann::json filtered = nlohmann::json::object();
+    if (!items.is_object()) return filtered;
+    for (const auto& [item_id, item] : items.items()) {
+        const auto required = permissionGroups(item);
+        if (socket->is_admin || (!required.empty() && hasAnyGroup(socket, required))) {
+            filtered[item_id] = item;
+        }
+    }
+    return filtered;
+}
+
 WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int ws_port, TokenValidator validator,
                                  const std::string& java_host, int java_port)
     : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(std::move(validator)),
@@ -311,6 +333,7 @@ void WebSocketServer::unregisterSocket(Socket* ws) {
     it->second.erase(ws);
     if (it->second.empty()) {
         sockets_by_canvas_.erase(it);
+        item_permissions_by_canvas_.erase(data->canvas_id);
     }
 }
 
@@ -376,7 +399,11 @@ void WebSocketServer::runServer() {
 
             res->template upgrade<PerSocketData>({
                 canvas_id,
-                user_id
+                user_id,
+                0,
+                0,
+                false,
+                {}
             }, req->getHeader("sec-websocket-key"),
                req->getHeader("sec-websocket-protocol"),
                req->getHeader("sec-websocket-extensions"),
@@ -469,6 +496,13 @@ void WebSocketServer::runServer() {
                     auto [groups, is_admin] = groupsForUser(doc, user_id);
                     ws->getUserData()->groups = std::move(groups);
                     ws->getUserData()->is_admin = is_admin;
+                    auto& permissions = item_permissions_by_canvas_[canvas_id];
+                    permissions.clear();
+                    if (doc.contains("items") && doc["items"].is_object()) {
+                        for (const auto& [item_id, item] : doc["items"].items()) {
+                            permissions[item_id] = permissionGroups(item);
+                        }
+                    }
                     nlohmann::json init_msg = {
                         {"type", "init_items"}, {"canvas_id", canvas_id}, {"user_id", user_id},
                         {"server_protocol", "uWebSockets"}, {"status", "connected"},
@@ -518,9 +552,45 @@ void WebSocketServer::runServer() {
                         event["canvas_id"] = data->canvas_id;
                         event["user_id"] = data->user_id;
                         event["sender_id"] = data->user_id;
-                        const bool item_event = event.contains("item_id") || event.contains("item-id") || event.contains("items");
-                        const auto required_groups = permissionGroups(event);
-                        if (item_event && !data->is_admin && (required_groups.empty() || !hasAnyGroup(data, required_groups))) {
+                        const bool bulk_items = event.contains("items") && event["items"].is_object();
+                        const std::string item_key = eventItemKey(event);
+                        const bool item_event = bulk_items || !item_key.empty();
+                        const bool delete_item = event.value("type", "") == "item_delete"
+                            || event.value("type", "") == "delete_item";
+                        auto incoming_groups = permissionGroups(event);
+                        auto delivery_groups = incoming_groups;
+
+                        bool item_allowed = true;
+                        if (bulk_items) {
+                            item_allowed = data->is_admin;
+                            if (item_allowed) {
+                                auto& permissions = item_permissions_by_canvas_[data->canvas_id];
+                                permissions.clear();
+                                for (const auto& [id, item] : event["items"].items()) {
+                                    permissions[id] = permissionGroups(item);
+                                }
+                            }
+                        } else if (!item_key.empty()) {
+                            auto& permissions = item_permissions_by_canvas_[data->canvas_id];
+                            auto existing = permissions.find(item_key);
+                            if (existing != permissions.end()) {
+                                delivery_groups = delete_item ? existing->second : incoming_groups;
+                                if (!data->is_admin) {
+                                    item_allowed = hasAnyGroup(data, existing->second)
+                                        && (delete_item || incoming_groups == existing->second);
+                                }
+                            } else if (!data->is_admin) {
+                                item_allowed = !delete_item && !incoming_groups.empty()
+                                    && hasAnyGroup(data, incoming_groups);
+                            }
+
+                            if (item_allowed) {
+                                if (delete_item) permissions.erase(item_key);
+                                else permissions[item_key] = incoming_groups;
+                            }
+                        }
+
+                        if (item_event && !item_allowed) {
                             nlohmann::json denied = {{"type", "error"}, {"code", "ITEM_ACCESS_DENIED"}};
                             ws->send(denied.dump(), uWS::OpCode::TEXT);
                             return;
@@ -536,7 +606,12 @@ void WebSocketServer::runServer() {
                         if (sockets != sockets_by_canvas_.end()) {
                             for (Socket* target : sockets->second) {
                                 if (target == ws) continue;
-                                if (!item_event || required_groups.empty() || hasAnyGroup(target->getUserData(), required_groups)) {
+                                if (bulk_items) {
+                                    nlohmann::json filtered_event = event;
+                                    filtered_event["items"] = filterItemsForSocket(event["items"], target->getUserData());
+                                    target->send(filtered_event.dump(), uWS::OpCode::TEXT);
+                                } else if (!item_event || delivery_groups.empty()
+                                           || hasAnyGroup(target->getUserData(), delivery_groups)) {
                                     target->send(payload, uWS::OpCode::TEXT);
                                 }
                             }

@@ -65,4 +65,5 @@ private:
     std::condition_variable worker_cv_;
     int active_workers_{0};
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
+    std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<std::string>>> item_permissions_by_canvas_;
 };
