@@ -128,8 +128,16 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
 
     dbcmd(dbproc, sql.c_str());
 
-    if (dbsqlexec(dbproc) == FAIL || dbresults(dbproc) == FAIL) {
-            return false;
+    if (dbsqlexec(dbproc) == FAIL) {
+        return false;
+    }
+
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) return false;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) break;
+        }
     }
 
     return true;
@@ -148,7 +156,16 @@ bool MssqlClient::unregisterServer(const std::string& ip, int rest_port) {
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
-    bool res = (dbsqlexec(dbproc) != FAIL && dbresults(dbproc) != FAIL);
+    if (dbsqlexec(dbproc) == FAIL) return false;
+    
+    bool res = true;
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) res = false;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) break;
+        }
+    }
     return res;
 }
 
@@ -165,7 +182,16 @@ bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
-    bool res = (dbsqlexec(dbproc) != FAIL && dbresults(dbproc) != FAIL);
+    if (dbsqlexec(dbproc) == FAIL) return false;
+    
+    bool res = true;
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) res = false;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) break;
+        }
+    }
     return res;
 }
 
@@ -218,19 +244,24 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
     std::string found_ip = "127.0.0.1";
     int found_port = 6379;
 
-    while (dbresults(dbproc) != NO_MORE_RESULTS) {
-        dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)redis_ip_buf);
-        dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)redis_port_buf);
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
+        if (DBROWS(dbproc)) {
+            dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)redis_ip_buf);
+            dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)redis_port_buf);
 
-        while (dbnextrow(dbproc) != NO_MORE_ROWS) {
-            if (strlen(redis_ip_buf) > 0) {
-                found_ip = redis_ip_buf;
-            }
-            if (strlen(redis_port_buf) > 0) {
-                try {
-                    found_port = std::stoi(redis_port_buf);
-                } catch (...) {
-                    found_port = 6379;
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) break;
+                if (strlen(redis_ip_buf) > 0) {
+                    found_ip = redis_ip_buf;
+                }
+                if (strlen(redis_port_buf) > 0) {
+                    try {
+                        found_port = std::stoi(redis_port_buf);
+                    } catch (...) {
+                        found_port = 6379;
+                    }
                 }
             }
         }
@@ -261,8 +292,12 @@ bool MssqlClient::updateCanvasUncached(int canvasId) {
             return false;
     }
 
-    while (dbresults(dbproc) != NO_MORE_RESULTS) {
-        // consume result sets if any
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) break;
+        }
     }
 
     std::cout << "[MssqlClient] Canvas #" << canvasId << " in MS SQL updated: is_cached=false, redis/server ip&port=none(NULL)\n";
@@ -290,8 +325,12 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
             return false;
     }
 
-    while (dbresults(dbproc) != NO_MORE_RESULTS) {
-        // consume result sets if any
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) break;
+        }
     }
 
     std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL\n";
@@ -338,11 +377,14 @@ bool MssqlClient::updateUserSessionConnected(int userId, int canvasId, const std
     }
 
     int success = 0;
-    while (dbresults(dbproc) != NO_MORE_RESULTS) {
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
         if (DBROWS(dbproc)) {
             char buf[16] = {0};
             dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)buf);
-            while (dbnextrow(dbproc) != NO_MORE_ROWS) {
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) break;
                 if (strlen(buf) > 0) {
                     try {
                         success = std::stoi(buf);
@@ -393,10 +435,14 @@ bool MssqlClient::isCanvasActiveInDb(int canvasId) {
     }
 
     int active_count = 0;
-    while (dbresults(dbproc) != NO_MORE_RESULTS) {
-        dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&active_count);
-        while (dbnextrow(dbproc) != NO_MORE_ROWS) {
-            // fetched
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
+        if (DBROWS(dbproc)) {
+            dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&active_count);
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) break;
+            }
         }
     }
 
@@ -436,17 +482,22 @@ int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tag
     // Usually stored as TINYINT in SQL Server if @Enumerated(EnumType.ORDINAL).
     bool withdrawn = false;
     
-    while (dbresults(dbproc) == SUCCEED) {
-        DBINT id_val;
-        char status_val[32] = {0};
-        
-        dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val);
-        dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)status_val);
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) break;
+        if (DBROWS(dbproc)) {
+            DBINT id_val;
+            char status_val[32] = {0};
+            
+            dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val);
+            dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)status_val);
 
-        while (dbnextrow(dbproc) != NO_MORE_ROWS) {
-            user_id = id_val;
-            if (strcmp(status_val, "WITHDRAWN") == 0) {
-                withdrawn = true;
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) break;
+                user_id = id_val;
+                if (strcmp(status_val, "WITHDRAWN") == 0) {
+                    withdrawn = true;
+                }
             }
         }
     }
