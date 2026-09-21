@@ -236,20 +236,28 @@ public class CanvasService {
         // 2. MS SQL canvas_info 확인 (동시 삭제/할당 방지를 위한 비관적 락 사용)
         CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
 
+        String serverIp = "none";
+        String wsPort = "none";
+        Integer serverId = null;
+
         if (!Boolean.TRUE.equals(canvasInfo.getIsCached())) {
-            // 로드 밸런싱 수행 (is_activated == true 인 행 대상)
+            // 로드 밸런싱 수행 (is_activated == true 인 행 대상) - Redis 제외
             AllocateServerResponse serverAlloc = loadBalancerService.allocateServer();
-            AllocateRedisResponse redisAlloc = loadBalancerService.allocateRedis();
-
             ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverAlloc.serverIp(), serverAlloc.serverPort()).orElse(null);
-            RedisInfo rInfo = redisInfoRepository.findByRedisIpAndRedisPort(redisAlloc.redisIp(), redisAlloc.redisPort()).orElse(null);
-            canvasInfo.setCppServer(sInfo);
-            canvasInfo.setRedisInfo(rInfo);
-            canvasInfo.setIsCached(true);
-
-            canvasInfoRepository.save(canvasInfo);
-            log.info("캔버스 #{} 신규 로드밸런싱 할당: Server={}:{}, Redis={}:{}",
-                    canvasId, serverAlloc.serverIp(), serverAlloc.serverPort(), redisAlloc.redisIp(), redisAlloc.redisPort());
+            
+            if (sInfo != null) {
+                serverIp = sInfo.getServerIp();
+                wsPort = sInfo.getWsPort();
+                serverId = sInfo.getServerId();
+            }
+            log.info("캔버스 #{} 임시 서버 로드밸런싱 할당 (DB 미저장): Server={}:{}",
+                    canvasId, serverIp, wsPort);
+        } else {
+            if (canvasInfo.getCppServer() != null) {
+                serverIp = canvasInfo.getCppServer().getServerIp();
+                wsPort = canvasInfo.getCppServer().getWsPort();
+                serverId = canvasInfo.getCppServer().getServerId();
+            }
         }
 
         // 3. 중복 접속 검사 (user_sessions 테이블)
@@ -258,16 +266,13 @@ public class CanvasService {
             throw new CustomException(ErrorCode.ALREADY_CONNECTED, "이미 캔버스에 접속 중인 사용자입니다. (다중 탭 접속 차단)");
         }
 
-        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)
-        session.setIsAccessed(true);
-        session.setCppServer(canvasInfo.getCppServer());
-        session.setCanvas(canvasInfo);
-        userSessionRepository.save(session);
+        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)은 C++ 서버로 이관됨
+        // session.setIsAccessed(true);
+        // session.setCppServer(canvasInfo.getCppServer());
+        // session.setCanvas(canvasInfo);
+        // userSessionRepository.save(session);
 
         // 5. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
-        String serverIp = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerIp() : "none";
-        String wsPort = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getWsPort() : "none";
-        
         String serverHash = "none";
         if (!"none".equals(serverIp) && !"none".equals(wsPort)) {
             try {
@@ -289,7 +294,6 @@ public class CanvasService {
         );
 
         // 6. C++ 실시간 서버의 ID, Port 및 Access Token 반환
-        Integer serverId = canvasInfo.getCppServer() != null ? canvasInfo.getCppServer().getServerId() : null;
         return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken);
     }
 

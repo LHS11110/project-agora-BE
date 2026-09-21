@@ -14,12 +14,16 @@ class CanvasPool {
 public:
     CanvasPool(const std::string& db_host = "127.0.0.1", int db_port = 1433,
                const std::string& es_host = "127.0.0.1", int es_port = 9200,
-               const std::string& java_host = "127.0.0.1", int java_port = 8080);
+               const std::string& java_host = "127.0.0.1", int java_port = 8080,
+               const std::string& cpp_server_ip = "127.0.0.1", int cpp_server_port = 8000);
     ~CanvasPool();
 
     // Select or create canvas in pool
     std::shared_ptr<Canvas> getOrCreateCanvas(int canvas_id);
     std::shared_ptr<Canvas> getCanvas(int canvas_id);
+    
+    // Connect user session in DB
+    bool updateUserSessionConnected(int user_id, int canvas_id);
 
     // Remove canvas from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
     bool removeCanvas(int canvas_id);
@@ -52,6 +56,7 @@ private:
     void unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;
+    std::unordered_map<int, std::shared_ptr<std::mutex>> loading_mutexes_;
     std::mutex pool_mutex_;
     Canvas::WebSocketCallbacks web_socket_callbacks_;
 
@@ -61,6 +66,8 @@ private:
     int es_port_;
     std::string java_host_;
     int java_port_;
+    std::string cpp_server_ip_;
+    int cpp_server_port_;
 
     std::atomic<int> next_port_{9000};
 };

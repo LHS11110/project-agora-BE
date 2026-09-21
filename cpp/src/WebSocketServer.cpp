@@ -248,6 +248,11 @@ void WebSocketServer::runServer() {
 
             registerSocket(ws);
             ws->subscribe("canvas/" + std::to_string(data->canvas_id));
+            if (!pool_.updateUserSessionConnected(data->user_id, data->canvas_id)) {
+                std::cerr << "[WebSocketServer] Rejecting connection: User already in another canvas\n";
+                ws->end(1008, "Already connected to another canvas");
+                return;
+            }
 
             // Get or create canvas in pool (increments active connection count).
             auto canvas = pool_.getOrCreateCanvas(data->canvas_id);

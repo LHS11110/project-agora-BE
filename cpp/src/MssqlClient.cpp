@@ -169,7 +169,7 @@ bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
     return res;
 }
 
-std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
+std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
 
     PooledConnection dbproc;
     if (!dbproc.get()) return {"127.0.0.1", 6379};
@@ -177,7 +177,20 @@ std::pair<std::string, int> MssqlClient::getAssignedRedis(int canvasId) {
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "SELECT r.redis_ip, r.redis_port FROM canvas_info c JOIN redis_server r ON c.redis_id = r.redis_id WHERE c.canvas_id = " + std::to_string(canvasId) + "; "
+        "  DECLARE @is_cached BIT, @redis_ip NVARCHAR(50), @redis_port NVARCHAR(10); "
+        "  SELECT @is_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = r.redis_port "
+        "    FROM canvas_info c WITH (UPDLOCK, ROWLOCK) "
+        "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id "
+        "    WHERE c.canvas_id = " + std::to_string(canvasId) + "; "
+        "  IF @is_cached = 0 OR @redis_ip IS NULL "
+        "  BEGIN "
+        "    DECLARE @new_redis_id INT; "
+        "    SELECT TOP 1 @new_redis_id = redis_id, @redis_ip = redis_ip, @redis_port = redis_port FROM redis_server WHERE is_activated = 1 ORDER BY NEWID(); "
+        "    DECLARE @cpp_id INT; "
+        "    SELECT @cpp_id = server_id FROM cpp_server WHERE server_ip = '" + cppServerIp + "' AND server_port = " + std::to_string(cppServerPort) + "; "
+        "    UPDATE canvas_info SET is_cached = 1, redis_id = @new_redis_id, cpp_server_id = @cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId) + "; "
+        "  END "
+        "  SELECT @redis_ip AS redis_ip, @redis_port AS redis_port; "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
@@ -274,6 +287,72 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
     return true;
 }
 
+bool MssqlClient::updateUserSessionConnected(int userId, int canvasId, const std::string& cppServerIp, int cppServerPort) {
+    PooledConnection dbproc;
+    if (!dbproc.get()) return false;
+
+    std::string sql = 
+        "BEGIN TRAN; "
+        "BEGIN TRY "
+        "  DECLARE @current_accessed BIT, @current_canvas INT; "
+        "  SELECT @current_accessed = is_accessed, @current_canvas = canvas_id "
+        "    FROM user_sessions WITH (UPDLOCK, ROWLOCK) "
+        "    WHERE user_id = " + std::to_string(userId) + "; "
+        "  IF @current_accessed = 1 AND @current_canvas != " + std::to_string(canvasId) + " "
+        "  BEGIN "
+        "    ROLLBACK TRAN; "
+        "    SELECT 0 AS success; "
+        "    RETURN; "
+        "  END "
+        "  DECLARE @server_id INT; "
+        "  SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + cppServerIp + "' AND server_port = " + std::to_string(cppServerPort) + "; "
+        "  UPDATE user_sessions SET is_accessed = 1, cpp_server_id = @server_id, canvas_id = " + std::to_string(canvasId) + ", updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
+        "  IF @@ROWCOUNT = 0 "
+        "  BEGIN "
+        "    INSERT INTO user_sessions (user_id, canvas_id, cpp_server_id, is_accessed, updated_at) VALUES (" + std::to_string(userId) + ", " + std::to_string(canvasId) + ", @server_id, 1, SYSUTCDATETIME()); "
+        "  END "
+        "  COMMIT TRAN; "
+        "  SELECT 1 AS success; "
+        "END TRY "
+        "BEGIN CATCH "
+        "  IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "  SELECT 0 AS success; "
+        "END CATCH;";
+        
+    dbcmd(dbproc, sql.c_str());
+
+    if (dbsqlexec(dbproc) == FAIL) {
+        std::cerr << "[MssqlClient] Failed to execute updateUserSessionConnected for user #" << userId << "\n";
+        return false;
+    }
+
+    int success = 0;
+    while (dbresults(dbproc) != NO_MORE_RESULTS) {
+        if (DBROWS(dbproc)) {
+            char buf[16] = {0};
+            dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)buf);
+            while (dbnextrow(dbproc) != NO_MORE_ROWS) {
+                if (strlen(buf) > 0) {
+                    try {
+                        success = std::stoi(buf);
+                    } catch (...) {
+                        success = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if (success == 0) {
+        std::cerr << "[MssqlClient] User #" << userId << " already connected to another canvas. Connection rejected.\n";
+        return false;
+    }
+
+    std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=true, canvas_id=" << canvasId << "\n";
+    return true;
+}
+
+
 bool MssqlClient::isCanvasActiveInDb(int canvasId) {
     PooledConnection pconn;
     DBPROCESS* dbproc = pconn.get();
@@ -324,7 +403,7 @@ int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tag
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "   SELECT user_id, status FROM users WHERE nickname = '" + nickname + "' AND tag_number = " + std::to_string(tagNumber) + "; "
+        "   SELECT user_id, status FROM users WHERE nickname = N'" + nickname + "' AND tag_number = " + std::to_string(tagNumber) + "; "
         "   COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
@@ -349,15 +428,14 @@ int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tag
     
     while (dbresults(dbproc) == SUCCEED) {
         DBINT id_val;
-        DBINT status_val;
+        char status_val[32] = {0};
         
         dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val);
-        dbbind(dbproc, 2, INTBIND, 0, (BYTE*)&status_val);
+        dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)status_val);
 
         while (dbnextrow(dbproc) != NO_MORE_ROWS) {
             user_id = id_val;
-            statusValue = status_val;
-            if (statusValue == 2) { // 2 = WITHDRAWN
+            if (strcmp(status_val, "WITHDRAWN") == 0) {
                 withdrawn = true;
             }
         }

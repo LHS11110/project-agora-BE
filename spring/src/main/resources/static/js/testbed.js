@@ -126,7 +126,7 @@ async function login() {
         localStorage.setItem('agora_user', JSON.stringify(state.user));
         await showDashboard();
     } else {
-        alert('로그인 실패: ' + (res.data.message || '인증 오류'));
+        alert('로그인 실패: ' + (res.data?.message || res.error || '인증 오류'));
     }
 
     el.loginText.style.display = 'block';
@@ -325,7 +325,7 @@ async function connectActiveCanvas() {
     addSystemMessage(`할당된 실시간 서버: (서버 ID: ${state.cppServerId}). WebSocket 연결 시도...`);
 
     // 2. WebSocket Connect (Route through Nginx using wss://)
-    const wsUrl = `wss://${window.location.host}/wss/server/${state.cppServerId}/canvas/${state.currentCanvas.canvas_id}?token=${state.token}`;
+    const wsUrl = `wss://${window.location.host}/wss/server/${state.cppServerId}/canvas/${state.currentCanvas.canvas_id}?token=${accessRes.data.canvas_access_token}`;
 
     try {
         state.ws = new WebSocket(wsUrl);

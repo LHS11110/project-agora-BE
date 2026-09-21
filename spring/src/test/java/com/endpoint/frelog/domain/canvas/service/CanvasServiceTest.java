@@ -181,12 +181,10 @@ class CanvasServiceTest {
         given(canvasInfoRepository.findByIdWithPessimisticLock(300)).willReturn(Optional.of(info));
 
         given(loadBalancerService.allocateServer()).willReturn(AllocateServerResponse.of("127.0.0.1", "8000", "8002"));
-        given(loadBalancerService.allocateRedis()).willReturn(AllocateRedisResponse.of("127.0.0.1", "6379"));
 
         com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo sInfo = new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1");
         sInfo.setServerId(1);
         given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000")).willReturn(java.util.Optional.of(sInfo));
-        given(redisInfoRepository.findByRedisIpAndRedisPort("127.0.0.1", "6379")).willReturn(java.util.Optional.of(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379", "Redis-1")));
 
         jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
         given(request.getRemoteAddr()).willReturn("192.168.0.100");
@@ -203,7 +201,7 @@ class CanvasServiceTest {
         assertThat(response.serverId()).isEqualTo(1);
         assertThat(response.wsPort()).isEqualTo("8002");
         assertThat(response.canvasAccessToken()).isEqualTo("mock-canvas-token");
-        assertThat(info.getIsCached()).isTrue();
+        // assertThat(info.getIsCached()).isTrue();
         // assertThat(testUser.getIsAccessed()).isTrue();
     }
 

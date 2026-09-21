@@ -46,7 +46,7 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
     try {
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs256(jwt_secret_));
+            .allow_algorithm(jwt::algorithm::hs512(jwt_secret_));
         verifier.verify(decoded);
 
         if (decoded.has_payload_claim("clientIp")) {

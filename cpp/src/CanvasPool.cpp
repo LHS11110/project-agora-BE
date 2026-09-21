@@ -3,9 +3,11 @@
 
 CanvasPool::CanvasPool(const std::string& db_host, int db_port,
                        const std::string& es_host, int es_port,
-                       const std::string& java_host, int java_port)
+                       const std::string& java_host, int java_port,
+                       const std::string& cpp_server_ip, int cpp_server_port)
     : db_host_(db_host), db_port_(db_port), es_host_(es_host), es_port_(es_port),
-      java_host_(java_host), java_port_(java_port) {
+      java_host_(java_host), java_port_(java_port),
+      cpp_server_ip_(cpp_server_ip), cpp_server_port_(cpp_server_port) {
 }
 
 CanvasPool::~CanvasPool() {
@@ -19,18 +21,42 @@ CanvasPool::~CanvasPool() {
 }
 
 std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
-    std::lock_guard<std::mutex> lock(pool_mutex_);
+    std::shared_ptr<std::mutex> init_mtx;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = canvases_.find(canvas_id);
+        if (it != canvases_.end()) {
+            return it->second;
+        }
 
-    auto it = canvases_.find(canvas_id);
-    if (it != canvases_.end()) {
-        return it->second;
+        auto mtx_it = loading_mutexes_.find(canvas_id);
+        if (mtx_it == loading_mutexes_.end()) {
+            init_mtx = std::make_shared<std::mutex>();
+            loading_mutexes_[canvas_id] = init_mtx;
+        } else {
+            init_mtx = mtx_it->second;
+        }
+    }
+
+    // Lock the initialization mutex for this specific canvas
+    std::lock_guard<std::mutex> init_lock(*init_mtx);
+
+    // Double check if another thread initialized it while we were waiting
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        auto it = canvases_.find(canvas_id);
+        if (it != canvases_.end()) {
+            return it->second;
+        }
     }
 
     std::cout << "[CanvasPool] Canvas #" << canvas_id << " not in pool. Initializing from MSSQL & ES...\n";
 
-    // 1. Query MS SQL for assigned Redis IP & Port
+    // 1) Allocate Redis and set cached=1 in DB exactly once when Canvas is created
     MssqlClient mssql(db_host_, db_port_);
-    auto [redis_ip, redis_port] = mssql.getAssignedRedis(canvas_id);
+    auto redis_info = mssql.getOrAllocateRedisAndSetCached(canvas_id, cpp_server_ip_, cpp_server_port_);
+    std::string redis_ip = redis_info.first;
+    int redis_port = redis_info.second;
 
     // 2. Query Elasticsearch for canvas document
     EsClient es(es_host_, es_port_);
@@ -74,9 +100,13 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     canvas->setAdminUserId(admin_uid);
     canvas->setWebSocketCallbacks(web_socket_callbacks_);
 
-    canvases_[canvas_id] = canvas;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        canvases_[canvas_id] = canvas;
+        loading_mutexes_.erase(canvas_id);
+    }
+    
     std::cout << "[CanvasPool] Canvas #" << canvas_id << " successfully created and registered in pool\n";
-
     return canvas;
 }
 
@@ -207,4 +237,9 @@ std::pair<int, int> CanvasPool::allocatePortPair() {
     }
     int tx = rx + 1;
     return {rx, tx};
+}
+
+bool CanvasPool::updateUserSessionConnected(int user_id, int canvas_id) {
+    MssqlClient mssql(db_host_, db_port_);
+    return mssql.updateUserSessionConnected(user_id, canvas_id, cpp_server_ip_, cpp_server_port_);
 }

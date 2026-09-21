@@ -304,7 +304,7 @@ async function connectActiveCanvas() {
     }
 
     // Connect WS through Nginx proxy
-    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${state.token}`;
+    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${accessRes.data.canvas_access_token}`;
     logToConsole('WS', `Connecting to WebSocket`, wsUrl);
     
     state.ws = new WebSocket(wsUrl);

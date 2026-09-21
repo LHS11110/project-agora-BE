@@ -113,7 +113,7 @@ int main(int argc, char* argv[]) {
     std::cout << " See THIRD_PARTY_LICENSES.md for full license texts.\n";
     std::cout << "========================================\n";
 
-    CanvasPool canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port);
+    CanvasPool canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port, g_advertise_ip, g_port);
 
     MssqlClient mssql(g_db_host, g_db_port);
     if (!mssql.registerServer(g_advertise_ip, g_port, ws_port)) {
