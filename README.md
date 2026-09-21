@@ -9,7 +9,7 @@ Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring
 ```mermaid
 flowchart LR
     Browser[Browser] -->|HTTPS| Nginx
-    Browser -->|WSS /wss/port/{wsPort}/canvas/{canvasId}| Nginx
+    Browser -->|WSS /wss/port/:wsPort/canvas/:canvasId| Nginx
     Nginx -->|:8080| Spring[Spring Boot]
     Nginx -->|:8002-8099| Cpp[C++ realtime]
     Spring --> MSSQL[(MS SQL Server)]
