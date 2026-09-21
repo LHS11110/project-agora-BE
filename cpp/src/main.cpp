@@ -6,6 +6,7 @@
 #include <chrono>
 #include <mutex>
 #include <condition_variable>
+#include <pthread.h>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
@@ -17,38 +18,17 @@ static std::atomic<bool> g_cleanup_running{true};
 static std::mutex g_cleanup_mutex;
 static std::condition_variable g_cleanup_cv;
 static std::atomic<bool> g_graceful_shutdown{false};
+static std::atomic<bool> g_shutdown_started{false};
 
 static std::string g_advertise_ip = "127.0.0.1";
 static int g_port = 8000;
 static std::string g_db_host = "127.0.0.1";
 static int g_db_port = 1433;
 
-void signal_handler(int signal) {
-    std::cout << "\n[Agora C++ Server] Caught signal " << signal << ", shutting down..." << std::endl;
-    
-    int active_count = (g_server && g_server->getPool()) ? g_server->getPool()->getActiveCanvasCount() : 0;
-    
-    if (active_count > 0) {
-        if (!g_graceful_shutdown) {
-            std::cout << "[Agora C++ Server] 이용중인 캔버스가 존재합니다. (Active: " << active_count << ")\n";
-            std::cout << "[Agora C++ Server] 안전 종료(Graceful Shutdown) 모드로 진입합니다. (is_activated=0)\n";
-            std::cout << "[Agora C++ Server] 모든 사용자가 접속을 종료하면 자동으로 서버가 꺼집니다.\n";
-            std::cout << "[Agora C++ Server] 강제 종료를 원하시면 Ctrl+C를 한 번 더 누르세요.\n";
-            MssqlClient mssql(g_db_host, g_db_port);
-            mssql.setServerInactive(g_advertise_ip, g_port);
-            
-            g_graceful_shutdown = true;
-            g_cleanup_cv.notify_all(); // Wake up cleanup thread to poll frequently
-            return;
-        } else {
-            std::cout << "[Agora C++ Server] 강제 종료합니다.\n";
-        }
-    }
-
-    MssqlClient mssql(g_db_host, g_db_port);
-    mssql.unregisterServer(g_advertise_ip, g_port);
-    std::cout << "[Agora C++ Server] 서버 정보를 DB에서 삭제했습니다.\n";
-
+void stop_servers() {
+    if (g_shutdown_started.exchange(true)) return;
+    MssqlClient(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
+    std::cout << "[Agora C++ Server] 서버를 DB에서 비활성화했습니다.\n";
     if (g_ws_server) {
         g_ws_server->stop();
     }
@@ -64,6 +44,12 @@ void signal_handler(int signal) {
 }
 
 int main(int argc, char* argv[]) {
+    sigset_t handled_signals;
+    sigemptyset(&handled_signals);
+    sigaddset(&handled_signals, SIGINT);
+    sigaddset(&handled_signals, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &handled_signals, nullptr);
+
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::string host = "0.0.0.0";
     std::string es_host = "127.0.0.1";
@@ -81,8 +67,12 @@ int main(int argc, char* argv[]) {
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
     if (const char* env_java_port = std::getenv("JAVA_PORT")) java_port = std::stoi(env_java_port);
 
-    std::string jwt_secret = "testSecretKey~c29tZS12ZXJ5LXNlY3VyZS1hbmQtbG9uZy1zZWNyZXQta2V5LWZvci1hZ29yYS1qd3QtYXV0aC0yMDI2";
-    if (const char* env_jwt_secret = std::getenv("JWT_SECRET")) jwt_secret = env_jwt_secret;
+    const char* env_jwt_secret = std::getenv("JWT_SECRET");
+    if (!env_jwt_secret || std::string(env_jwt_secret).size() < 32) {
+        std::cerr << "JWT_SECRET must be configured and at least 32 characters long\n";
+        return 1;
+    }
+    std::string jwt_secret = env_jwt_secret;
 
     int ws_port = g_port + 2;
 
@@ -128,12 +118,10 @@ int main(int argc, char* argv[]) {
     MssqlClient mssql(g_db_host, g_db_port);
     if (!mssql.registerServer(g_advertise_ip, g_port, ws_port)) {
         std::cerr << "[MssqlClient] Failed to register server to DB.\n";
+        return 1;
     } else {
         std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << g_advertise_ip << ", REST: " << g_port << ", WS: " << ws_port << ")\n";
     }
-
-    std::signal(SIGINT, signal_handler);
-    std::signal(SIGTERM, signal_handler);
 
     HttpServer server(canvas_pool, host, g_port, g_advertise_ip, jwt_secret, g_db_host, g_db_port);
     WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id, const std::string& client_ip) {
@@ -143,30 +131,45 @@ int main(int argc, char* argv[]) {
     g_server = &server;
     g_ws_server = &ws_server;
 
+    std::thread signal_thread([&]() {
+        while (g_cleanup_running) {
+            timespec timeout{1, 0};
+            int signal = sigtimedwait(&handled_signals, nullptr, &timeout);
+            if (signal != SIGINT && signal != SIGTERM) continue;
+
+            std::cout << "\n[Agora C++ Server] Caught signal " << signal << ", shutting down..." << std::endl;
+            int active_count = canvas_pool.getActiveCanvasCount();
+            if (active_count > 0 && !g_graceful_shutdown.exchange(true)) {
+                std::cout << "[Agora C++ Server] 이용중인 캔버스가 존재합니다. (Active: " << active_count << ")\n";
+                std::cout << "[Agora C++ Server] 안전 종료 모드로 진입합니다. 모든 연결이 끝나면 종료합니다.\n";
+                mssql.setServerInactive(g_advertise_ip, g_port);
+                g_cleanup_cv.notify_all();
+                continue;
+            }
+            stop_servers();
+            break;
+        }
+    });
+
     std::thread cleanup_thread([&]() {
         while (g_cleanup_running) {
-            if (!g_graceful_shutdown) {
-                std::cout << "[Agora C++ Server] Running 30-min canvas cleanup task...\n";
+            if (!g_graceful_shutdown && !mssql.heartbeatServer(g_advertise_ip, g_port)) {
+                std::cerr << "[Agora C++ Server] Server heartbeat update failed\n";
             }
             canvas_pool.cleanupInactiveCanvases();
 
             if (g_graceful_shutdown && canvas_pool.getActiveCanvasCount() == 0) {
                 std::cout << "\n[Agora C++ Server] 모든 사용자가 접속을 종료하여 서버를 안전하게 종료합니다.\n";
                 // Trigger shutdown
-                MssqlClient mssql(g_db_host, g_db_port);
-                mssql.unregisterServer(g_advertise_ip, g_port);
-                std::cout << "[Agora C++ Server] 서버 정보를 DB에서 삭제했습니다.\n";
-
-                if (g_ws_server) g_ws_server->stop();
-                if (g_server) g_server->stop();
+                stop_servers();
                 break;
             }
 
             std::unique_lock<std::mutex> lock(g_cleanup_mutex);
             if (g_graceful_shutdown) {
-                g_cleanup_cv.wait_for(lock, std::chrono::seconds(2), [] { return !g_cleanup_running; });
+                g_cleanup_cv.wait_for(lock, std::chrono::seconds(1), [] { return !g_cleanup_running; });
             } else {
-                g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running || g_graceful_shutdown; });
+                g_cleanup_cv.wait_for(lock, std::chrono::seconds(5), [] { return !g_cleanup_running || g_graceful_shutdown; });
             }
         }
     });
@@ -181,6 +184,9 @@ int main(int argc, char* argv[]) {
     g_cleanup_cv.notify_all();
     if (cleanup_thread.joinable()) {
         cleanup_thread.join();
+    }
+    if (signal_thread.joinable()) {
+        signal_thread.join();
     }
 
     std::cout << "[Agora C++ Server] Server stopped gracefully." << std::endl;

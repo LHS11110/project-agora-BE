@@ -5,9 +5,22 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
+#include <cstdlib>
+#include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
+
+namespace {
+std::string envOr(const char* name, const std::string& value) {
+    if (!value.empty()) return value;
+    const char* configured = std::getenv(name);
+    return configured ? configured : "";
+}
+}
 
 RedisClient::RedisClient(const std::string& host, int port, const std::string& user, const std::string& password)
-    : host_(host), port_(port), user_(user), password_(password), socket_fd_(-1) {
+    : host_(host), port_(port), user_(envOr("REDIS_USER", user)),
+      password_(envOr("REDIS_USER_PASSWORD", password)), socket_fd_(-1) {
 }
 
 RedisClient::~RedisClient() {
@@ -41,7 +54,23 @@ bool RedisClient::connect() {
         return false;
     }
 
-    if (::connect(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    int original_flags = fcntl(socket_fd_, F_GETFL, 0);
+    fcntl(socket_fd_, F_SETFL, original_flags | O_NONBLOCK);
+    int connect_result = ::connect(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (connect_result < 0 && errno == EINPROGRESS) {
+        pollfd pfd{socket_fd_, POLLOUT, 0};
+        connect_result = poll(&pfd, 1, 3000);
+        if (connect_result > 0) {
+            int socket_error = 0;
+            socklen_t socket_error_len = sizeof(socket_error);
+            getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_len);
+            connect_result = socket_error == 0 ? 0 : -1;
+        } else {
+            connect_result = -1;
+        }
+    }
+    fcntl(socket_fd_, F_SETFL, original_flags);
+    if (connect_result < 0) {
         std::cerr << "[RedisClient] Connect failed to " << host_ << ":" << port_ << "\n";
         close(socket_fd_);
         socket_fd_ = -1;
@@ -55,9 +84,15 @@ bool RedisClient::connect() {
             sendCommand({"AUTH", password_});
         }
         std::string auth_res = readResponse();
-        if (auth_res.find("ERR") != std::string::npos && auth_res.find("no password is set") == std::string::npos) {
-            std::cerr << "[RedisClient] Auth warning: " << auth_res << "\n";
+        if (auth_res != "OK") {
+            std::cerr << "[RedisClient] Authentication failed: " << auth_res << "\n";
+            disconnect();
+            return false;
         }
+    } else {
+        std::cerr << "[RedisClient] REDIS_USER_PASSWORD is not configured\n";
+        disconnect();
+        return false;
     }
 
     return true;
@@ -82,10 +117,14 @@ bool RedisClient::sendCommand(const std::vector<std::string>& args) {
     }
 
     std::string msg = oss.str();
-    ssize_t sent = write(socket_fd_, msg.data(), msg.length());
-    if (sent < (ssize_t)msg.length()) {
-        disconnect();
-        return false;
+    std::size_t total = 0;
+    while (total < msg.size()) {
+        ssize_t sent = write(socket_fd_, msg.data() + total, msg.size() - total);
+        if (sent <= 0) {
+            disconnect();
+            return false;
+        }
+        total += static_cast<std::size_t>(sent);
     }
     return true;
 }
@@ -132,7 +171,11 @@ std::string RedisClient::readResponse() {
             if (r <= 0) break;
             crlf_total += r;
         }
-        return std::string(buf.data(), len);
+        if (total != len || crlf_total != 2) {
+            disconnect();
+            return "";
+        }
+        return std::string(buf.data(), static_cast<std::size_t>(total));
     } else if (type == '*') {
         int count = std::stoi(prefix.substr(1));
         std::string result;
@@ -153,16 +196,35 @@ bool RedisClient::ping() {
 }
 
 bool RedisClient::set(const std::string& key, const std::string& value) {
-    if (!sendCommand({"SET", key, value})) return false;
+    if (!sendCommand({"JSON.SET", key, "$", value})) return false;
     std::string res = readResponse();
+    if (res.find("WRONGTYPE") != std::string::npos) {
+        if (!del(key) || !sendCommand({"JSON.SET", key, "$", value})) return false;
+        res = readResponse();
+    }
     return res == "OK";
 }
 
 std::optional<std::string> RedisClient::get(const std::string& key) {
-    if (!sendCommand({"GET", key})) return std::nullopt;
+    if (!sendCommand({"JSON.GET", key})) return std::nullopt;
     std::string res = readResponse();
+    if (res.find("WRONGTYPE") != std::string::npos) {
+        if (!sendCommand({"GET", key})) return std::nullopt;
+        res = readResponse();
+    }
     if (res.empty()) return std::nullopt;
     return res;
+}
+
+bool RedisClient::setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value) {
+    if (!sendCommand({"JSON.SET", key, path, value.dump()})) return false;
+    return readResponse() == "OK";
+}
+
+bool RedisClient::deleteJsonPath(const std::string& key, const std::string& path) {
+    if (!sendCommand({"JSON.DEL", key, path})) return false;
+    const std::string response = readResponse();
+    return !response.empty() && response.find("ERR") == std::string::npos;
 }
 
 bool RedisClient::del(const std::string& key) {

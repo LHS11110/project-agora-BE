@@ -6,13 +6,14 @@
 class MssqlClient {
 public:
     MssqlClient(const std::string& host = "127.0.0.1", int port = 1433,
-                const std::string& user = "agora_user",
-                const std::string& pass = "AgoraUserSecret@Passw0rd!2026",
-                const std::string& db = "agora_db");
+                const std::string& user = "",
+                const std::string& pass = "",
+                const std::string& db = "");
     ~MssqlClient();
 
     // Register this server to DB (cpp_server table)
     bool registerServer(const std::string& ip, int rest_port, int ws_port);
+    bool heartbeatServer(const std::string& ip, int rest_port);
     bool unregisterServer(const std::string& ip, int rest_port);
     bool setServerInactive(const std::string& ip, int rest_port);
 
@@ -22,7 +23,7 @@ public:
     // Updates canvas_info: is_cached=0, redis_ip=NULL, redis_port=NULL, server_ip=NULL, server_port=NULL
     bool updateCanvasUncached(int canvasId);
 
-    // Updates user_sessions: is_accessed=0, cpp_server_id=NULL
+    // Updates user_sessions after the user's final connection closes.
     bool updateUserSessionDisconnected(int userId);
 
     // Updates user_sessions: is_accessed=1, cpp_server_id=(subquery), canvas_id=? (UPSERT)

@@ -7,9 +7,9 @@
 class EsClient {
 public:
     EsClient(const std::string& host = "127.0.0.1", int port = 9200,
-             const std::string& user = "agora_user",
-             const std::string& pass = "AgoraUserSecret@Passw0rd!2026",
-             const std::string& index = "canvas");
+             const std::string& user = "",
+             const std::string& pass = "",
+             const std::string& index = "");
 
     std::optional<nlohmann::json> getCanvasDocument(int canvasId);
     bool saveCanvasDocument(int canvasId, const nlohmann::json& doc);

@@ -37,14 +37,13 @@
 
                 <div class="auth-form" id="loginFormBlock">
                     <input type="email" id="email" placeholder="이메일 (admin@agora.com)" value="admin@agora.com">
-                    <input type="password" id="password" placeholder="비밀번호 (admin123)" value="admin123">
+                    <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password">
                     <button class="btn-primary" onclick="login()" id="loginBtn">
                         <span id="loginText">로그인 및 시스템 접속</span>
                         <div class="loader" id="loginLoader"></div>
                     </button>
                     
                     <div class="quick-logins">
-                        <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('admin@agora.com', 'admin123')">👑 Admin</button>
                         <button class="btn-outline" style="padding: 8px 14px; font-size:0.8rem;" onclick="setQuickLogin('user@agora.com', 'password123')">👤 User</button>
                     </div>
                 </div>

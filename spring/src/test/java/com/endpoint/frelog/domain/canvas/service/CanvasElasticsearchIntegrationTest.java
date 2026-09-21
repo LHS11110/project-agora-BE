@@ -26,12 +26,14 @@ class CanvasElasticsearchIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        String esPassword = System.getenv("ES_USER_PASSWORD");
+        assumeTrue(esPassword != null && !esPassword.isBlank(), "ES_USER_PASSWORD is required for the integration test");
         ElasticsearchProperties props = new ElasticsearchProperties();
         props.setHost("127.0.0.1");
         props.setPort(9200);
         props.setIndex("canvas");
-        props.setUsername("agora_user");
-        props.setPassword("AgoraUserSecret@Passw0rd!2026");
+        props.setUsername(System.getenv().getOrDefault("ES_USER_NAME", "agora_user"));
+        props.setPassword(esPassword);
         props.setFailOnError(true);
 
         ElasticsearchConfig config = new ElasticsearchConfig(props);

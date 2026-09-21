@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 @Repository
-public interface RedisInfoRepository extends JpaRepository<RedisInfo, Long> {
+public interface RedisInfoRepository extends JpaRepository<RedisInfo, Integer> {
 
     List<RedisInfo> findByIsActivatedTrue();
 

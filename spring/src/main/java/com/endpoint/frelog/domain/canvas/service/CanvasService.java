@@ -33,6 +33,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.time.LocalDateTime;
 import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -193,6 +194,11 @@ public class CanvasService {
             throw new CustomException(ErrorCode.BAD_REQUEST, "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
+        if (userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "접속 중인 사용자가 있어 캔버스를 삭제할 수 없습니다.");
+        }
+        userSessionRepository.clearInactiveCanvasReferences(canvasId);
+
         // MS SQL 삭제
         canvasInfoRepository.delete(canvasInfo);
 
@@ -240,8 +246,21 @@ public class CanvasService {
         String wsPort = "none";
         Integer serverId = null;
 
-        if (!Boolean.TRUE.equals(canvasInfo.getIsCached())) {
-            // 로드 밸런싱 수행 (is_activated == true 인 행 대상) - Redis 제외
+        ServerInfo assignedServer = canvasInfo.getCppServer();
+        boolean assignedServerHealthy = Boolean.TRUE.equals(canvasInfo.getIsCached())
+                && assignedServer != null
+                && Boolean.TRUE.equals(assignedServer.getIsActivated())
+                && assignedServer.getLastHeartbeatAt() != null
+                && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now().minusSeconds(15))
+                && cppServerClient.isHealthy(assignedServer.getServerIp(), assignedServer.getServerPort());
+
+        if (!assignedServerHealthy) {
+            if (assignedServer != null) {
+                log.warn("캔버스 #{}의 기존 C++ 서버 #{}가 응답하지 않아 할당을 해제합니다.", canvasId, assignedServer.getServerId());
+                // Redis 캐시는 유지하여 새 C++ 서버가 최신 상태를 인계받게 한다.
+                canvasInfo.setCppServer(null);
+                canvasInfoRepository.save(canvasInfo);
+            }
             AllocateServerResponse serverAlloc = loadBalancerService.allocateServer();
             ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverAlloc.serverIp(), serverAlloc.serverPort()).orElse(null);
             
@@ -253,16 +272,15 @@ public class CanvasService {
             log.info("캔버스 #{} 신규 접속 요청: 클라이언트에게 접속할 C++ 서버 안내 완료 [Server={}:{}] (실제 캐시 할당은 웹소켓 연결 시 처리됨)",
                     canvasId, serverIp, wsPort);
         } else {
-            if (canvasInfo.getCppServer() != null) {
-                serverIp = canvasInfo.getCppServer().getServerIp();
-                wsPort = canvasInfo.getCppServer().getWsPort();
-                serverId = canvasInfo.getCppServer().getServerId();
-            }
+            serverIp = assignedServer.getServerIp();
+            wsPort = assignedServer.getWsPort();
+            serverId = assignedServer.getServerId();
         }
 
         // 3. 중복 접속 검사 (user_sessions 테이블)
         UserSession session = userSessionRepository.findById(userId).orElseGet(() -> new UserSession(userRepository.findById(userId).orElseThrow()));
-        if (Boolean.TRUE.equals(session.getIsAccessed())) {
+        if (Boolean.TRUE.equals(session.getIsAccessed())
+                && (session.getCanvas() == null || !canvasId.equals(session.getCanvas().getCanvasId()))) {
             throw new CustomException(ErrorCode.ALREADY_CONNECTED, "이미 캔버스에 접속 중인 사용자입니다. (다중 탭 접속 차단)");
         }
 

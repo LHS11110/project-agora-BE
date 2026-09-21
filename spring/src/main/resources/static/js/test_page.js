@@ -304,7 +304,7 @@ async function connectActiveCanvas() {
     }
 
     // Connect WS through Nginx proxy
-    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${accessRes.data.canvas_access_token}`;
+    const wsUrl = `wss://${window.location.host}/wss/port/${accessRes.data.ws_port}/canvas/${cid}?token=${accessRes.data.canvas_access_token}`;
     logToConsole('WS', `Connecting to WebSocket`, wsUrl);
     
     state.ws = new WebSocket(wsUrl);
@@ -416,7 +416,9 @@ async function runFullE2ETest() {
 
     // 1. Auth
     setStatus(1, 'running');
-    const authRes = await apiCall('/api/auth/login', 'POST', { email: 'admin@agora.com', password: 'admin123' });
+    const e2ePassword = window.prompt('E2E 관리자 비밀번호를 입력하세요.');
+    if (!e2ePassword) throw new Error('E2E 관리자 비밀번호가 필요합니다.');
+    const authRes = await apiCall('/api/auth/login', 'POST', { email: 'admin@agora.com', password: e2ePassword });
     if (!authRes.ok) return setStatus(1, 'error');
     state.token = authRes.data.accessToken;
     state.user = authRes.data.user;
@@ -452,7 +454,7 @@ async function runFullE2ETest() {
 
     // 6. WebSocket Connect
     setStatus(6, 'running');
-    const wsUrl = `wss://${window.location.host}/wss/server/${accessRes.data.server_id}/canvas/${cid}?token=${state.token}`;
+    const wsUrl = `wss://${window.location.host}/wss/port/${accessRes.data.ws_port}/canvas/${cid}?token=${state.token}`;
     state.ws = new WebSocket(wsUrl);
     await new Promise((resolve, reject) => {
         state.ws.onopen = resolve;

@@ -15,7 +15,7 @@ public class DatabaseProperties {
     private int port = 1433;
     private String name = "agora_db";
     private String username = "agora_user";
-    private String password = "AgoraUserSecret@Passw0rd!2026";
+    private String password;
 
     public String getAddress() {
         if (address != null && !address.isBlank()) {

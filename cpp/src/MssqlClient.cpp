@@ -7,6 +7,24 @@
 #include <mutex>
 #include <vector>
 #include <condition_variable>
+#include <cstdlib>
+
+namespace {
+std::string envOr(const char* name, const std::string& value) {
+    if (!value.empty()) return value;
+    const char* configured = std::getenv(name);
+    return configured ? configured : "";
+}
+
+std::string sqlLiteral(std::string value) {
+    std::size_t position = 0;
+    while ((position = value.find('\'', position)) != std::string::npos) {
+        value.insert(position, 1, '\'');
+        position += 2;
+    }
+    return value;
+}
+}
 
 class MssqlConnectionPool {
 private:
@@ -103,8 +121,9 @@ MssqlClient::MssqlClient(const std::string& host, int port,
                          const std::string& user,
                          const std::string& pass,
                          const std::string& db)
-    : host_(host), port_(port), user_(user), pass_(pass), db_(db) {
-    MssqlConnectionPool::getInstance().init(host, port, user, pass, db);
+    : host_(host), port_(port), user_(envOr("DB_USER", user)),
+      pass_(envOr("DB_PASSWORD", pass)), db_(envOr("DB_NAME", db)) {
+    MssqlConnectionPool::getInstance().init(host_, port_, user_, pass_, db_);
 }
 
 MssqlClient::~MssqlClient() {
@@ -115,21 +134,27 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
     PooledConnection dbproc;
     if (!dbproc.get()) return false;
 
-    std::string sql = 
+    if (user_.empty() || pass_.empty() || db_.empty()) {
+        std::cerr << "[MssqlClient] DB_USER, DB_PASSWORD and DB_NAME must be configured\n";
+        return false;
+    }
+    const std::string safe_ip = sqlLiteral(ip);
+    std::string sql =
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "IF EXISTS (SELECT 1 FROM cpp_server WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "') "
+        "IF EXISTS (SELECT 1 FROM cpp_server WITH (UPDLOCK, HOLDLOCK) WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(rest_port) + "') "
         "BEGIN "
-        "   UPDATE cpp_server SET ws_port = '" + std::to_string(ws_port) + "', is_activated = 1 WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
+        "   UPDATE cpp_server SET ws_port = '" + std::to_string(ws_port) + "', is_activated = 1, last_heartbeat_at = SYSUTCDATETIME() WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
         "END "
         "ELSE "
         "BEGIN "
-        "   INSERT INTO cpp_server (server_ip, server_port, ws_port, is_activated, created_at) VALUES ('" + ip + "', '" + std::to_string(rest_port) + "', '" + std::to_string(ws_port) + "', 1, GETDATE()); "
+        "   INSERT INTO cpp_server (server_ip, server_port, ws_port, is_activated, created_at, last_heartbeat_at) VALUES ('" + safe_ip + "', '" + std::to_string(rest_port) + "', '" + std::to_string(ws_port) + "', 1, SYSUTCDATETIME(), SYSUTCDATETIME()); "
         "END; "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "THROW; "
         "END CATCH;";
 
     dbcmd(dbproc, sql.c_str());
@@ -149,43 +174,48 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
     return true;
 }
 
-bool MssqlClient::unregisterServer(const std::string& ip, int rest_port) {
+bool MssqlClient::heartbeatServer(const std::string& ip, int rest_port) {
     PooledConnection dbproc;
     if (!dbproc.get()) return false;
-    std::string sql = 
-        "BEGIN TRAN; "
-        "BEGIN TRY "
-        "DELETE FROM cpp_server WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
-        "COMMIT TRAN; "
-        "END TRY "
-        "BEGIN CATCH "
-        "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
-        "END CATCH;";
+    const std::string safe_ip = sqlLiteral(ip);
+    std::string sql =
+        "UPDATE cpp_server SET last_heartbeat_at = SYSUTCDATETIME(), is_activated = 1 "
+        "WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
+        "SELECT @@ROWCOUNT AS affected;";
     dbcmd(dbproc, sql.c_str());
     if (dbsqlexec(dbproc) == FAIL) return false;
-    
-    bool res = true;
+
+    int affected = 0;
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) res = false;
-        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-            if (ret == FAIL) break;
+        if (ret == FAIL) return false;
+        if (DBROWS(dbproc)) {
+            dbbind(dbproc, 1, INTBIND, 0, reinterpret_cast<BYTE*>(&affected));
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) return false;
+            }
         }
     }
-    return res;
+    return affected == 1;
+}
+
+bool MssqlClient::unregisterServer(const std::string& ip, int rest_port) {
+    return setServerInactive(ip, rest_port);
 }
 
 bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
     PooledConnection dbproc;
     if (!dbproc.get()) return false;
-    std::string sql = 
+    const std::string safe_ip = sqlLiteral(ip);
+    std::string sql =
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "UPDATE cpp_server SET is_activated = 0 WHERE server_ip = '" + ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
+        "UPDATE cpp_server SET is_activated = 0, last_heartbeat_at = SYSUTCDATETIME() WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(rest_port) + "'; "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "THROW; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
     if (dbsqlexec(dbproc) == FAIL) return false;
@@ -204,18 +234,20 @@ bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
 std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
 
     PooledConnection dbproc;
-    if (!dbproc.get()) return {"127.0.0.1", 6379};
+    if (!dbproc.get()) return {"ERROR", 0};
 
-    std::string sql = 
+    const std::string safe_ip = sqlLiteral(cppServerIp);
+    std::string sql =
         "BEGIN TRAN; "
         "BEGIN TRY "
         "  DECLARE @is_cached BIT = NULL, @redis_ip NVARCHAR(50), @redis_port NVARCHAR(10), @assigned_cpp_id INT; "
         "  SELECT @is_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = r.redis_port, @assigned_cpp_id = c.cpp_server_id "
         "    FROM canvas_info c WITH (UPDLOCK, ROWLOCK) "
-        "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id "
+        "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id AND r.is_activated = 1 "
         "    WHERE c.canvas_id = " + std::to_string(canvasId) + "; "
         "  DECLARE @my_cpp_id INT; "
-        "  SELECT @my_cpp_id = server_id FROM cpp_server WHERE server_ip = '" + cppServerIp + "' AND server_port = " + std::to_string(cppServerPort) + "; "
+        "  SELECT @my_cpp_id = server_id FROM cpp_server WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(cppServerPort) + "' AND is_activated = 1; "
+        "  IF @my_cpp_id IS NULL THROW 50001, 'C++ server is not registered or active', 1; "
         "  IF @is_cached IS NULL "
         "  BEGIN "
         "    SELECT 'NOT_FOUND' AS redis_ip, '0' AS redis_port; "
@@ -226,29 +258,32 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
         "  END "
         "  ELSE "
         "  BEGIN "
-        "    IF @is_cached = 0 OR @redis_ip IS NULL "
+        "    IF @redis_ip IS NULL "
         "    BEGIN "
         "      DECLARE @new_redis_id INT; "
         "      SELECT TOP 1 @new_redis_id = redis_id, @redis_ip = redis_ip, @redis_port = redis_port FROM redis_server WHERE is_activated = 1 ORDER BY NEWID(); "
-        "      UPDATE canvas_info SET is_cached = 1, redis_id = @new_redis_id, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId) + "; "
+        "      IF @new_redis_id IS NULL THROW 50002, 'No active Redis server is available', 1; "
+        "      UPDATE canvas_info SET redis_id = @new_redis_id WHERE canvas_id = " + std::to_string(canvasId) + "; "
         "    END "
+        "    UPDATE canvas_info SET is_cached = 1, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId) + "; "
         "    SELECT @redis_ip AS redis_ip, @redis_port AS redis_port; "
         "  END "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "THROW; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
 
     if (dbsqlexec(dbproc) == FAIL) {
-            return {"127.0.0.1", 6379};
+        return {"ERROR", 0};
     }
 
     char redis_ip_buf[64] = {0};
     char redis_port_buf[32] = {0};
-    std::string found_ip = "127.0.0.1";
-    int found_port = 6379;
+    std::string found_ip;
+    int found_port = 0;
 
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
@@ -266,13 +301,17 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
                     try {
                         found_port = std::stoi(redis_port_buf);
                     } catch (...) {
-                        found_port = 6379;
+                        found_port = 0;
                     }
                 }
             }
         }
     }
 
+    if (found_ip.empty() || found_port <= 0) {
+        std::cerr << "[MssqlClient] Canvas #" << canvasId << " allocation returned no usable Redis endpoint\n";
+        return {"ERROR", 0};
+    }
     std::cout << "[MssqlClient] Canvas #" << canvasId << " assigned Redis from DB: " << found_ip << ":" << found_port << "\n";
     return {found_ip, found_port};
 }
@@ -290,6 +329,7 @@ bool MssqlClient::updateCanvasUncached(int canvasId) {
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "THROW; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
 
@@ -318,11 +358,12 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "UPDATE user_sessions SET is_accessed = 0, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
+        "UPDATE user_sessions SET is_accessed = 0, cpp_server_id = NULL, canvas_id = NULL, updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "THROW; "
         "END CATCH;";
     dbcmd(dbproc, sql.c_str());
 
@@ -339,7 +380,7 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
         }
     }
 
-    std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL\n";
+    std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL, canvas_id=NULL\n";
     return true;
 }
 
@@ -361,7 +402,8 @@ bool MssqlClient::updateUserSessionConnected(int userId, int canvasId, const std
         "    RETURN; "
         "  END "
         "  DECLARE @server_id INT; "
-        "  SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + cppServerIp + "' AND server_port = " + std::to_string(cppServerPort) + "; "
+        "  SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + sqlLiteral(cppServerIp) + "' AND server_port = '" + std::to_string(cppServerPort) + "' AND is_activated = 1; "
+        "  IF @server_id IS NULL THROW 50003, 'C++ server session target is unavailable', 1; "
         "  UPDATE user_sessions SET is_accessed = 1, cpp_server_id = @server_id, canvas_id = " + std::to_string(canvasId) + ", updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
         "  IF @@ROWCOUNT = 0 "
         "  BEGIN "
@@ -372,7 +414,7 @@ bool MssqlClient::updateUserSessionConnected(int userId, int canvasId, const std
         "END TRY "
         "BEGIN CATCH "
         "  IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
-        "  SELECT 0 AS success; "
+        "  THROW; "
         "END CATCH;";
         
     dbcmd(dbproc, sql.c_str());
@@ -428,6 +470,7 @@ bool MssqlClient::isCanvasActiveInDb(int canvasId) {
         "END TRY "
         "BEGIN CATCH "
         "   IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "   THROW; "
         "END CATCH;";
         
     if (dbcmd(dbproc, sql.c_str()) != SUCCEED) {
@@ -466,11 +509,12 @@ int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tag
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "   SELECT user_id, status FROM users WHERE nickname = N'" + nickname + "' AND tag_number = " + std::to_string(tagNumber) + "; "
+        "   SELECT user_id, status FROM users WHERE nickname = N'" + sqlLiteral(nickname) + "' AND tag_number = " + std::to_string(tagNumber) + "; "
         "   COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
         "   IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
+        "   THROW; "
         "END CATCH;";
         
     if (dbcmd(dbproc, sql.c_str()) != SUCCEED) {

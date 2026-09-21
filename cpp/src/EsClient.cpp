@@ -1,15 +1,29 @@
 #include "EsClient.hpp"
 #include <httplib.h>
 #include <iostream>
+#include <cstdlib>
+
+namespace {
+std::string envOr(const char* name, const std::string& value) {
+    if (!value.empty()) return value;
+    const char* configured = std::getenv(name);
+    return configured ? configured : "";
+}
+}
 
 EsClient::EsClient(const std::string& host, int port,
                    const std::string& user,
                    const std::string& pass,
                    const std::string& index)
-    : host_(host), port_(port), user_(user), pass_(pass), index_(index) {
+    : host_(host), port_(port), user_(envOr("ES_USER_NAME", user)),
+      pass_(envOr("ES_USER_PASSWORD", pass)), index_(envOr("ES_INDEX", index)) {
 }
 
 std::optional<nlohmann::json> EsClient::getCanvasDocument(int canvasId) {
+    if (user_.empty() || pass_.empty() || index_.empty()) {
+        std::cerr << "[EsClient] ES_USER_NAME, ES_USER_PASSWORD and ES_INDEX must be configured\n";
+        return std::nullopt;
+    }
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(3, 0);
     cli.set_read_timeout(3, 0);
@@ -54,6 +68,10 @@ std::optional<nlohmann::json> EsClient::getCanvasDocument(int canvasId) {
 }
 
 bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
+    if (user_.empty() || pass_.empty() || index_.empty()) {
+        std::cerr << "[EsClient] Elasticsearch credentials are not configured\n";
+        return false;
+    }
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(3, 0);
     cli.set_read_timeout(3, 0);
@@ -69,4 +87,3 @@ bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
               << (res ? std::to_string(res->status) : "connection error") << "\n";
     return false;
 }
-

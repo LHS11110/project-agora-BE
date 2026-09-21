@@ -36,6 +36,9 @@ public class ServerInfo {
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 
+    @Column(name = "last_heartbeat_at", nullable = false)
+    private LocalDateTime lastHeartbeatAt;
+
     public ServerInfo() {
     }
 
@@ -60,6 +63,9 @@ public class ServerInfo {
         }
         if (this.isActivated == null) {
             this.isActivated = true;
+        }
+        if (this.lastHeartbeatAt == null) {
+            this.lastHeartbeatAt = LocalDateTime.now();
         }
     }
 
@@ -118,6 +124,14 @@ public class ServerInfo {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public LocalDateTime getLastHeartbeatAt() {
+        return lastHeartbeatAt;
+    }
+
+    public void setLastHeartbeatAt(LocalDateTime lastHeartbeatAt) {
+        this.lastHeartbeatAt = lastHeartbeatAt;
     }
 
     // Backwards compatibility for serverName

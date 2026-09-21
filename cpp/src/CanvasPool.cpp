@@ -60,50 +60,71 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
 
     if (redis_ip == "NOT_FOUND") {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Canvas does not exist in DB\n";
+        std::lock_guard<std::mutex> lock(pool_mutex_);
         loading_mutexes_.erase(canvas_id);
         return nullptr;
     }
 
     if (redis_ip == "WRONG_SERVER") {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Canvas is already allocated to another C++ server\n";
+        std::lock_guard<std::mutex> lock(pool_mutex_);
         loading_mutexes_.erase(canvas_id);
         return nullptr;
     }
 
-    // 2. Query Elasticsearch for canvas document
-    EsClient es(es_host_, es_port_);
-    auto es_doc = es.getCanvasDocument(canvas_id);
+    if (redis_ip == "ERROR" || redis_port <= 0) {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: storage allocation failed\n";
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
+    }
 
-    // 3. Cache into Redis
+    // Prefer an existing Redis document during failover. Elasticsearch is the
+    // source only when this canvas has no active cache.
     RedisClient redis(redis_ip, redis_port);
+    if (!redis.ping()) {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Redis is unavailable\n";
+        mssql.updateCanvasUncached(canvas_id);
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
+    }
+
+    std::optional<nlohmann::json> canvas_doc;
+    auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
+    if (cached_str && !cached_str->empty()) {
+        try {
+            canvas_doc = nlohmann::json::parse(*cached_str);
+            // Rewriting migrates legacy string values to RedisJSON.
+            if (!redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
+                throw std::runtime_error("failed to migrate cached document to RedisJSON");
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[CanvasPool] Invalid Redis document for canvas #" << canvas_id << ": " << e.what() << "\n";
+            canvas_doc.reset();
+        }
+    }
+
+    if (!canvas_doc.has_value()) {
+        EsClient es(es_host_, es_port_);
+        canvas_doc = es.getCanvasDocument(canvas_id);
+        if (!canvas_doc.has_value() || !redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
+            std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: no durable document is available\n";
+            mssql.updateCanvasUncached(canvas_id);
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            loading_mutexes_.erase(canvas_id);
+            return nullptr;
+        }
+    }
+
     std::string canvas_name = "Canvas-" + std::to_string(canvas_id);
     int admin_uid = 0;
 
-    if (es_doc.has_value()) {
-        redis.set("canvas:" + std::to_string(canvas_id), es_doc->dump());
-        std::cout << "[CanvasPool] Cached ES document for canvas #" << canvas_id
-                  << " into Redis " << redis_ip << ":" << redis_port << "\n";
-
-        if (es_doc->contains("canvas-name") && (*es_doc)["canvas-name"].is_string()) {
-            canvas_name = (*es_doc)["canvas-name"].get<std::string>();
-        }
-        if (es_doc->contains("admin-user-id") && (*es_doc)["admin-user-id"].is_number_integer()) {
-            admin_uid = (*es_doc)["admin-user-id"].get<int>();
-        }
-    } else {
-        // Create minimal fallback JSON in Redis
-        nlohmann::json fallback_json = {
-            {"canvas-id", canvas_id},
-            {"canvas-name", canvas_name},
-            {"admin-user-id", admin_uid},
-            {"description", ""},
-            {"canvas-password-hash", nullptr},
-            {"people", nlohmann::json::array()},
-            {"inner-group", {{"admin-group", nlohmann::json::array()}}},
-            {"items", nlohmann::json::object()},
-            {"init-group", "default"}
-        };
-        redis.set("canvas:" + std::to_string(canvas_id), fallback_json.dump());
+    if (canvas_doc->contains("canvas-name") && (*canvas_doc)["canvas-name"].is_string()) {
+        canvas_name = (*canvas_doc)["canvas-name"].get<std::string>();
+    }
+    if (canvas_doc->contains("admin-user-id") && (*canvas_doc)["admin-user-id"].is_number_integer()) {
+        admin_uid = (*canvas_doc)["admin-user-id"].get<int>();
     }
 
     // 4. Create and register Canvas in pool
@@ -154,7 +175,11 @@ void CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
         if (cached_str && !cached_str->empty()) {
             auto doc = nlohmann::json::parse(*cached_str);
             EsClient es(es_host_, es_port_);
-            es.saveCanvasDocument(canvas_id, doc);
+            if (!es.saveCanvasDocument(canvas_id, doc)) {
+                std::cerr << "[CanvasPool] Keeping Redis cache for canvas #" << canvas_id
+                          << " because Elasticsearch persistence failed\n";
+                return;
+            }
             std::cout << "[CanvasPool] Reflected Canvas #" << canvas_id << " from Redis to Elasticsearch\n";
         }
 
@@ -216,7 +241,12 @@ void CanvasPool::disconnectUser(int canvas_id, int user_id) {
 
 int CanvasPool::getActiveCanvasCount() {
     std::lock_guard<std::mutex> lock(pool_mutex_);
-    return (int)canvases_.size();
+    int count = 0;
+    for (const auto& [id, canvas] : canvases_) {
+        (void)id;
+        if (canvas && !canvas->getActiveUsers().empty()) ++count;
+    }
+    return count;
 }
 
 std::vector<int> CanvasPool::getActiveCanvasIds() {

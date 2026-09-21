@@ -22,6 +22,8 @@ public interface CanvasInfoRepository extends JpaRepository<CanvasInfo, Integer>
 
     long countByRedisInfo_RedisIpAndRedisInfo_RedisPort(String redisIp, String redisPort);
 
+    long countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(String redisIp, String redisPort);
+
     long countByCppServer_ServerIpAndCppServer_ServerPort(String serverIp, String serverPort);
 
     boolean existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(String redisIp, String redisPort);

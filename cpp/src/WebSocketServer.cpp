@@ -16,6 +16,134 @@ static std::string getQueryParam(std::string_view query, const std::string& key)
     return q.substr(pos + pattern.length(), end - (pos + pattern.length()));
 }
 
+static std::string jsonPathKey(const nlohmann::json& value) {
+    std::string key;
+    if (value.is_string()) key = value.get<std::string>();
+    else if (value.is_number_integer()) key = std::to_string(value.get<long long>());
+    for (std::size_t pos = 0; (pos = key.find('\\', pos)) != std::string::npos; pos += 2) key.insert(pos, 1, '\\');
+    for (std::size_t pos = 0; (pos = key.find('"', pos)) != std::string::npos; pos += 2) key.insert(pos, 1, '\\');
+    return key;
+}
+
+static void persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nlohmann::json& event) {
+    if (!canvas || !event.is_object()) return;
+    const std::string type = event.value("type", "");
+    if (type == "chat" || type == "ping" || type == "pong") return;
+
+    RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+    const std::string key = "canvas:" + std::to_string(canvas->getCanvasId());
+    if (event.contains("items") && event["items"].is_object()) {
+        redis.setJsonPath(key, "$.items", event["items"]);
+        return;
+    }
+
+    const nlohmann::json* id = nullptr;
+    if (event.contains("item_id")) id = &event["item_id"];
+    else if (event.contains("item-id")) id = &event["item-id"];
+    if (!id) return;
+
+    const std::string item_key = jsonPathKey(*id);
+    if (item_key.empty()) return;
+    const std::string path = "$[\"items\"][\"" + item_key + "\"]";
+    if (type == "item_delete" || type == "delete_item") {
+        redis.deleteJsonPath(key, path);
+        return;
+    }
+
+    if (event.contains("item") && event["item"].is_object()) {
+        redis.setJsonPath(key, path, event["item"]);
+    } else if (event.contains("data") && event["data"].is_object()) {
+        redis.setJsonPath(key, path, event["data"]);
+    }
+}
+
+static nlohmann::json filterItemsForUser(const nlohmann::json& doc, int user_id) {
+    std::unordered_set<std::string> groups;
+    bool is_admin = false;
+    if (doc.contains("inner-group") && doc["inner-group"].is_object()) {
+        for (const auto& [group, members] : doc["inner-group"].items()) {
+            if (!members.is_array()) continue;
+            for (const auto& member : members) {
+                if (member.is_number_integer() && member.get<int>() == user_id) {
+                    groups.insert(group);
+                    if (group == "admin-group") is_admin = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    nlohmann::json filtered = nlohmann::json::object();
+    if (!doc.contains("items") || !doc["items"].is_object()) return filtered;
+    for (const auto& [item_id, item] : doc["items"].items()) {
+        bool allowed = is_admin;
+        if (!allowed && item.is_object() && item.contains("permission")) {
+            const auto& permission = item["permission"];
+            if (permission.is_string()) {
+                allowed = groups.count(permission.get<std::string>()) > 0;
+            } else if (permission.is_array()) {
+                for (const auto& group : permission) {
+                    if (group.is_string() && groups.count(group.get<std::string>()) > 0) {
+                        allowed = true;
+                        break;
+                    }
+                }
+            } else if (permission.is_object()) {
+                for (const auto& [group, level] : permission.items()) {
+                    if (groups.count(group) > 0 && level.is_number_integer() && level.get<int>() > 0) {
+                        allowed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (allowed) filtered[item_id] = item;
+    }
+    return filtered;
+}
+
+static std::pair<std::unordered_set<std::string>, bool> groupsForUser(const nlohmann::json& doc, int user_id) {
+    std::unordered_set<std::string> groups;
+    bool is_admin = false;
+    if (!doc.contains("inner-group") || !doc["inner-group"].is_object()) return {groups, false};
+    for (const auto& [group, members] : doc["inner-group"].items()) {
+        if (!members.is_array()) continue;
+        for (const auto& member : members) {
+            if (member.is_number_integer() && member.get<int>() == user_id) {
+                groups.insert(group);
+                if (group == "admin-group") is_admin = true;
+                break;
+            }
+        }
+    }
+    return {std::move(groups), is_admin};
+}
+
+static std::unordered_set<std::string> permissionGroups(const nlohmann::json& event) {
+    const nlohmann::json* permission = nullptr;
+    if (event.contains("permission")) permission = &event["permission"];
+    else if (event.contains("item") && event["item"].is_object() && event["item"].contains("permission")) permission = &event["item"]["permission"];
+    else if (event.contains("data") && event["data"].is_object() && event["data"].contains("permission")) permission = &event["data"]["permission"];
+
+    std::unordered_set<std::string> groups;
+    if (!permission) return groups;
+    if (permission->is_string()) groups.insert(permission->get<std::string>());
+    else if (permission->is_array()) {
+        for (const auto& group : *permission) if (group.is_string()) groups.insert(group.get<std::string>());
+    } else if (permission->is_object()) {
+        for (const auto& [group, level] : permission->items()) {
+            if (level.is_number_integer() && level.get<int>() > 0) groups.insert(group);
+        }
+    }
+    return groups;
+}
+
+static bool hasAnyGroup(const PerSocketData* socket, const std::unordered_set<std::string>& required) {
+    if (socket->is_admin) return true;
+    for (const auto& group : required) if (socket->groups.count(group) > 0) return true;
+    return false;
+}
+
 WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int ws_port, TokenValidator validator,
                                  const std::string& java_host, int java_port)
     : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(std::move(validator)),
@@ -38,7 +166,21 @@ WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int 
 
 WebSocketServer::~WebSocketServer() {
     stop();
+    {
+        std::unique_lock<std::mutex> lock(worker_mutex_);
+        worker_cv_.wait(lock, [this]() { return active_workers_ == 0; });
+    }
     pool_.setWebSocketCallbacks({});
+}
+
+void WebSocketServer::beginWorker() {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    ++active_workers_;
+}
+
+void WebSocketServer::endWorker() {
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    if (--active_workers_ == 0) worker_cv_.notify_all();
 }
 
 void WebSocketServer::start() {
@@ -248,67 +390,102 @@ void WebSocketServer::runServer() {
 
             registerSocket(ws);
             ws->subscribe("canvas/" + std::to_string(data->canvas_id));
-            if (!pool_.updateUserSessionConnected(data->user_id, data->canvas_id)) {
-                std::cerr << "[WebSocketServer] Rejecting connection: User already in another canvas\n";
-                ws->end(1008, "Already connected to another canvas");
-                return;
-            }
-
-            // Get or create canvas in pool (increments active connection count).
-            auto canvas = pool_.getOrCreateCanvas(data->canvas_id);
-            if (!canvas) {
-                ws->end(1011, "Canvas initialization failed");
-                return;
-            }
-            RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-            auto cached_str = redis.get("canvas:" + std::to_string(data->canvas_id));
-            
-            bool is_authorized = false;
-            nlohmann::json doc;
-            if (cached_str && !cached_str->empty()) {
-                try {
-                    doc = nlohmann::json::parse(*cached_str);
-                    if (doc.contains("people") && doc["people"].is_array()) {
-                        for (auto& uid : doc["people"]) {
-                            if (uid.is_number_integer() && uid.get<int>() == data->user_id) {
-                                is_authorized = true;
-                                break;
+            const int canvas_id = data->canvas_id;
+            const int user_id = data->user_id;
+            beginWorker();
+            std::thread([this, ws, canvas_id, user_id]() {
+                std::shared_ptr<Canvas> canvas;
+                nlohmann::json doc;
+                int close_code = 0;
+                std::string close_reason;
+                bool session_connected = pool_.updateUserSessionConnected(user_id, canvas_id);
+                if (!session_connected) {
+                    close_code = 1008;
+                    close_reason = "Already connected to another canvas";
+                } else {
+                    canvas = pool_.getOrCreateCanvas(canvas_id);
+                    if (!canvas) {
+                        close_code = 1011;
+                        close_reason = "Canvas initialization failed";
+                    } else {
+                        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+                        auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
+                        bool authorized = false;
+                        if (cached_str && !cached_str->empty()) {
+                            try {
+                                doc = nlohmann::json::parse(*cached_str);
+                                if (doc.contains("people") && doc["people"].is_array()) {
+                                    for (const auto& uid : doc["people"]) {
+                                        if (uid.is_number_integer() && uid.get<int>() == user_id) {
+                                            authorized = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            } catch (...) {
                             }
                         }
+                        if (!authorized) {
+                            close_code = 1008;
+                            close_reason = "Unauthorized access to canvas";
+                        }
                     }
-                } catch (...) {}
-            }
+                }
 
-            if (!is_authorized) {
-                std::cerr << "[WebSocketServer] Unauthorized user #" << data->user_id << " tried to join Canvas #" << data->canvas_id << "\n";
-                pool_.updateUserSessionDisconnected(data->user_id);
-                ws->end(1008, "Unauthorized access to canvas");
-                return;
-            }
+                if (close_code != 0 && session_connected) {
+                    pool_.updateUserSessionDisconnected(user_id);
+                    session_connected = false;
+                }
 
-            canvas->connectUser(data->user_id, 0, 0);
+                std::lock_guard<std::mutex> loop_lock(loop_mutex_);
+                if (!running_ || !loop_) {
+                    if (session_connected) pool_.updateUserSessionDisconnected(user_id);
+                    endWorker();
+                    return;
+                }
 
-            nlohmann::json init_msg = {
-                {"type", "init_items"},
-                {"canvas_id", data->canvas_id},
-                {"user_id", data->user_id},
-                {"server_protocol", "uWebSockets"},
-                {"status", "connected"},
-                {"items", nlohmann::json::object()}
-            };
+                loop_->defer([this, ws, canvas_id, user_id, canvas, doc = std::move(doc), close_code,
+                              close_reason = std::move(close_reason), session_connected]() mutable {
+                    auto socket_it = sockets_by_canvas_.find(canvas_id);
+                    const bool socket_exists = socket_it != sockets_by_canvas_.end() && socket_it->second.count(ws) > 0;
+                    if (!socket_exists) {
+                        if (session_connected) {
+                            const std::string db_host = pool_.getDbHost();
+                            const int db_port = pool_.getDbPort();
+                            std::thread([db_host, db_port, user_id]() {
+                                MssqlClient(db_host, db_port).updateUserSessionDisconnected(user_id);
+                            }).detach();
+                        }
+                        endWorker();
+                        return;
+                    }
+                    if (close_code != 0) {
+                        ws->end(close_code, close_reason);
+                        endWorker();
+                        return;
+                    }
 
-            if (!doc.is_null()) {
-                if (doc.contains("items")) init_msg["items"] = doc["items"];
-                if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
-                if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
-            }
-
-            ws->send(init_msg.dump(), uWS::OpCode::TEXT);
-            std::cout << "[uWebSockets] Sent init_items to User #" << data->user_id
-                      << " on Canvas #" << data->canvas_id << std::endl;
+                    canvas->connectUser(user_id, 0, 0);
+                    auto [groups, is_admin] = groupsForUser(doc, user_id);
+                    ws->getUserData()->groups = std::move(groups);
+                    ws->getUserData()->is_admin = is_admin;
+                    nlohmann::json init_msg = {
+                        {"type", "init_items"}, {"canvas_id", canvas_id}, {"user_id", user_id},
+                        {"server_protocol", "uWebSockets"}, {"status", "connected"},
+                        {"items", nlohmann::json::object()}
+                    };
+                    init_msg["items"] = filterItemsForUser(doc, user_id);
+                    if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
+                    if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
+                    ws->send(init_msg.dump(), uWS::OpCode::TEXT);
+                    std::cout << "[uWebSockets] Sent init_items to User #" << user_id
+                              << " on Canvas #" << canvas_id << std::endl;
+                    endWorker();
+                });
+            }).detach();
         },
 
-        .message = [](auto* ws, std::string_view message, uWS::OpCode opCode) {
+        .message = [this](auto* ws, std::string_view message, uWS::OpCode opCode) {
             PerSocketData* data = ws->getUserData();
             
             long long current_time = std::time(nullptr);
@@ -341,7 +518,29 @@ void WebSocketServer::runServer() {
                         event["canvas_id"] = data->canvas_id;
                         event["user_id"] = data->user_id;
                         event["sender_id"] = data->user_id;
-                        ws->publish("canvas/" + std::to_string(data->canvas_id), event.dump(), uWS::OpCode::TEXT);
+                        const bool item_event = event.contains("item_id") || event.contains("item-id") || event.contains("items");
+                        const auto required_groups = permissionGroups(event);
+                        if (item_event && !data->is_admin && (required_groups.empty() || !hasAnyGroup(data, required_groups))) {
+                            nlohmann::json denied = {{"type", "error"}, {"code", "ITEM_ACCESS_DENIED"}};
+                            ws->send(denied.dump(), uWS::OpCode::TEXT);
+                            return;
+                        }
+                        auto canvas = pool_.getCanvas(data->canvas_id);
+                        if (canvas) {
+                            std::thread([canvas, persisted_event = event]() {
+                                persistCanvasEvent(canvas, persisted_event);
+                            }).detach();
+                        }
+                        const std::string payload = event.dump();
+                        auto sockets = sockets_by_canvas_.find(data->canvas_id);
+                        if (sockets != sockets_by_canvas_.end()) {
+                            for (Socket* target : sockets->second) {
+                                if (target == ws) continue;
+                                if (!item_event || required_groups.empty() || hasAnyGroup(target->getUserData(), required_groups)) {
+                                    target->send(payload, uWS::OpCode::TEXT);
+                                }
+                            }
+                        }
                         return;
                     }
                 } catch (...) {
@@ -365,20 +564,25 @@ void WebSocketServer::runServer() {
                       << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
 
             auto canvas = pool_.getCanvas(canvas_id);
+            bool final_connection_closed = false;
             if (canvas) {
-                canvas->disconnectUser(user_id);
+                final_connection_closed = canvas->disconnectUser(user_id);
             }
 
-            std::string db_h = pool_.getDbHost();
-            int db_p = pool_.getDbPort();
-            std::thread([db_h, db_p, canvas_id, user_id]() {
-                try {
-                    MssqlClient mssql(db_h, db_p);
-                    mssql.updateUserSessionDisconnected(user_id);
-                } catch (const std::exception& e) {
-                    std::cerr << "[uWebSockets] Failed to update DB for user disconnect: " << e.what() << "\n";
-                }
-            }).detach();
+            // If initialization has not completed there is no Canvas yet, so
+            // clear any session the background initializer may have reserved.
+            if (!canvas || final_connection_closed) {
+                std::string db_h = pool_.getDbHost();
+                int db_p = pool_.getDbPort();
+                std::thread([db_h, db_p, user_id]() {
+                    try {
+                        MssqlClient mssql(db_h, db_p);
+                        mssql.updateUserSessionDisconnected(user_id);
+                    } catch (const std::exception& e) {
+                        std::cerr << "[uWebSockets] Failed to update DB for user disconnect: " << e.what() << "\n";
+                    }
+                }).detach();
+            }
         }
     };
 };

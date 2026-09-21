@@ -14,6 +14,8 @@ import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import org.springframework.data.domain.Persistable;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
@@ -23,6 +25,7 @@ public class UserSession implements Persistable<Long> {
 
     @Id
     @Column(name = "user_id")
+    @JdbcTypeCode(SqlTypes.INTEGER)
     private Long userId;
 
     @Transient

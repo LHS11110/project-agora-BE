@@ -5,9 +5,10 @@ server {
     ssl_certificate /home/ubuntu/github/project-agora-BE/nginx/ssl/cert.pem;
     ssl_certificate_key /home/ubuntu/github/project-agora-BE/nginx/ssl/key.pem;
 
-    # Proxy WebSocket Traffic
-    location /ws/ {
-        proxy_pass http://127.0.0.1:8002/ws/;
+    # Local C++ instances use distinct WS ports. Only the configured 8002-8099
+    # range is accepted, preventing this endpoint from becoming an open proxy.
+    location ~ ^/wss/port/(?<cpp_ws_port>80(?:0[2-9]|[1-9][0-9]))/canvas/(?<canvas_id>[0-9]+)$ {
+        proxy_pass http://127.0.0.1:$cpp_ws_port/ws/canvas/$canvas_id$is_args$args;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "Upgrade";

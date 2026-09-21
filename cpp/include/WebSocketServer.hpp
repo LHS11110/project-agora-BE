@@ -8,6 +8,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <condition_variable>
 #include <nlohmann/json.hpp>
 #include "App.h"
 #include "CanvasPool.hpp"
@@ -17,6 +18,8 @@ struct PerSocketData {
     int user_id{0};
     int message_count{0};
     long long last_reset_time{0};
+    bool is_admin{false};
+    std::unordered_set<std::string> groups;
 };
 
 class WebSocketServer {
@@ -44,6 +47,8 @@ private:
     void runServer();
     void registerSocket(Socket* ws);
     void unregisterSocket(Socket* ws);
+    void beginWorker();
+    void endWorker();
 
     CanvasPool& pool_;
     std::string host_;
@@ -56,5 +61,8 @@ private:
     void* listen_socket_{nullptr};
     uWS::Loop* loop_{nullptr};
     std::mutex loop_mutex_;
+    std::mutex worker_mutex_;
+    std::condition_variable worker_cv_;
+    int active_workers_{0};
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
 };

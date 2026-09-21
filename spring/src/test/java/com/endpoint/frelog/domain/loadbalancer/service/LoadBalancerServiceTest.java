@@ -23,10 +23,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
 import java.util.List;
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentMatchers.any;
 
 @ExtendWith(MockitoExtension.class)
 class LoadBalancerServiceTest {
@@ -52,7 +54,7 @@ class LoadBalancerServiceTest {
     @Test
     @DisplayName("등록된 활성 서버가 없을 때 예외 발생")
     void allocateServer_EmptyList_ThrowsException() {
-        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(Collections.emptyList());
+        given(serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(any(LocalDateTime.class))).willReturn(Collections.emptyList());
 
         assertThatThrownBy(() -> loadBalancerService.allocateServer())
                 .isInstanceOf(CustomException.class)
@@ -76,7 +78,9 @@ class LoadBalancerServiceTest {
     void allocateServer_SingleServer_ReturnsDirectly() {
         ServerInfo single = new ServerInfo("127.0.0.1", "8000", "8002", "Main-Cpp");
         single.setIsActivated(true);
-        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(List.of(single));
+        single.setLastHeartbeatAt(LocalDateTime.now());
+        given(serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(any(LocalDateTime.class))).willReturn(List.of(single));
+        given(cppServerClient.isHealthy("127.0.0.1", "8000")).willReturn(true);
 
         AllocateServerResponse response = loadBalancerService.allocateServer();
 
@@ -109,7 +113,11 @@ class LoadBalancerServiceTest {
         s1.setIsActivated(true);
         ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "8003", "Server-2");
         s2.setIsActivated(true);
-        given(serverInfoRepository.findByIsActivatedTrue()).willReturn(List.of(s1, s2));
+        s1.setLastHeartbeatAt(LocalDateTime.now());
+        s2.setLastHeartbeatAt(LocalDateTime.now());
+        given(serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(any(LocalDateTime.class))).willReturn(List.of(s1, s2));
+        given(cppServerClient.isHealthy("127.0.0.1", "8000")).willReturn(true);
+        given(cppServerClient.isHealthy("127.0.0.1", "8001")).willReturn(true);
 
         // s1: 부하 10, s2: 부하 3
         given(cppServerClient.getCanvasCountFromServer("127.0.0.1", "8000")).willReturn(10);
@@ -130,8 +138,8 @@ class LoadBalancerServiceTest {
         given(redisInfoRepository.findByIsActivatedTrue()).willReturn(List.of(r1, r2));
 
         // 자바 내 CanvasInfoRepository 카운트 기준: r1은 12개, r2는 4개
-        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort("127.0.0.1", "6379")).willReturn(12L);
-        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort("127.0.0.1", "6380")).willReturn(4L);
+        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue("127.0.0.1", "6379")).willReturn(12L);
+        given(canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue("127.0.0.1", "6380")).willReturn(4L);
 
         AllocateRedisResponse response = loadBalancerService.allocateRedis();
 

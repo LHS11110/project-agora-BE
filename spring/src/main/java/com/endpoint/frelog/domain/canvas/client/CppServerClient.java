@@ -143,4 +143,8 @@ public class CppServerClient {
             return Integer.MAX_VALUE;
         }
     }
+
+    public boolean isHealthy(String serverIp, String serverPort) {
+        return getCanvasCountFromServer(serverIp, serverPort) != Integer.MAX_VALUE;
+    }
 }

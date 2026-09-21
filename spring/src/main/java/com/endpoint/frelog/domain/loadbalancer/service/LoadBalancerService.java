@@ -30,6 +30,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import java.time.LocalDateTime;
 
 @Service
 public class LoadBalancerService {
@@ -61,7 +62,11 @@ public class LoadBalancerService {
      */
     @Transactional(readOnly = true)
     public AllocateServerResponse allocateServer() {
-        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrue();
+        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(15);
+        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff)
+                .stream()
+                .filter(s -> cppServerClient.isHealthy(s.getServerIp(), s.getServerPort()))
+                .toList();
 
         if (servers.isEmpty()) {
             throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "활성화된 C++ 서버가 없습니다.");
@@ -141,50 +146,8 @@ public class LoadBalancerService {
      * 자바(Spring)에서 특정 Redis 인스턴스의 캔버스 부하(개수)를 직접 측정
      */
     public int getRedisCanvasCountInJava(String redisIp, String redisPort) {
-        int socketKeyCount = probeRedisKeyCount(redisIp, redisPort);
-        if (socketKeyCount >= 0) {
-            return socketKeyCount;
-        }
-
-        long dbCount = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redisIp, redisPort);
+        long dbCount = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redisIp, redisPort);
         return (int) dbCount;
-    }
-
-    private int probeRedisKeyCount(String host, String portStr) {
-        int port;
-        try {
-            port = Integer.parseInt(portStr);
-        } catch (NumberFormatException e) {
-            return -1;
-        }
-
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), 400);
-            socket.setSoTimeout(400);
-            OutputStream out = socket.getOutputStream();
-            InputStream in = socket.getInputStream();
-
-            String authCmd = "*2\r\n$4\r\nAUTH\r\n$28\r\nAgoraRedisSecret@Passw0rd!2026\r\n";
-            out.write(authCmd.getBytes(StandardCharsets.UTF_8));
-            out.flush();
-            byte[] buf = new byte[256];
-            in.read(buf);
-
-            String keysCmd = "*2\r\n$4\r\nKEYS\r\n$7\r\ncanvas*\r\n";
-            out.write(keysCmd.getBytes(StandardCharsets.UTF_8));
-            out.flush();
-
-            BufferedReader reader = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
-            String line = reader.readLine();
-            if (line != null && line.startsWith("*")) {
-                int arraySize = Integer.parseInt(line.substring(1));
-                return Math.max(0, arraySize);
-            }
-            return -1;
-        } catch (Exception e) {
-            log.debug("Redis Java Socket 직접 프로브 미응답({}:{}): {}", host, portStr, e.getMessage());
-            return -1;
-        }
     }
 
     public DatabaseAddressResponse getDatabaseAddress() {
@@ -212,7 +175,7 @@ public class LoadBalancerService {
 
     @Transactional(readOnly = true)
     public ServerResponse getServerById(Long serverId) {
-        ServerInfo server = serverInfoRepository.findById(serverId)
+        ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
         int load = cppServerClient.getCanvasCountFromServer(server.getServerIp(), server.getServerPort());
         return ServerResponse.from(server, load == Integer.MAX_VALUE ? 0 : load);
@@ -242,10 +205,10 @@ public class LoadBalancerService {
      */
     @Transactional
     public ServerResponse updateServer(Long serverId, RegisterServerRequest request) {
-        ServerInfo server = serverInfoRepository.findById(serverId)
+        ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.existsByCppServer_ServerIpAndCppServer_ServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
+        boolean inUse = canvasInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort()) > 0;
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -273,10 +236,10 @@ public class LoadBalancerService {
      */
     @Transactional
     public void deleteServer(Long serverId) {
-        ServerInfo server = serverInfoRepository.findById(serverId)
+        ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.existsByCppServer_ServerIpAndCppServer_ServerPortAndIsCachedTrue(server.getServerIp(), server.getServerPort());
+        boolean inUse = canvasInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort()) > 0;
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",
@@ -306,7 +269,7 @@ public class LoadBalancerService {
 
     @Transactional(readOnly = true)
     public RedisResponse getRedisById(Long redisId) {
-        RedisInfo redis = redisInfoRepository.findById(redisId)
+        RedisInfo redis = redisInfoRepository.findById(Math.toIntExact(redisId))
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
         int load = getRedisCanvasCountInJava(redis.getRedisIp(), redis.getRedisPort());
         return RedisResponse.from(redis, load);
@@ -333,10 +296,10 @@ public class LoadBalancerService {
      */
     @Transactional
     public RedisResponse updateRedis(Long redisId, RegisterRedisRequest request) {
-        RedisInfo redis = redisInfoRepository.findById(redisId)
+        RedisInfo redis = redisInfoRepository.findById(Math.toIntExact(redisId))
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
+        boolean inUse = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort()) > 0;
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -364,10 +327,10 @@ public class LoadBalancerService {
      */
     @Transactional
     public void deleteRedis(Long redisId) {
-        RedisInfo redis = redisInfoRepository.findById(redisId)
+        RedisInfo redis = redisInfoRepository.findById(Math.toIntExact(redisId))
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.existsByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redis.getRedisIp(), redis.getRedisPort());
+        boolean inUse = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort()) > 0;
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",

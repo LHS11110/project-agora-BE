@@ -15,7 +15,7 @@ public class ElasticsearchProperties {
     private String scheme = "http";
     private String index = "canvas";
     private String username = "agora_user";
-    private String password = "AgoraUserSecret@Passw0rd!2026";
+    private String password;
     private boolean autoCreate = true;
     private boolean failOnError = false;
 

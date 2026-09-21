@@ -19,7 +19,7 @@ public class DataSourceConfig {
 
     private final DatabaseProperties dbProperties;
 
-    @Value("${app.db.auto-fallback:true}")
+    @Value("${app.db.auto-fallback:false}")
     private boolean autoFallback;
 
     public DataSourceConfig(DatabaseProperties dbProperties) {
