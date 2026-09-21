@@ -250,7 +250,7 @@ public class CanvasService {
                 wsPort = sInfo.getWsPort();
                 serverId = sInfo.getServerId();
             }
-            log.info("캔버스 #{} 임시 서버 로드밸런싱 할당 (DB 미저장): Server={}:{}",
+            log.info("캔버스 #{} 신규 접속 요청: 클라이언트에게 접속할 C++ 서버 안내 완료 [Server={}:{}] (실제 캐시 할당은 웹소켓 연결 시 처리됨)",
                     canvasId, serverIp, wsPort);
         } else {
             if (canvasInfo.getCppServer() != null) {

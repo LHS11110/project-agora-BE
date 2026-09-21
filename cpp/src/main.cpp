@@ -16,6 +16,7 @@ static WebSocketServer* g_ws_server = nullptr;
 static std::atomic<bool> g_cleanup_running{true};
 static std::mutex g_cleanup_mutex;
 static std::condition_variable g_cleanup_cv;
+static std::atomic<bool> g_graceful_shutdown{false};
 
 static std::string g_advertise_ip = "127.0.0.1";
 static int g_port = 8000;
@@ -28,11 +29,20 @@ void signal_handler(int signal) {
     int active_count = (g_server && g_server->getPool()) ? g_server->getPool()->getActiveCanvasCount() : 0;
     
     if (active_count > 0) {
-        std::cout << "[Agora C++ Server] 이용중인 캔버스가 존재합니다. (Active: " << active_count << ")\n";
-        std::cout << "[Agora C++ Server] 중단을 거절하고 is_activated=0으로 설정합니다.\n";
-        MssqlClient mssql(g_db_host, g_db_port);
-        mssql.setServerInactive(g_advertise_ip, g_port);
-        return;
+        if (!g_graceful_shutdown) {
+            std::cout << "[Agora C++ Server] 이용중인 캔버스가 존재합니다. (Active: " << active_count << ")\n";
+            std::cout << "[Agora C++ Server] 안전 종료(Graceful Shutdown) 모드로 진입합니다. (is_activated=0)\n";
+            std::cout << "[Agora C++ Server] 모든 사용자가 접속을 종료하면 자동으로 서버가 꺼집니다.\n";
+            std::cout << "[Agora C++ Server] 강제 종료를 원하시면 Ctrl+C를 한 번 더 누르세요.\n";
+            MssqlClient mssql(g_db_host, g_db_port);
+            mssql.setServerInactive(g_advertise_ip, g_port);
+            
+            g_graceful_shutdown = true;
+            g_cleanup_cv.notify_all(); // Wake up cleanup thread to poll frequently
+            return;
+        } else {
+            std::cout << "[Agora C++ Server] 강제 종료합니다.\n";
+        }
     }
 
     MssqlClient mssql(g_db_host, g_db_port);
@@ -135,11 +145,29 @@ int main(int argc, char* argv[]) {
 
     std::thread cleanup_thread([&]() {
         while (g_cleanup_running) {
-            std::cout << "[Agora C++ Server] Running 30-min canvas cleanup task...\n";
+            if (!g_graceful_shutdown) {
+                std::cout << "[Agora C++ Server] Running 30-min canvas cleanup task...\n";
+            }
             canvas_pool.cleanupInactiveCanvases();
 
+            if (g_graceful_shutdown && canvas_pool.getActiveCanvasCount() == 0) {
+                std::cout << "\n[Agora C++ Server] 모든 사용자가 접속을 종료하여 서버를 안전하게 종료합니다.\n";
+                // Trigger shutdown
+                MssqlClient mssql(g_db_host, g_db_port);
+                mssql.unregisterServer(g_advertise_ip, g_port);
+                std::cout << "[Agora C++ Server] 서버 정보를 DB에서 삭제했습니다.\n";
+
+                if (g_ws_server) g_ws_server->stop();
+                if (g_server) g_server->stop();
+                break;
+            }
+
             std::unique_lock<std::mutex> lock(g_cleanup_mutex);
-            g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running; });
+            if (g_graceful_shutdown) {
+                g_cleanup_cv.wait_for(lock, std::chrono::seconds(2), [] { return !g_cleanup_running; });
+            } else {
+                g_cleanup_cv.wait_for(lock, std::chrono::minutes(30), [] { return !g_cleanup_running; });
+            }
         }
     });
 
