@@ -1,381 +1,254 @@
-# Project Agora Backend (BE)
+# Project Agora BE
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Java: 26](https://img.shields.io/badge/Java-26-orange.svg)](https://openjdk.org/)
-[![Spring Boot: 4.1.1](https://img.shields.io/badge/Spring%20Boot-4.1.1-brightgreen.svg)](https://spring.io/projects/spring-boot)
-[![C++: 17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/)
+Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring Boot는 인증, 캔버스 메타데이터, 서버 할당을 담당하고 C++ 서버는 WebSocket 연결과 실시간 이벤트를 처리합니다.
 
-**Project Agora**의 대규모 실시간 동시 협업 캔버스 백엔드 시스템입니다.  
-Java Spring Boot 기반의 비즈니스 로직·인증·로드밸런싱 계층과 C++ 기반 초고성능 WebSocket 실시간 이벤트 브로드캐스트 엔진 계층으로 분리되어 있으며, MS SQL Server, Redis Stack, Elasticsearch와 긴밀히 연동되어 고성능 분산 캐싱과 영구 데이터 동기화를 보장합니다.
+저장소 인프라는 [Project Agora DB](../project-agora-DB)에서 실행합니다.
 
----
-
-## 목차 (Table of Contents)
-
-1. [시스템 아키텍처 개요](#1-시스템-아키텍처-개요)
-2. [기술 스택](#2-기술-스택)
-3. [핵심 기능 및 라이프사이클](#3-핵심-기능-및-라이프사이클)
-4. [데이터베이스 및 인프라 설정 가이드](#4-데이터베이스-및-인프라-설정-가이드)
-5. [주요 API 명세](#5-주요-api-명세)
-6. [실시간 인터랙티브 테스트베드 (JSP)](#6-실시간-인터랙티브-테스트베드-jsp)
-7. [빌드, 테스트 및 실행 가이드](#7-빌드-테스트-및-실행-가이드)
-8. [오픈소스 라이선스 및 규정 준수 고지](#8-오픈소스-라이선스-및-규정-준수-고지)
-
----
-
-## 1. 시스템 아키텍처 개요
-
-### 시스템 전체 흐름도
+## 구성
 
 ```mermaid
-flowchart TD
-    Client[Web Browser / Client]
-    
-    subgraph Spring_API ["Spring API Server (Java 26)"]
-        Auth[JWT 인증 & 회원 관리]
-        P2C[P2C 로드밸런싱]
-        CanvasCtrl[캔버스 생명주기 관리]
-    end
-    
-    subgraph CPP_Server ["C++ Real-Time Server"]
-        Memory[CanvasPool 메모리 관리]
-        WS[초고속 WebSocket 브로드캐스트]
-    end
-    
-    subgraph DB_Storage ["Databases & Storage"]
-        MSSQL[(MS SQL Server)]
-        Redis[(Redis Stack)]
-        ES[(Elasticsearch)]
-    end
-
-    Client -->|HTTP REST API| Auth
-    Client -->|HTTP REST API| CanvasCtrl
-    Client <-->|WebSocket| WS
-    
-    Auth --> MSSQL
-    P2C --> MSSQL
-    CanvasCtrl --> P2C
-    CanvasCtrl --> Redis
-    CanvasCtrl --> ES
-    CanvasCtrl -->|Internal HTTP| Memory
-    
-    WS --> Memory
+flowchart LR
+    Browser[Browser] -->|HTTPS| Nginx
+    Browser -->|WSS /wss/port/{wsPort}/canvas/{canvasId}| Nginx
+    Nginx -->|:8080| Spring[Spring Boot]
+    Nginx -->|:8002-8099| Cpp[C++ realtime]
+    Spring --> MSSQL[(MS SQL Server)]
+    Spring --> ES[(Elasticsearch)]
+    Cpp --> MSSQL
+    Cpp --> Redis[(Redis Stack / RedisJSON)]
+    Cpp --> ES
 ```
 
-### 서버 간 네트워크 구성도
+| 구성 요소 | 역할 | 기본 바인딩 |
+| --- | --- | --- |
+| `spring/` | REST API, JWT, 사용자·캔버스 관리, 서버 할당 | `127.0.0.1:8080` |
+| `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | `127.0.0.1:8000`, `127.0.0.1:8002` |
+| `nginx/` | HTTPS/WSS 역방향 프록시 | `:443` |
+| MS SQL Server | 계정, 세션, 캔버스 배정, 서버 메타데이터 | `127.0.0.1:1433` |
+| Redis Stack | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | `127.0.0.1:6379` |
+| Elasticsearch | 캔버스 문서 영구 저장소 | `127.0.0.1:9200` |
 
-```
-                       [ Web Browser / Client ]
-                                  │
-          ┌───────────────────────┴───────────────────────┐
-          │ (HTTP REST / JSP)                             │ (WebSocket :8001)
-          ▼                                               ▼
-┌─────────────────────────┐                     ┌─────────────────────────┐
-│   Spring Boot Server    │   Internal HTTP     │    C++ Real-Time Server │
-│   (Java 26 / Port 8080) │────────────────────>│    (uWebSockets / :8000)│
-│                         │<────────────────────│                         │
-│  - JWT 인증 및 회원 관리    │  Lifecycle Cleanup  │  - CanvasPool 메모리 관리  │
-│  - P2C 로드밸런싱          │   (User Count: 0)   │  - 초고속 WS 브로드캐스트    │
-│  - 캔버스 라이프사이클       │                     │  - 실시간 세션/채널 추적     │
-└──────────┬──────────────┘                     └────────────┬────────────┘
-           │                                                 │
-     ┌─────┴────────────────────────┐                        │
-     ▼                              ▼                        ▼
-┌──────────────────┐      ┌──────────────────┐      ┌──────────────────┐
-│  MS SQL Server   │      │  Elasticsearch   │      │   Redis Stack    │
-│  (Users/Cache/   │      │  (캔버스 문서 영구   │      │  (인메모리 캐시,    │
-│   Servers/Redis) │      │   보관 및 검색)     │      │   JSON & Search) │
-└──────────────────┘      └──────────────────┘      └──────────────────┘
-```
+## 캔버스 접속 흐름
 
-- **Spring Boot API Server (`spring/`)**: REST API 제공, 회원 관리, JWT 토큰 발급, 캔버스 메타데이터 제어, 서버 및 Redis 인스턴스 풀 관리(P2C 알고리즘), 데이터 스토리지 간 동기화 오케스트레이션.
-- **C++ WebSocket Server (`cpp/`)**: uWebSockets 및 uSockets 기반 이벤트 기반 비동기 I/O. 캔버스별 메모리 풀(`CanvasPool`)과 소켓 채널(`SocketChannel`)을 유지하며 참여자 간 메시지를 제로카피급 속도로 실시간 브로드캐스트.
-- **MS SQL Server**: `users`, `server_info`, `redis_info`, `canvas_cache` 테이블을 관리하여 영구 메타데이터와 현재 캐시 배정 상태 추적.
-- **Redis Stack**: RedisJSON을 이용해 실시간 캔버스 데이터를 빠른 인메모리 포맷으로 유지.
-- **Elasticsearch**: 캔버스의 전체 이력 및 검색 가능한 문서를 영구 보관.
+1. 사용자는 `POST /api/auth/login`으로 일반 JWT를 받습니다.
+2. `POST /api/canvases/{canvasId}/access`가 heartbeat와 REST health check를 통과한 C++ 서버를 선택하고, 캔버스 전용 JWT를 발급합니다.
+3. 클라이언트는 응답의 `ws_port`를 사용해 `wss://<host>/wss/port/{wsPort}/canvas/{canvasId}?token=...`에 연결합니다.
+4. C++ 서버는 JWT, 사용자 상태, 참여자 목록을 검증한 뒤 RedisJSON에서 캔버스를 로드합니다. 이전 문자열 Redis 값은 첫 로드 시 RedisJSON으로 마이그레이션됩니다.
+5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
 
----
+C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 15초 이내 heartbeat와 `/health` 응답을 모두 만족한 서버만 재사용합니다.
 
-## 2. 기술 스택
+## 사전 요구 사항
 
-### Backend & Real-Time Engine
-- **Java**: OpenJDK 26
-- **Framework**: Spring Boot 4.1.1, Spring Data JPA, Spring Security, Apache Tomcat Embed (JSP Engine)
-- **C++**: C++17, uWebSockets, uSockets, cpp-httplib, FreeTDS (`sybdb`), zlib, nlohmann/json
-- **Database & Storage**: MS SQL Server 2022, Redis Stack (RedisJSON / RediSearch), Elasticsearch 8.15.0
-- **Security & Tokens**: JJWT (0.12.6), BCrypt Password Encoder
-- **Build Tools**: Gradle 8.x (Java), CMake 3.16+ (C++)
+- JDK 26
+- CMake 3.16 이상, C++17 컴파일러, `pkg-config`
+- `cpp-httplib`, OpenSSL, FreeTDS (`sybdb`), zlib 개발 패키지
+- Docker 및 Docker Compose v2
+- Project Agora DB의 MS SQL Server, Redis Stack, Elasticsearch
+- TLS 인증서와 Nginx (외부 WSS 제공 시)
 
----
-
-## 3. 핵심 기능 및 라이프사이클
-
-### (1) 캔버스 초기 생성 및 상태
-- 최초 캔버스 생성 시 MS SQL의 `canvas_cache`에 등록되며 기본값은 다음과 같습니다:
-  - `is_cached = false`
-  - `redis_ip = null`, `redis_port = null`
-  - `server_ip = null`, `server_port = null`
-
-### (2) 클라이언트 접속 진입 (`POST /api/access`)
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant API as Spring Boot API
-    participant DB as MS SQL (canvas_cache)
-    participant Redis as Redis Stack
-    participant ES as Elasticsearch
-    participant CPP as C++ WebSocket Server
-
-    Client->>API: POST /api/access (canvasId=1001)
-    API->>DB: 할당 서버 캐시 상태 조회
-    alt 캐시되지 않은 경우 (is_cached=false)
-        API->>API: P2C(Power of Two Choices) 알고리즘으로 최적 서버 할당
-        API->>ES: Elasticsearch에서 최신 캔버스 데이터 조회
-        API->>Redis: Redis에 인메모리 캐싱 (JSON)
-        API->>CPP: POST /init_canvas (C++ 메모리에 로드 요청)
-        CPP-->>API: 로드 완료 응답
-        API->>DB: canvas_cache 상태 업데이트 (서버 IP/포트 등록)
-    end
-    API-->>Client: 접속 서버 정보 반환 (serverIp, wsPort)
-    Client->>CPP: WebSocket 실시간 연결 (ws://serverIp:wsPort/ws)
-    CPP-->>Client: 실시간 브로드캐스트 채널 참여 완료
-```
-
-1. 클라이언트가 캔버스 ID로 접속 요청.
-2. Spring Boot가 **P2C (Power of Two Choices)** 알고리즘을 통해 부하가 가장 적은 C++ 서버와 Redis 인스턴스를 선정.
-3. Redis에 캔버스 데이터가 없으면 Elasticsearch에서 문서를 조회하여 Redis에 캐싱.
-4. C++ 서버의 `/init_canvas` 엔드포인트를 호출하여 C++ 메모리 풀(`CanvasPool`)에 캔버스를 로드.
-5. MS SQL `canvas_cache`의 캐시 상태 갱신: `is_cached = true`, `server_ip`, `server_port`, `redis_ip`, `redis_port`.
-6. 클라이언트에게 할당된 WebSocket 접속 정보(`server_ip`, `ws_port`) 및 포트 정보 반환.
-
-### (4) 30분 단위 활성 사용자 자동 검사 및 해제 (Teardown & Cleanup Lifecycle)
-1. **정기적인 백그라운드 검사**: C++ WebSocket 서버의 백그라운드 스레드가 30분 주기로 동작하며 메모리에 로드된 각 캔버스의 활성 여부를 검사합니다.
-2. **DB 세션 상태 확인 (`user_sessions`)**: MS SQL의 `user_sessions` 테이블을 직접 쿼리하여 해당 `canvas_id`를 참조 중이고 `is_accessed=1`인 활성 접속자가 있는지 조회합니다.
-3. **C++ 메모리 해제**: 접속 중인 유저가 0명으로 확인되면, C++ `CanvasPool`에서 캔버스를 즉각 언로드하여 서버 리소스를 회수합니다.
-4. **Redis -> Elasticsearch 최종 동기화**: Redis에 남아있는 최신 캔버스 JSON 데이터를 Elasticsearch에 저장하여 데이터 유실 방지.
-5. **MS SQL 상태 복원**: MS SQL `canvas_cache` 테이블의 레코드를 업데이트:
-   - `is_cached = false`
-   - `server_ip = 'none'`, `server_port = 'none'`
-   - `redis_ip = 'none'`, `redis_port = 'none'`
-
----
-
-## 4. 데이터베이스 및 인프라 설정 가이드
-
-### 설정 파일 위치
-- Spring: [spring/src/main/resources/application.properties](file:///home/ubuntu/github/project-agora-BE/spring/src/main/resources/application.properties)
-- C++ Server: 실행 시 커맨드라인 인자로 포트 및 IP 지정 (`./agora_cpp_server 127.0.0.1 203.0.113.50 8000 8002`)
-- Nginx: 리버스 프록시 및 SSL 설정 (`nginx/agora.conf`)
-
-### MS SQL 접속 환경 변수 매핑
-요구사항에 따라 **데이터베이스 IP와 포트를 손쉽게 분리 변경**할 수 있도록 설계되었습니다:
-
-| 항목 | 설정 프로퍼티 (`application.properties`) | 환경 변수 | 기본값 |
-| :--- | :--- | :--- | :--- |
-| **DB IP (호스트)** | `app.db.host` | `DB_HOST` | `127.0.0.1` |
-| **DB 포트** | `app.db.port` | `DB_PORT` | `1433` |
-| **DB 이름** | `app.db.name` | `DB_NAME` | `agora_db` |
-| **DB 사용자** | `app.db.username` | `DB_USER` | `agora_user` |
-| **DB 비밀번호** | `app.db.password` | `DB_PASSWORD` | `YourStrongPassword!1234` |
-
-### Elasticsearch 접속 설정
-
-| 항목 | 설정 프로퍼티 | 환경 변수 | 기본값 |
-| :--- | :--- | :--- | :--- |
-| **ES 호스트** | `app.elasticsearch.host` | `ES_HOST` | `127.0.0.1` |
-| **ES 포트** | `app.elasticsearch.port` | `ES_PORT` | `9200` |
-
-### UTF-8 문자 인코딩 및 다국어(한글) 처리 구성
-시스템 전반(설정 파일, DB 커넥션, 엔티티, HTTP 서블릿)에서 한글 깨짐(Mojibake) 현상을 원천 방지하도록 UTF-8 표준 인코딩이 통합 적용되어 있습니다:
-
-1. **`.properties` 파일 UTF-8 로더 (`Utf8PropertiesPropertySourceLoader`)**:
-   - Java 표준 및 Spring Boot 기본 프로퍼티 로더는 `.properties` 파일을 `ISO-8859-1`로 해석하여 한글이 깨지는 문제가 있습니다.
-   - Spring SPI를 통해 [Utf8PropertiesPropertySourceLoader](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/global/config/Utf8PropertiesPropertySourceLoader.java)를 최우선 순위(`Ordered.HIGHEST_PRECEDENCE`)로 등록하여 `application.properties`의 설정값(예: `app.admin.nickname=아고라관리자`)을 유니코드 이스케이프(`\uXXXX`) 없이도 순수 UTF-8로 안전하게 로드합니다.
-2. **MS SQL JDBC 유니코드 전송 및 JPA `@Nationalized`**:
-   - [DataSourceConfig.java](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/global/config/DataSourceConfig.java)의 JDBC URL에 `;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8` 파라미터를 강제 적용하여 문자열이 `NVARCHAR` 규격으로 전송됩니다.
-   - JPA 엔티티 [User.java](file:///home/ubuntu/github/project-agora-BE/spring/src/main/java/com/endpoint/frelog/domain/user/entity/User.java)의 `nickname`, `email` 등 다국어 필드에 `@org.hibernate.annotations.Nationalized`가 명시되어 있어 MS SQL 유니코드 컬럼과 완벽하게 호환됩니다.
-3. **HTTP 요청/응답 서블릿 UTF-8 강제**:
-   - `server.servlet.encoding.charset=UTF-8`, `server.servlet.encoding.force=true` 설정을 통해 모든 HTTP API 응답 및 예외 처리(Error Response) 메시지의 캐릭터셋을 UTF-8로 보장합니다.
-
----
-
-## 5. 주요 API 명세
-
-### (1) 회원 및 인증 API (Spring Boot)
-- **회원가입**: `POST /api/auth/signup`
-  - **Input (Body)**: `{"email": "...", "password": "...", "nickname": "..."}`
-  - **Output (201 Created)**: `UserResponse` 객체 (하단 참고)
-- **로그인**: `POST /api/auth/login`
-  - **Input (Body)**: `{"email": "...", "password": "..."}`
-  - **Output (200 OK)**: `{"tokenType": "Bearer", "accessToken": "<JWT>", "user": {UserResponse}}`
-- **내 정보 조회**: `POST /api/auth/me`
-  - **Input (Body)**: `{"token": "<JWT>"}`
-  - **Output (200 OK)**: `UserResponse` 객체
-- **회원 단건 조회**: `GET /api/users/{nickname}/{tagNumber}`
-  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
-  - **Output (200 OK)**: `UserResponse` 객체
-- **회원 정보 수정**: `PUT/PATCH /api/users/{nickname}/{tagNumber}`
-  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
-  - **Output (200 OK)**: `UserResponse` 객체
-- **회원 탈퇴(삭제)**: `DELETE /api/users/{nickname}/{tagNumber}`
-  - **Input (Path)**: `nickname`, `tagNumber` (헤더에 어드민 또는 본인 JWT 필요)
-  - **Output (204 No Content)**: 없음 (상태만 WITHDRAWN 변경 후 닉네임 난독화, 웹소켓 강제 종료)
-
-> **※ `UserResponse` 구조 예시:**
-> `{"email": "test@agora.com", "nickname": "홍길동", "tag_number": 1, "role": "ROLE_USER", "status": "ACTIVE", "created_at": "...", "updated_at": "..."}`
-
-### (2) 캔버스 관리 및 접속 API (Spring Boot)
-- **캔버스 생성**: `POST /api/canvases`
-  - **Input (Body)**: `{"canvas_name": "...", "canvas_password": "...", "init_group": "..."}`
-  - **Output (201 Created)**: `CanvasResponse` 객체 (`{"canvasId": 1, "canvasName": "...", "createdAt": "...", ...}`)
-- **전체 목록 조회**: `GET /api/canvases`
-  - **Output (200 OK)**: `[CanvasSummaryResponse]` 배열 (`[{"canvas_id": 1, "canvas_name": "...", "user_count": 0, "description": "...", "image": "..."}]`)
-- **단건 조회**: `GET /api/canvases/{canvasId}`
-  - **Input (Path)**: `canvasId`
-  - **Output (200 OK)**: `CanvasSummaryResponse` 객체
-- **캔버스 삭제**: `DELETE /api/canvases/{canvasId}`
-  - **Input (Path)**: `canvasId`
-  - **Output (204 No Content)**: 없음 (DB, ES, Redis에서 영구 삭제. 단, 현재 활성화(캐시) 상태인 캔버스는 삭제 거부)
-- **접속 진입 (로드밸런싱)**: `POST /api/canvases/{canvasId}/access`
-  - **Input (Path)**: `canvasId` (헤더 JWT 인증)
-  - **Output (200 OK)**: `{"server_id": 1, "ws_port": "8080"}`
-  - *참고: P2C 알고리즘 기반으로 최적의 C++ 서버와 Redis를 할당받고, 내부적으로 C++ 서버에 토큰을 등록(`POST /api/auth/token`)합니다.*
-
-### (3) 인프라 관리 및 로드밸런서 API (Spring Boot / ADMIN 전용)
-- **할당 테스트**: `POST /api/load-balancer/allocate/server`
-  - **Input**: 없음 (어드민 인증 필요)
-  - **Output (200 OK)**: `{"serverId": 1, "address": "10.0.0.1", "port": 8000}` (P2C 로직 수동 검증)
-
-### (4) C++ 실시간 통신 제어 API (Internal REST :8000)
-> 주로 Spring Boot 서버가 내부적으로(Internal) 호출하여 C++ 서버의 메모리를 제어하는 용도입니다.
-- **토큰 등록**: `POST /api/auth/token`
-  - **Input (Body)**: `{"user_id": 1, "token": "<JWT>"}`
-  - **Output (200 OK)**: 없음 (웹소켓 연결 전 사전 인증 등록)
-- **사용자 강제 퇴장**: `POST /api/users/{userId}/disconnect`
-  - **Input (Path)**: `userId`
-  - **Output (204 No Content)**: 없음
-- **특정 캔버스 사용자 퇴장**: `POST /api/canvas/{canvasId}/users/{userId}/disconnect`
-  - **Input (Path)**: `canvasId`, `userId`
-  - **Output (204 No Content)**: 없음
-- **메모리 강제 해제**: `DELETE /api/canvas/{canvasId}`
-  - **Input (Path)**: `canvasId`
-  - **Output (204 No Content)**: 없음
-- **모니터링 및 부하 확인**: `GET /api/canvas/count`, `GET /api/canvas/active`, `GET /health`
-  - **Output**: 각각 활성 유저 수(`200 OK, {"count": 10}`), 활성 캔버스 목록(`200 OK, {"active_canvases": [...]}`), 서버 헬스체크(`204 No Content`) 반환
-
-### (5) 실시간 웹소켓 엔드포인트 (Nginx WSS)
-- **접속 주소**: `wss://<Domain_or_IP>/ws/canvas/{canvasId}?token=<JWT>&user_id=<ID>`
-  - **Input (Query Params)**: `token`, `user_id`
-  - **Output**: 성공 시 웹소켓 연결 수립
-- **특징**: 보안을 위해 Nginx 리버스 프록시와 SSL(`wss://`)을 거쳐 내부 C++ 웹소켓 포트(`127.0.0.1:8002`)로 포워딩됩니다. 연결 과정과 쿼리 스트링의 토큰은 네트워크 상에 노출되지 않으며 안전하게 C++ 서버에서 검증됩니다.
-
----
-
-## 6. 실시간 인터랙티브 테스트베드 (JSP)
-
-브라우저에서 Agora 백엔드의 전체 파이프라인과 웹소켓 브로드캐스트를 직관적으로 테스트할 수 있는 내장 테스트베드를 제공합니다.
-
-- **접속 URL**:
-  - `https://<Domain_or_IP>/test`
-  - Nginx가 포트 443(HTTPS)으로 받은 후 `127.0.0.1:8080`으로 라우팅합니다.
-- **테스트베드 기능**:
-  1. **인증 관리**: 원클릭 테스트 계정 로그인 및 JWT 발급 상태 표시.
-  2. **서버 & Redis 인스턴스 관리**: C++ 서버 및 Redis 정보 등록/조회.
-  3. **캔버스 라이프사이클 테스트**:
-     - 캔버스 생성 -> Access 진입(P2C 서버 할당) -> 활성 사용자 0명 시 자동 세션 해제 및 상태 초기화(`handleInternalDisconnect`) 검증.
-  4. **듀얼 웹소켓 브로드캐스트 검증 (Dual WebSocket Clients)**:
-     - **클라이언트 A**와 **클라이언트 B**를 독립적으로 연결.
-     - 클라이언트 A에서 전송한 메시지가 C++ 웹소켓 서버를 거쳐 클라이언트 B로 정상 브로드캐스트되는지 양방향 패킷 로그로 실시간 확인.
-     - Ping / Pong 응답 지연 시간(ms) 실시간 측정.
-
----
-
-## 7. 빌드, 테스트 및 실행 가이드
-
-### (1) Java Spring Boot Server
+Ubuntu 예시:
 
 ```bash
-cd spring
-
-# 1. 전체 단위 및 통합 테스트 실행 (CanvasServiceTest 등 30+ 테스트)
-./gradlew test
-
-# 2. 실행 가능한 Jar 파일 빌드
-./gradlew bootJar
-
-# 3. 개발 서버 실행 (포트 8080)
-# DB_PASSWORD, JWT_SECRET, ES_USER_PASSWORD, ADMIN_PASSWORD,
-# REDIS_USER_PASSWORD는 필수입니다.
-DB_HOST=127.0.0.1 DB_PORT=1433 \
-DB_USER=agora_user DB_PASSWORD='<db-password>' DB_NAME=agora_db \
-JWT_SECRET='<at-least-32-characters>' ADMIN_PASSWORD='<admin-password>' \
-ES_USER_NAME=agora_user ES_USER_PASSWORD='<es-password>' \
-REDIS_USER=agora_user REDIS_USER_PASSWORD='<redis-password>' \
-./gradlew bootRun
+sudo apt-get update
+sudo apt-get install -y build-essential cmake pkg-config libcpp-httplib-dev \
+  libssl-dev freetds-dev zlib1g-dev
 ```
 
-### (2) C++ Real-Time Server
+## 환경 변수
+
+운영 비밀값은 Git에 넣지 않습니다. 프로젝트 루트의 `.env`를 만들고 권한을 제한합니다.
 
 ```bash
-cd cpp
+cd /path/to/project-agora-BE
+umask 077
+cat > .env <<'EOF'
+DB_HOST=127.0.0.1
+DB_PORT=1433
+DB_NAME=agora_db
+DB_USER=agora_user
+DB_PASSWORD=<mssql-application-password>
 
-# 1. 빌드 디렉터리 생성 및 CMake 구성
-cmake -B build -S .
+JWT_SECRET=<32자-이상의-무작위-공유-키>
+ADMIN_PASSWORD=<초기-관리자-비밀번호>
 
-# 2. 빌드 실행 (uSockets 및 agora_cpp_server 컴파일)
-cmake --build build
+ES_HOST=127.0.0.1
+ES_PORT=9200
+ES_INDEX=canvas
+ES_USER_NAME=agora_user
+ES_USER_PASSWORD=<elasticsearch-application-password>
 
-# 3. 서버 실행 (포트 8000 REST, 포트 8002 WebSocket 수신)
-# 사용법: ./build/agora_cpp_server [BIND_IP] [ADVERTISE_IP] [REST_PORT] [WS_PORT]
-# (보안을 위해 외부 직접 노출을 막고 Nginx를 통한 접속만 허용하도록 BIND_IP는 127.0.0.1 사용을 권장합니다)
-DB_USER=agora_user DB_PASSWORD='<db-password>' DB_NAME=agora_db \
-JWT_SECRET='<same-secret-as-spring>' \
-ES_USER_NAME=agora_user ES_USER_PASSWORD='<es-password>' ES_INDEX=canvas \
-REDIS_USER=agora_user REDIS_USER_PASSWORD='<redis-password>' \
-./build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
+REDIS_USER=agora_user
+REDIS_USER_PASSWORD=<redis-application-password>
+EOF
+chmod 600 .env
 ```
 
-### (3) Nginx 리버스 프록시 (SSL 적용 및 외부망 보호)
+`JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다.
 
-웹 서버인 Nginx는 클라이언트의 모든 HTTPS 요청을 가로채어 적절한 내부 백엔드 서버(Spring Boot 또는 C++ Server)로 포워딩합니다.
+## 로컬 실행
+
+먼저 DB 저장소에서 인프라를 준비합니다.
 
 ```bash
-# Nginx 설정 파일 문법 검증 및 서비스 재기동
-sudo nginx -t
-sudo systemctl reload nginx
+cd /path/to/project-agora-DB
+docker compose up -d
+./mssql/init-mssql.sh
+./redis/init-redis.sh
+./elasticsearch/init-elasticsearch.sh
 ```
-**주요 역할:**
-- **포트 바인딩 보호**: Spring Boot(`127.0.0.1:8080`)와 C++ 서버(`127.0.0.1:8000`, `127.0.0.1:8002`)는 로컬에서만 띄워 외부 공격을 차단합니다.
-- **REST & 정적 라우팅**: `/api/` 및 `/` 경로에 대한 접근을 모두 Spring Boot 8080 포트로 중계합니다.
-- **웹소켓(WSS) 라우팅**: Spring이 반환한 WS 포트를 사용한 `/wss/port/{wsPort}/canvas/{canvasId}` 요청을 해당 C++ 서버로 Upgrade 합니다.
 
----
+Spring과 C++ 서버를 빌드합니다.
 
-## 8. 오픈소스 라이선스 및 규정 준수 고지
+```bash
+cd /path/to/project-agora-BE
+set -a
+source ./.env
+set +a
 
-`Project Agora Backend`는 **MIT License**로 배포됩니다.  
-본 프로젝트는 다양한 오픈소스 소프트웨어(OSS) 라이브러리를 포함하고 있으며, 각 라이브러리의 라이선스 규정을 엄격히 준수합니다.
+./spring/gradlew -p spring bootJar
+cmake -S cpp -B cpp/build
+cmake --build cpp/build -j2
+```
 
-상세한 라이선스 전문 및 고지 사항은 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) 및 [LICENSE](LICENSE) 파일에서 확인할 수 있습니다.
+Spring 서버를 실행합니다.
 
-### 주요 외부 라이브러리 및 라이선스 요약
+```bash
+java -jar spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
+```
 
-| 라이브러리 / 컴포넌트 | 적용 영역 | 라이선스 | 저작권자 |
-| :--- | :--- | :--- | :--- |
-| **uWebSockets** | C++ 실시간 웹소켓 서버 | Apache-2.0 | Alex Hultman |
-| **uSockets** | C++ 비동기 네트워킹 코어 | Apache-2.0 | Alex Hultman |
-| **cpp-httplib** | C++ HTTP 통신 | MIT | Yuji Hirose |
-| **nlohmann/json** | C++ JSON 직렬화 | MIT | Niels Lohmann |
-| **FreeTDS (`sybdb`)** | C++ MSSQL DB 클라이언트 (동적 링크) | LGPL-2.1+ | Brian Bruns & FreeTDS Contributors |
-| **zlib** | C++ 패킷 압축 | zlib | Jean-loup Gailly, Mark Adler |
-| **Spring Boot & Framework** | Java 애플리케이션 프레임워크 | Apache-2.0 | VMware, Inc. / Broadcom |
-| **Microsoft JDBC Driver for SQL Server** | Java MSSQL 커넥터 | MIT | Microsoft Corporation |
-| **JJWT (`jjwt`)** | Java JWT 토큰 처리 | Apache-2.0 | Les Hazlewood & Contributors |
-| **Jackson Databind** | Java JSON 프로세서 | Apache-2.0 | FasterXML, LLC |
-| **Apache Tomcat Embed** | Java 서블릿/JSP 컨테이너 | Apache-2.0 | Apache Software Foundation |
-| **Jakarta Servlet / JSTL API** | Java 웹 표준 인터페이스 | EPL-2.0 | Eclipse Foundation |
-| **Pretendard / Inter / Fira Code** | 테스트베드 웹 폰트 | SIL OFL 1.1 | Kil Hyung-jin, Rasmus Andersson, Nikita Prokopov |
+다른 터미널에서 C++ 서버를 실행합니다.
 
-> [!NOTE]
-> **LGPL v2.1 고지 (FreeTDS `sybdb`)**: 본 소프트웨어는 FreeTDS 라이브러리를 동적 링크(`libsybdb.so`) 방식으로 사용하며, FreeTDS의 소스 코드는 공식 웹사이트([https://www.freetds.org/](https://www.freetds.org/))에서 언제든지 확인 및 취득할 수 있습니다.
+```bash
+cd /path/to/project-agora-BE
+set -a
+source ./.env
+set +a
+
+./cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
+```
+
+명령 인자는 `BIND_IP ADVERTISE_IP REST_PORT WS_PORT` 순서입니다. 위 구성은 C++ 포트를 로컬에만 열고 Nginx가 외부 HTTPS/WSS 트래픽을 전달합니다. 다중 C++ 인스턴스는 포트를 겹치지 않게 지정합니다. Nginx 예시 설정은 `8002`부터 `8099`의 WS 포트만 전달합니다.
+
+## systemd 운영 예시
+
+```ini
+# /etc/systemd/system/agora-spring.service
+[Unit]
+Description=Project Agora Spring API
+After=network-online.target docker.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/path/to/project-agora-BE
+EnvironmentFile=/path/to/project-agora-BE/.env
+ExecStart=/usr/bin/java -jar /path/to/project-agora-BE/spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/agora-cpp.service
+[Unit]
+Description=Project Agora C++ Realtime Server
+After=network-online.target docker.service agora-spring.service
+Requires=agora-spring.service
+
+[Service]
+User=ubuntu
+WorkingDirectory=/path/to/project-agora-BE/cpp
+EnvironmentFile=/path/to/project-agora-BE/.env
+ExecStart=/path/to/project-agora-BE/cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now agora-spring agora-cpp
+```
+
+## Nginx와 WSS
+
+[nginx/agora.conf.example](nginx/agora.conf.example)는 C++ 포트별 WSS 라우팅 예시입니다. 전체 Nginx 서버 블록에는 Spring 프록시도 추가합니다.
+
+```nginx
+location /api/ { proxy_pass http://127.0.0.1:8080; }
+location / { proxy_pass http://127.0.0.1:8080; }
+```
+
+WSS 주소는 다음 형식을 사용합니다.
+
+```text
+wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
+```
+
+이전 `/wss/server/...` 형식은 사용하지 않습니다. WSS 포트 범위를 제한해 역방향 프록시가 임의 내부 포트 프록시가 되지 않도록 합니다.
+
+## 주요 API
+
+보호 API에는 `Authorization: Bearer <accessToken>` 헤더가 필요합니다.
+
+| 목적 | 메서드·경로 | 인증 |
+| --- | --- | --- |
+| 회원가입 | `POST /api/auth/signup` | 없음 |
+| 로그인 | `POST /api/auth/login` | 없음 |
+| 인증 상태 확인 | `GET /api/auth/health` | 없음 |
+| 캔버스 생성 | `POST /api/canvases` | 필요 |
+| 캔버스 목록·검색 | `GET /api/canvases`, `GET /api/canvases/search?name=` | 필요 |
+| 캔버스 조회·삭제 | `GET`, `DELETE /api/canvases/{canvasId}` | 필요 |
+| 캔버스 접속 정보 발급 | `POST /api/canvases/{canvasId}/access` | 필요 |
+| 서버·Redis 할당 점검 | `/api/load-balancer/**` | 관리자 |
+| C++ health | `GET http://127.0.0.1:8000/health` | 내부 |
+| C++ 활성 캔버스 | `GET http://127.0.0.1:8000/api/canvas/active` | 내부 |
+
+접속 응답 예시:
+
+```json
+{
+  "server_id": 5,
+  "ws_port": "8002",
+  "canvas_access_token": "<websocket-token>"
+}
+```
+
+`/api/test/cpp-active-canvases`와 관련 테스트 프록시는 등록되어 있고 heartbeat가 최신인 C++ 서버만 조회합니다.
+
+## 테스트와 점검
+
+```bash
+# Spring 단위·통합 테스트
+./spring/gradlew -p spring test
+
+# C++ 빌드
+cmake -S cpp -B cpp/build
+cmake --build cpp/build -j2
+
+# 서버 상태
+curl http://127.0.0.1:8080/api/auth/health
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/canvas/active
+```
+
+DB·RedisJSON·Elasticsearch CRUD 및 권한 테스트는 DB 저장소에서 실행합니다.
+
+```bash
+cd /path/to/project-agora-DB
+python3 tests/test_storages.py
+```
+
+## 저장소 구조
+
+```text
+spring/       Spring Boot API와 정적 테스트 페이지
+cpp/          C++ REST·WebSocket 서버
+nginx/        TLS/WSS 프록시 예시
+```
+
+## 라이선스
+
+이 프로젝트는 [MIT License](LICENSE)를 따릅니다. 외부 라이브러리 고지는 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)에서 확인할 수 있습니다.
