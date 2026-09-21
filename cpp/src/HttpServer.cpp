@@ -25,6 +25,14 @@ HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int por
                        const std::string& db_host, int db_port)
     : canvas_pool_(canvas_pool), host_(host), port_(port), advertised_host_(advertised_host),
       jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
+    // cpp-httplib enables SO_REUSEPORT by default on Linux. That lets a second
+    // server bind the same port and makes the kernel distribute requests to a
+    // stale/stopped process. Keep fast restarts via SO_REUSEADDR while ensuring
+    // that only one Agora REST server can own the port.
+    server_.set_socket_options([](socket_t socket) {
+        int enabled = 1;
+        ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
+    });
     setupRoutes();
 }
 

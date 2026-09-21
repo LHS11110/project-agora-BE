@@ -386,7 +386,10 @@ void WebSocketServer::runServer() {
     app.ws<PerSocketData>("/ws/canvas/:canvas_id", createWsHandler());
     app.ws<PerSocketData>("/ws/canvas", createWsHandler());
 
-    app.listen(host_, ws_port_, [this](auto* token) {
+    // uSockets otherwise enables SO_REUSEPORT, allowing a second process to
+    // share this port. A stopped process would then receive part of the
+    // WebSocket handshakes and leave clients waiting indefinitely.
+    app.listen(host_, ws_port_, LIBUS_LISTEN_EXCLUSIVE_PORT, [this](auto* token) {
         if (token) {
             std::cout << "[uWebSockets] Realtime WebSocket server listening on "
                       << host_ << ":" << ws_port_ << std::endl;
