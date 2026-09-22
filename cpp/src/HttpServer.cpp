@@ -9,15 +9,17 @@
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 #include <jwt-cpp/jwt.h>
-#include <cctype>
 
-static bool hasSpecialCharacters(const std::string& str) {
-    for (char c : str) {
-        if (std::ispunct(static_cast<unsigned char>(c)) || std::isspace(static_cast<unsigned char>(c))) {
-            return true;
-        }
+namespace {
+std::string normalizeClientIp(std::string ip) {
+    // uWebSockets can present an IPv4 peer as an IPv4-mapped IPv6 address
+    // when nginx connects over the local loopback interface.
+    constexpr const char* ipv4MappedPrefix = "::ffff:";
+    if (ip.rfind(ipv4MappedPrefix, 0) == 0) {
+        return ip.substr(std::char_traits<char>::length(ipv4MappedPrefix));
     }
-    return false;
+    return ip;
+}
 }
 
 HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
@@ -69,9 +71,16 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
             .allow_algorithm(jwt::algorithm::hs512(jwt_secret_));
         verifier.verify(decoded);
 
+        if (decoded.get_subject() != "canvas-access" ||
+            !decoded.has_payload_claim("canvasId") ||
+            decoded.get_payload_claim("canvasId").as_integer() != canvas_id) {
+            std::cerr << "[HttpServer] JWT is not authorized for canvas #" << canvas_id << "\n";
+            return -1;
+        }
+
         if (decoded.has_payload_claim("clientIp")) {
             std::string token_ip = decoded.get_payload_claim("clientIp").as_string();
-            if (token_ip != client_ip) {
+            if (normalizeClientIp(token_ip) != normalizeClientIp(client_ip)) {
                 std::cerr << "[HttpServer] IP mismatch: token IP (" << token_ip << ") != client IP (" << client_ip << ")\n";
                 return -1;
             }
@@ -124,11 +133,6 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
 
         if (nickname.empty() || tag_number < 0) {
             std::cerr << "[HttpServer] JWT missing valid nickname or tagNumber claim\n";
-            return -1;
-        }
-
-        if (hasSpecialCharacters(nickname)) {
-            std::cerr << "[HttpServer] Rejected connection: Nickname contains special characters\n";
             return -1;
         }
 

@@ -41,9 +41,32 @@ const el = {
 };
 
 // --- Core Initialization ---
-window.onload = () => {
+window.onload = async () => {
     if (state.token && state.user) {
-        showDashboard();
+        // A JWT can become invalid after it expires or the signing key is
+        // rotated. Verify it before rendering the dashboard so the first
+        // canvas request does not produce a misleading 401 error.
+        try {
+            const response = await fetch('/api/auth/me', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: state.token })
+            });
+            if (response.ok) {
+                state.user = await response.json();
+                localStorage.setItem('agora_user', JSON.stringify(state.user));
+                showDashboard();
+                return;
+            }
+        } catch (error) {
+            console.warn('Stored session validation failed:', error);
+        }
+
+        state.token = '';
+        state.user = null;
+        localStorage.removeItem('agora_token');
+        localStorage.removeItem('agora_user');
+        showAuth();
     } else {
         showAuth();
     }
