@@ -106,6 +106,8 @@ docker compose up -d
 ./elasticsearch/init-elasticsearch.sh
 ```
 
+로컬 MSSQL 컨테이너는 자체 서명 인증서를 사용하므로, 로컬 개발 `.env`에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 설정합니다. 운영 DB에서는 CA 검증이 되는 인증서를 구성하고 이 값을 설정하지 마세요.
+
 Spring과 C++ 서버를 빌드합니다.
 
 ```bash
@@ -122,8 +124,14 @@ cmake --build cpp/build -j2
 Spring 서버를 실행합니다.
 
 ```bash
+cd /path/to/project-agora-BE
+set -a
+source ./.env
+set +a
 java -jar spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
 ```
+
+Spring Boot는 프로젝트 루트의 `.env`를 자동으로 읽지 않습니다. Spring을 별도 터미널에서 실행할 때마다 해당 터미널에서 환경 변수를 불러와야 합니다. `JWT_SECRET`은 필수이며, 설정되지 않으면 애플리케이션은 시작하지 않습니다.
 
 다른 터미널에서 C++ 서버를 실행합니다.
 
