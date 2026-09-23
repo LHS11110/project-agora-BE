@@ -54,6 +54,8 @@ public:
 
     std::string getDbHost() const { return db_host_; }
     int getDbPort() const { return db_port_; }
+    std::string getCppServerIp() const { return cpp_server_ip_; }
+    int getCppServerPort() const { return cpp_server_port_; }
 
 private:
     void unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);

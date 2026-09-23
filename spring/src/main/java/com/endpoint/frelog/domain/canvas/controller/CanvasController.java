@@ -100,6 +100,53 @@ public class CanvasController {
         return ResponseEntity.ok(canvasService.getCanvasSummary(canvasId, currentUser));
     }
 
+    @GetMapping("/{canvasId}/settings")
+    public ResponseEntity<CanvasUpdateDtos.SettingsResponse> getCanvasSettings(
+            @PathVariable Integer canvasId,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        return ResponseEntity.ok(canvasService.getCanvasSettings(canvasId, currentUser));
+    }
+
+    @PatchMapping("/{canvasId}/name")
+    public ResponseEntity<Void> updateName(@PathVariable Integer canvasId,
+            @Valid @RequestBody CanvasUpdateDtos.UpdateNameRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.updateCanvasName(canvasId, request.canvasName(), currentUser);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{canvasId}/description")
+    public ResponseEntity<Void> updateDescription(@PathVariable Integer canvasId,
+            @RequestBody CanvasUpdateDtos.UpdateDescriptionRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.updateCanvasDescription(canvasId, request.description(), currentUser);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PatchMapping("/{canvasId}/password")
+    public ResponseEntity<Void> updatePassword(@PathVariable Integer canvasId,
+            @RequestBody CanvasUpdateDtos.UpdatePasswordRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.updateCanvasPassword(canvasId, request.canvasPassword(), currentUser);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{canvasId}/people")
+    public ResponseEntity<Void> addParticipant(@PathVariable Integer canvasId,
+            @Valid @RequestBody CanvasUpdateDtos.ParticipantHandleRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.addCanvasParticipant(canvasId, request.nickname(), request.tagNumber(), currentUser);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{canvasId}/people")
+    public ResponseEntity<Void> removeParticipant(@PathVariable Integer canvasId,
+            @Valid @RequestBody CanvasUpdateDtos.ParticipantHandleRequest request,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.removeCanvasParticipant(canvasId, request.nickname(), request.tagNumber(), currentUser);
+        return ResponseEntity.noContent().build();
+    }
+
 
 
     /**
@@ -119,11 +166,11 @@ public class CanvasController {
     @PostMapping("/{canvasId}/access")
     public ResponseEntity<CanvasUpdateDtos.AccessResponse> accessCanvasPath(
             @PathVariable Integer canvasId,
+            @RequestBody(required = false) CanvasUpdateDtos.AccessPasswordRequest accessRequest,
             HttpServletRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        String authHeader = request.getHeader(HttpHeaders.AUTHORIZATION);
-        String token = (authHeader != null && authHeader.startsWith("Bearer ")) ? authHeader.substring(7) : "";
-        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, request, currentUser);
+        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, request, currentUser,
+                accessRequest == null ? null : accessRequest.password());
         return ResponseEntity.ok(response);
     }
 

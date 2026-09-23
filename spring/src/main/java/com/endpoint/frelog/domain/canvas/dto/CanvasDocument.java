@@ -51,6 +51,9 @@ public class CanvasDocument {
     @JsonAlias({"initGroup", "init_group"})
     private String initGroup = "default";
 
+    @JsonProperty("settings-revision")
+    private Long settingsRevision = 0L;
+
     public CanvasDocument() {
     }
 
@@ -169,5 +172,13 @@ public class CanvasDocument {
 
     public void setInitGroup(String initGroup) {
         this.initGroup = initGroup;
+    }
+
+    public Long getSettingsRevision() {
+        return settingsRevision;
+    }
+
+    public void setSettingsRevision(Long settingsRevision) {
+        this.settingsRevision = settingsRevision == null ? 0L : settingsRevision;
     }
 }

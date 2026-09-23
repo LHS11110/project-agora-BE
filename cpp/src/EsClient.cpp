@@ -1,4 +1,5 @@
 #include "EsClient.hpp"
+#include "CanvasPassword.hpp"
 #include <httplib.h>
 #include <iostream>
 #include <cstdlib>
@@ -77,8 +78,23 @@ bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
     cli.set_read_timeout(3, 0);
     cli.set_basic_auth(user_, pass_);
 
+    nlohmann::json safe_doc = doc;
+    if (safe_doc.contains("canvas-password-hash") && safe_doc["canvas-password-hash"].is_string()) {
+        auto normalized = normalizeCanvasPassword(safe_doc["canvas-password-hash"].get<std::string>());
+        if (!normalized) return false;
+        safe_doc["canvas-password-hash"] = *normalized;
+    }
+    for (const char* legacy : {"canvas-password", "canvasPassword", "canvas_password_hash"}) {
+        if (!safe_doc.contains(legacy)) continue;
+        if (!safe_doc.contains("canvas-password-hash") && safe_doc[legacy].is_string()) {
+            auto normalized = normalizeCanvasPassword(safe_doc[legacy].get<std::string>());
+            if (!normalized) return false;
+            safe_doc["canvas-password-hash"] = *normalized;
+        }
+        safe_doc.erase(legacy);
+    }
     std::string doc_path = "/" + index_ + "/_doc/" + std::to_string(canvasId);
-    auto res = cli.Put(doc_path, doc.dump(), "application/json");
+    auto res = cli.Put(doc_path, safe_doc.dump(), "application/json");
     if (res && (res->status == 200 || res->status == 201)) {
         std::cout << "[EsClient] Successfully reflected canvas #" << canvasId << " from Redis to Elasticsearch\n";
         return true;

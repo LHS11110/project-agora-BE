@@ -149,6 +149,8 @@ set +a
 
 채팅 WebSocket 이벤트는 클라이언트가 `{"type":"chat","text":"test"}`를 보내면 C++ 서버가 인증된 접속 정보로 `sender`와 `tag_number`, `canvas_id`를 채워 다른 접속자에게 전달합니다. 예: `{"type":"chat","text":"test","sender":"아고라관리자","tag_number":1,"canvas_id":1}`. 채팅 브로드캐스트에는 내부 DB `user_id`나 중복 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID가 계속 사용됩니다.
 
+캔버스 설정은 비활성 상태에서는 Spring REST API로, WebSocket 접속 중에는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 DB에서 사용자 활성 상태와 서버 할당을, Redis 최신 문서에서 참여자 및 `admin-group` 권한을 다시 검사합니다. 성공하면 `canvas_settings_result`를 보낸 사람에게, 비밀번호 해시를 제외한 `canvas_settings_changed`를 다른 참여자에게 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다. 활성 설정은 Redis가 원본이고 Elasticsearch에는 캔버스 언로드 시 반영되므로 Redis 손실 전 언로드가 완료되지 않으면 최신 설정의 내구성은 Redis의 영속성 설정에 의존합니다.
+
 ## systemd 운영 예시
 
 ```ini
@@ -238,6 +240,8 @@ wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
 | 캔버스 목록·검색 | `GET /api/canvases`, `GET /api/canvases/search?name=` | 필요 |
 | 캔버스 조회·삭제 | `GET`, `DELETE /api/canvases/{canvasId}` | 필요 |
 | 캔버스 접속 정보 발급 | `POST /api/canvases/{canvasId}/access` | 필요 |
+| 캔버스 설정 조회·변경 | `GET /api/canvases/{canvasId}/settings`, `PATCH /api/canvases/{canvasId}/{name,description,password}` | 참여자 조회, 비활성 캔버스 관리자 변경 |
+| 참여자 추가·제외 | `POST`, `DELETE /api/canvases/{canvasId}/people` (`nickname`, `tag_number` 본문) | 비활성 캔버스 관리자 |
 | 서버·Redis 할당 점검 | `/api/load-balancer/**` | 관리자 |
 | C++ health | `GET http://127.0.0.1:8000/health` | 내부 |
 | C++ 활성 캔버스 | `GET http://127.0.0.1:8000/api/canvas/active` | 내부 |
@@ -251,6 +255,8 @@ wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
   "canvas_access_token": "<websocket-token>"
 }
 ```
+
+비밀번호가 설정된 캔버스의 접속 요청 본문에는 `{"password":"<캔버스 비밀번호>"}`를 포함합니다. 비밀번호가 없으면 본문을 생략할 수 있습니다.
 
 `/api/test/cpp-active-canvases`와 관련 테스트 프록시는 등록되어 있고 heartbeat가 최신인 C++ 서버만 조회합니다.
 

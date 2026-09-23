@@ -46,7 +46,7 @@ class JwtTokenProviderTest {
     void canvasToken_UsesHs256ForSupportedKeyLengths() {
         for (String secret : List.of("0123456789abcdef0123456789abcdef", SECRET)) {
             JwtTokenProvider provider = new JwtTokenProvider(secret, EXPIRATION_MS);
-            String token = provider.createCanvasAccessToken("테스터", 1234, 1, "127.0.0.1", "server-hash");
+            String token = provider.createCanvasAccessToken("테스터", 1234, 1, "127.0.0.1", "server-hash", 0L);
             String header = new String(Base64.getUrlDecoder().decode(token.split("\\.")[0]), StandardCharsets.UTF_8);
             String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]), StandardCharsets.UTF_8);
 

@@ -1,4 +1,5 @@
 #include "CanvasPool.hpp"
+#include "CanvasPassword.hpp"
 #include <iostream>
 
 CanvasPool::CanvasPool(const std::string& db_host, int db_port,
@@ -95,10 +96,6 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     if (cached_str && !cached_str->empty()) {
         try {
             canvas_doc = nlohmann::json::parse(*cached_str);
-            // Rewriting migrates legacy string values to RedisJSON.
-            if (!redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
-                throw std::runtime_error("failed to migrate cached document to RedisJSON");
-            }
         } catch (const std::exception& e) {
             std::cerr << "[CanvasPool] Invalid Redis document for canvas #" << canvas_id << ": " << e.what() << "\n";
             canvas_doc.reset();
@@ -108,13 +105,49 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     if (!canvas_doc.has_value()) {
         EsClient es(es_host_, es_port_);
         canvas_doc = es.getCanvasDocument(canvas_id);
-        if (!canvas_doc.has_value() || !redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
+        if (!canvas_doc.has_value()) {
             std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: no durable document is available\n";
             mssql.updateCanvasUncached(canvas_id);
             std::lock_guard<std::mutex> lock(pool_mutex_);
             loading_mutexes_.erase(canvas_id);
             return nullptr;
         }
+    }
+
+    // Canonicalize legacy password fields before an active document can be
+    // observed or eventually flushed back to Elasticsearch.
+    bool password_migrated = false;
+    for (const char* legacy : {"canvas-password", "canvasPassword", "canvas_password_hash"}) {
+        if (!canvas_doc->contains(legacy)) continue;
+        if (!canvas_doc->contains("canvas-password-hash")) (*canvas_doc)["canvas-password-hash"] = (*canvas_doc)[legacy];
+        canvas_doc->erase(legacy);
+        password_migrated = true;
+    }
+    if (canvas_doc->contains("canvas-password-hash") && (*canvas_doc)["canvas-password-hash"].is_string()) {
+        auto normalized = normalizeCanvasPassword((*canvas_doc)["canvas-password-hash"].get<std::string>());
+        if (!normalized) {
+            std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << ": password hashing failed\n";
+            mssql.updateCanvasUncached(canvas_id);
+            std::lock_guard<std::mutex> lock(pool_mutex_);
+            loading_mutexes_.erase(canvas_id);
+            return nullptr;
+        }
+        if ((*canvas_doc)["canvas-password-hash"].get<std::string>() != *normalized) password_migrated = true;
+        (*canvas_doc)["canvas-password-hash"] = *normalized;
+    }
+    if (!redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << ": Redis document write failed\n";
+        mssql.updateCanvasUncached(canvas_id);
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
+    }
+    if (password_migrated && !EsClient(es_host_, es_port_).saveCanvasDocument(canvas_id, *canvas_doc)) {
+        std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << ": legacy password migration failed\n";
+        mssql.updateCanvasUncached(canvas_id);
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        loading_mutexes_.erase(canvas_id);
+        return nullptr;
     }
 
     std::string canvas_name = "Canvas-" + std::to_string(canvas_id);
@@ -164,6 +197,8 @@ void CanvasPool::setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks) {
 
 void CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
     if (!canvas) return;
+    std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
+    canvas->unloading = true;
 
     // 1. Disconnect all connected users
     canvas->disconnectAll();

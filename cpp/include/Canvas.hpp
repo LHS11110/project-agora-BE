@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <functional>
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include "SocketChannel.hpp"
 
@@ -67,6 +68,10 @@ public:
     std::set<int> active_users;
     std::map<int, int> user_conn_counts;
     std::map<int, std::shared_ptr<UserSockets>> user_sockets;
+
+    // Serializes settings mutations with the final Redis -> Elasticsearch flush.
+    std::mutex settings_mutex;
+    std::atomic<bool> unloading{false};
 
 private:
     std::mutex canvas_mutex;

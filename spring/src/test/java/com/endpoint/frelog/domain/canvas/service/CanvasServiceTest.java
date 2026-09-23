@@ -27,6 +27,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Map;
+import org.mockito.ArgumentCaptor;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -36,6 +38,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 @ExtendWith(MockitoExtension.class)
 class CanvasServiceTest {
@@ -51,6 +54,9 @@ class CanvasServiceTest {
 
     @Mock
     private CanvasElasticsearchService canvasElasticsearchService;
+
+    @Mock
+    private CanvasRedisDocumentReader redisDocumentReader;
 
     @Mock
     private CanvasResourceService canvasResourceService;
@@ -102,7 +108,75 @@ class CanvasServiceTest {
         assertThat(response.description()).isEqualTo("description");
 
         verify(canvasInfoRepository).save(any(CanvasInfo.class));
-        verify(canvasElasticsearchService).saveCanvas(any(CanvasDocument.class));
+        ArgumentCaptor<CanvasDocument> saved = ArgumentCaptor.forClass(CanvasDocument.class);
+        verify(canvasElasticsearchService).saveCanvas(saved.capture());
+        assertThat(saved.getValue().getCanvasPasswordHash()).startsWith("$2").isNotEqualTo("pass123");
+    }
+
+    @Test
+    @DisplayName("참여자는 닉네임과 태그로 찾아 초기 그룹에 추가한다")
+    void addParticipant_UsesHandleAndInitialGroup() {
+        CanvasDocument doc = new CanvasDocument("Canvas", 11, 1L, null, "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(11)).willReturn(Optional.of(doc));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(11)).willReturn(Optional.of(new CanvasInfo(11)));
+        User participant = new User("other@agora.com", "hash", "동료", 7, Role.ROLE_USER);
+        participant.setStatus(UserStatus.ACTIVE);
+        ReflectionTestUtils.setField(participant, "userId", 2L);
+        given(userRepository.findByNicknameAndTagNumber("동료", 7)).willReturn(Optional.of(participant));
+
+        canvasService.addCanvasParticipant(11, "동료", 7, userDetails);
+
+        ArgumentCaptor<Map> fields = ArgumentCaptor.forClass(Map.class);
+        verify(canvasElasticsearchService).patchCanvasFields(eq(11), fields.capture());
+        assertThat((List<Long>) fields.getValue().get("people")).containsExactly(1L, 2L);
+        assertThat((Map<String, List<Long>>) fields.getValue().get("inner-group"))
+                .containsEntry("default", List.of(2L));
+    }
+
+    @Test
+    @DisplayName("활성 캔버스의 설정 변경은 캐시 덮어쓰기를 막기 위해 거부한다")
+    void updateName_CachedCanvasRejected() {
+        CanvasInfo info = new CanvasInfo(12);
+        info.setIsCached(true);
+        given(canvasInfoRepository.findByIdWithPessimisticLock(12)).willReturn(Optional.of(info));
+
+        assertThatThrownBy(() -> canvasService.updateCanvasName(12, "Changed", userDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.BAD_REQUEST);
+    }
+
+    @Test
+    @DisplayName("보호된 캔버스는 비밀번호 없이는 접속 토큰을 발급하지 않는다")
+    void accessCanvas_RequiresPassword() {
+        CanvasDocument doc = new CanvasDocument("Protected", 13, 1L, "secret", "default");
+        given(canvasElasticsearchService.getCanvasDocumentById(13)).willReturn(Optional.of(doc));
+        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
+        given(canvasInfoRepository.findByIdWithPessimisticLock(13)).willReturn(Optional.of(new CanvasInfo(13)));
+        jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
+
+        assertThatThrownBy(() -> canvasService.accessCanvas(13, request, userDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_PASSWORD_REQUIRED);
+        assertThatThrownBy(() -> canvasService.accessCanvas(13, request, userDetails, "wrong"))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_PASSWORD_INVALID);
+    }
+
+    @Test
+    @DisplayName("활성 캔버스 접속 권한은 Elasticsearch 사본이 아닌 Redis 최신 문서로 확인한다")
+    void accessCanvas_ActiveUsesRedisDocument() {
+        CanvasInfo info = new CanvasInfo(14);
+        info.setIsCached(true);
+        info.setRedisInfo(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379"));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(14)).willReturn(Optional.of(info));
+        CanvasDocument live = new CanvasDocument("Live", 14, 1L, CanvasPasswords.hashForStorage("new-secret"), "default");
+        given(redisDocumentReader.read(info)).willReturn(live);
+        jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
+
+        assertThatThrownBy(() -> canvasService.accessCanvas(14, request, userDetails, "old-secret"))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_PASSWORD_INVALID);
+        verifyNoInteractions(canvasElasticsearchService);
     }
 
     @Test
@@ -173,6 +247,7 @@ class CanvasServiceTest {
         CanvasDocument doc = new CanvasDocument("Access Canvas", 300, 1L, "hashedPass", "default");
         doc.getPeople().add(1L);
         given(canvasElasticsearchService.getCanvasDocumentById(300)).willReturn(Optional.of(doc));
+        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
 
         given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
 
@@ -190,11 +265,11 @@ class CanvasServiceTest {
         given(request.getRemoteAddr()).willReturn("192.168.0.100");
         
         given(jwtTokenProvider.createCanvasAccessToken(
-                anyString(), anyInt(), eq(300), eq("192.168.0.100"), anyString()
+                anyString(), anyInt(), eq(300), eq("192.168.0.100"), anyString(), eq(0L)
         )).willReturn("mock-canvas-token");
 
         // when
-        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, request, userDetails);
+        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(300, request, userDetails, "hashedPass");
 
         // then
         assertThat(response).isNotNull();

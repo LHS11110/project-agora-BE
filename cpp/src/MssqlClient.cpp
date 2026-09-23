@@ -570,3 +570,47 @@ int MssqlClient::getActiveUserId(const std::string& nickname, int tagNumber) {
 
     return active_user_id;
 }
+
+std::optional<std::pair<std::string, int>> MssqlClient::getUserHandle(int userId) {
+    if (userId <= 0) return std::nullopt;
+    PooledConnection pconn;
+    DBPROCESS* dbproc = pconn.get();
+    if (!dbproc) return std::nullopt;
+    std::string sql = "SELECT nickname, tag_number FROM users WHERE user_id = " + std::to_string(userId) + ";";
+    if (dbcmd(dbproc, sql.c_str()) != SUCCEED || dbsqlexec(dbproc) != SUCCEED) return std::nullopt;
+    std::optional<std::pair<std::string, int>> result;
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) return std::nullopt;
+        if (!DBROWS(dbproc)) continue;
+        char nickname[512] = {0};
+        DBINT tag = 0;
+        if (dbbind(dbproc, 1, NTBSTRINGBIND, sizeof(nickname), reinterpret_cast<BYTE*>(nickname)) != SUCCEED
+            || dbbind(dbproc, 2, INTBIND, 0, reinterpret_cast<BYTE*>(&tag)) != SUCCEED) return std::nullopt;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) return std::nullopt;
+            result = std::make_pair(std::string(nickname), static_cast<int>(tag));
+        }
+    }
+    return result;
+}
+
+bool MssqlClient::isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort) {
+    if (canvasId <= 0 || serverPort <= 0) return false;
+    PooledConnection pconn;
+    DBPROCESS* dbproc = pconn.get();
+    if (!dbproc) return false;
+    std::string sql = "SELECT COUNT(*) FROM canvas_info c JOIN cpp_server s ON s.server_id = c.cpp_server_id "
+        "WHERE c.canvas_id = " + std::to_string(canvasId) + " AND c.is_cached = 1 AND s.server_ip = '"
+        + sqlLiteral(serverIp) + "' AND s.server_port = '" + std::to_string(serverPort) + "';";
+    if (dbcmd(dbproc, sql.c_str()) != SUCCEED || dbsqlexec(dbproc) != SUCCEED) return false;
+    int count = 0;
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) return false;
+        if (!DBROWS(dbproc)) continue;
+        if (dbbind(dbproc, 1, INTBIND, 0, reinterpret_cast<BYTE*>(&count)) != SUCCEED) return false;
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) if (ret == FAIL) return false;
+    }
+    return count == 1;
+}

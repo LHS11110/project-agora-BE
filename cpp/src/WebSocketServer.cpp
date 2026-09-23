@@ -1,5 +1,6 @@
 #include "WebSocketServer.hpp"
 #include "RedisClient.hpp"
+#include "CanvasPassword.hpp"
 #include <ctime>
 #include <httplib.h>
 #include <iostream>
@@ -146,6 +147,35 @@ static bool hasAnyGroup(const PerSocketData* socket, const std::unordered_set<st
     if (socket->is_admin) return true;
     for (const auto& group : required) if (socket->groups.count(group) > 0) return true;
     return false;
+}
+
+static bool isCanvasParticipant(const nlohmann::json& doc, int user_id) {
+    if (!doc.contains("people") || !doc["people"].is_array()) return false;
+    for (const auto& member : doc["people"]) {
+        if (member.is_number_integer() && member.get<int>() == user_id) return true;
+    }
+    return false;
+}
+
+static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, MssqlClient& db) {
+    nlohmann::json participants = nlohmann::json::array();
+    if (doc.contains("people") && doc["people"].is_array()) {
+        for (const auto& member : doc["people"]) {
+            if (!member.is_number_integer()) continue;
+            auto handle = db.getUserHandle(member.get<int>());
+            if (handle) participants.push_back({{"nickname", handle->first}, {"tag_number", handle->second}});
+        }
+    }
+    const bool protected_canvas = doc.contains("canvas-password-hash")
+        && doc["canvas-password-hash"].is_string() && !doc["canvas-password-hash"].get<std::string>().empty();
+    return {
+        {"canvas_id", doc.value("canvas-id", 0)},
+        {"canvas_name", doc.value("canvas-name", "")},
+        {"description", doc.value("description", "")},
+        {"password_protected", protected_canvas},
+        {"settings_revision", doc.value("settings-revision", 0LL)},
+        {"participants", participants}
+    };
 }
 
 static std::string eventItemKey(const nlohmann::json& event) {
@@ -341,6 +371,164 @@ void WebSocketServer::unregisterSocket(Socket* ws) {
     }
 }
 
+void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& event) {
+    const PerSocketData* identity = ws->getUserData();
+    const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
+        ? event["request_id"].get<std::string>().substr(0, 64) : "";
+    auto reject = [&](const char* code) {
+        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                                {"request_id", request_id}, {"code", code}}.dump(), uWS::OpCode::TEXT);
+    };
+    auto canvas = pool_.getCanvas(identity->canvas_id);
+    if (!canvas) return reject("CANVAS_NOT_READY");
+    std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
+    if (canvas->unloading) return reject("CANVAS_NOT_READY");
+
+    RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+    const std::string key = "canvas:" + std::to_string(identity->canvas_id);
+    auto raw = redis.get(key);
+    if (!raw) return reject("SETTINGS_STORAGE_ERROR");
+    nlohmann::json doc;
+    try { doc = nlohmann::json::parse(*raw); } catch (...) { return reject("SETTINGS_STORAGE_ERROR"); }
+    if (!doc.is_object()) return reject("SETTINGS_STORAGE_ERROR");
+
+    MssqlClient db(pool_.getDbHost(), pool_.getDbPort());
+    if (!db.isCanvasAssignedToServer(identity->canvas_id, pool_.getCppServerIp(), pool_.getCppServerPort())) {
+        return reject("CANVAS_NOT_READY");
+    }
+    if (db.getActiveUserId(identity->nickname, identity->tag_number) != identity->user_id
+        || !isCanvasParticipant(doc, identity->user_id)) return reject("SETTINGS_ACCESS_DENIED");
+
+    const std::string type = event["type"].get<std::string>();
+    if (type == "canvas_settings_get") {
+        ws->send(nlohmann::json{{"type", "canvas_settings_snapshot"},
+                                {"settings", canvasSettingsSnapshot(doc, db)}}.dump(), uWS::OpCode::TEXT);
+        return;
+    }
+
+    if (type != "canvas_settings_update") return reject("SETTINGS_INVALID_INPUT");
+
+    if (!groupsForUser(doc, identity->user_id).second) return reject("SETTINGS_ACCESS_DENIED");
+    if (!event.contains("expected_revision") || !event["expected_revision"].is_number_integer()) {
+        return reject("SETTINGS_REVISION_REQUIRED");
+    }
+    const long long revision = doc.value("settings-revision", 0LL);
+    if (event["expected_revision"].get<long long>() != revision) {
+        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                                {"request_id", request_id}, {"code", "SETTINGS_CONFLICT"},
+                                {"settings", canvasSettingsSnapshot(doc, db)}}.dump(), uWS::OpCode::TEXT);
+        return;
+    }
+    if (!event.contains("field") || !event["field"].is_string()) return reject("SETTINGS_INVALID_INPUT");
+    const std::string field = event["field"].get<std::string>();
+    std::vector<std::pair<std::string, nlohmann::json>> changes;
+    int removed_user_id = 0;
+    if (field == "name" || field == "description" || field == "password") {
+        if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
+        const std::string value = event["value"].get<std::string>();
+        if ((field != "description" && value.empty()) || value.size() > (field == "description" ? 4000U : 256U)) {
+            return reject("SETTINGS_INVALID_INPUT");
+        }
+        if (field == "name") {
+            doc["canvas-name"] = value;
+            changes.emplace_back("$[\"canvas-name\"]", value);
+        } else if (field == "description") {
+            doc["description"] = value;
+            changes.emplace_back("$.description", value);
+        } else {
+            auto hash = hashCanvasPassword(value);
+            if (!hash) return reject("SETTINGS_STORAGE_ERROR");
+            doc["canvas-password-hash"] = *hash;
+            changes.emplace_back("$[\"canvas-password-hash\"]", *hash);
+        }
+    } else if (field == "participant_add" || field == "participant_remove") {
+        if (!event.contains("nickname") || !event["nickname"].is_string()
+            || !event.contains("tag_number") || !event["tag_number"].is_number_integer()) {
+            return reject("SETTINGS_INVALID_INPUT");
+        }
+        const std::string nickname = event["nickname"].get<std::string>();
+        const int tag = event["tag_number"].get<int>();
+        if (nickname.empty() || nickname.size() > 200 || tag < 1) return reject("SETTINGS_INVALID_INPUT");
+        if (!doc.contains("people") || !doc["people"].is_array()) return reject("SETTINGS_STORAGE_ERROR");
+        if (!doc.contains("inner-group") || !doc["inner-group"].is_object()) return reject("SETTINGS_STORAGE_ERROR");
+        int target_id = -1;
+        if (field == "participant_add") {
+            target_id = db.getActiveUserId(nickname, tag);
+            if (target_id <= 0) return reject("SETTINGS_USER_NOT_FOUND");
+            if (isCanvasParticipant(doc, target_id)) return reject("SETTINGS_ALREADY_PARTICIPANT");
+            doc["people"].push_back(target_id);
+            const std::string group = doc.contains("init-group") && doc["init-group"].is_string()
+                ? doc["init-group"].get<std::string>() : "default";
+            if (!doc["inner-group"].contains(group) || !doc["inner-group"][group].is_array()) {
+                doc["inner-group"][group] = nlohmann::json::array();
+            }
+            doc["inner-group"][group].push_back(target_id);
+        } else {
+            for (const auto& member : doc["people"]) {
+                if (!member.is_number_integer()) continue;
+                auto handle = db.getUserHandle(member.get<int>());
+                if (handle && handle->first == nickname && handle->second == tag) {
+                    target_id = member.get<int>();
+                    break;
+                }
+            }
+            if (target_id <= 0) return reject("SETTINGS_USER_NOT_FOUND");
+            if (doc.contains("admin-user-id") && doc["admin-user-id"].is_number_integer()
+                && doc["admin-user-id"].get<int>() == target_id) return reject("SETTINGS_OWNER_REQUIRED");
+            nlohmann::json remaining = nlohmann::json::array();
+            for (const auto& member : doc["people"]) {
+                if (!member.is_number_integer() || member.get<int>() != target_id) remaining.push_back(member);
+            }
+            doc["people"] = std::move(remaining);
+            for (auto& [group, members] : doc["inner-group"].items()) {
+                if (!members.is_array()) continue;
+                nlohmann::json updated = nlohmann::json::array();
+                for (const auto& member : members) {
+                    if (!member.is_number_integer() || member.get<int>() != target_id) updated.push_back(member);
+                }
+                members = std::move(updated);
+            }
+            removed_user_id = target_id;
+        }
+        changes.emplace_back("$.people", doc["people"]);
+        changes.emplace_back("$[\"inner-group\"]", doc["inner-group"]);
+    } else {
+        return reject("SETTINGS_INVALID_INPUT");
+    }
+
+    doc["settings-revision"] = revision + 1;
+    changes.emplace_back("$[\"settings-revision\"]", revision + 1);
+    const auto stored = redis.compareAndSetJsonPaths(key, revision, changes);
+    if (stored == RedisClient::CompareSetResult::Conflict) {
+        auto latest_raw = redis.get(key);
+        nlohmann::json latest = doc;
+        if (latest_raw) {
+            try { latest = nlohmann::json::parse(*latest_raw); } catch (...) {}
+        }
+        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                                {"request_id", request_id}, {"code", "SETTINGS_CONFLICT"},
+                                {"settings", canvasSettingsSnapshot(latest, db)}}.dump(), uWS::OpCode::TEXT);
+        return;
+    }
+    if (stored != RedisClient::CompareSetResult::Applied) return reject("SETTINGS_STORAGE_ERROR");
+    if (field == "name") canvas->setCanvasName(doc["canvas-name"].get<std::string>());
+
+    const auto snapshot = canvasSettingsSnapshot(doc, db);
+    ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", true},
+                            {"request_id", request_id}, {"settings", snapshot}}.dump(), uWS::OpCode::TEXT);
+    auto sockets = sockets_by_canvas_.find(identity->canvas_id);
+    if (sockets != sockets_by_canvas_.end()) {
+        const std::string notification = nlohmann::json{{"type", "canvas_settings_changed"},
+                                                        {"settings", snapshot}}.dump();
+        for (Socket* target : sockets->second) {
+            if (target != ws && isCanvasParticipant(doc, target->getUserData()->user_id)) {
+                target->send(notification, uWS::OpCode::TEXT);
+            }
+        }
+    }
+    if (removed_user_id > 0) pool_.disconnectUser(identity->canvas_id, removed_user_id);
+}
+
 void WebSocketServer::runServer() {
     {
         std::lock_guard<std::mutex> lock(loop_mutex_);
@@ -412,6 +600,7 @@ void WebSocketServer::runServer() {
                 authenticated_user->user_id,
                 authenticated_user->tag_number,
                 std::move(authenticated_user->nickname),
+                authenticated_user->settings_revision,
                 0,
                 0,
                 false,
@@ -431,8 +620,9 @@ void WebSocketServer::runServer() {
             ws->subscribe("canvas/" + std::to_string(data->canvas_id));
             const int canvas_id = data->canvas_id;
             const int user_id = data->user_id;
+            const long long token_revision = data->settings_revision;
             beginWorker();
-            std::thread([this, ws, canvas_id, user_id]() {
+            std::thread([this, ws, canvas_id, user_id, token_revision]() {
                 std::shared_ptr<Canvas> canvas;
                 nlohmann::json doc;
                 int close_code = 0;
@@ -461,12 +651,16 @@ void WebSocketServer::runServer() {
                                         }
                                     }
                                 }
+                                if (authorized && doc.value("settings-revision", 0LL) != token_revision) {
+                                    authorized = false;
+                                    close_reason = "Canvas settings changed; request a new access token";
+                                }
                             } catch (...) {
                             }
                         }
                         if (!authorized) {
                             close_code = 1008;
-                            close_reason = "Unauthorized access to canvas";
+                            if (close_reason.empty()) close_reason = "Unauthorized access to canvas";
                         }
                     }
                 }
@@ -483,7 +677,7 @@ void WebSocketServer::runServer() {
                     return;
                 }
 
-                loop_->defer([this, ws, canvas_id, user_id, canvas, doc = std::move(doc), close_code,
+                loop_->defer([this, ws, canvas_id, user_id, token_revision, canvas, doc = std::move(doc), close_code,
                               close_reason = std::move(close_reason), session_connected]() mutable {
                     auto socket_it = sockets_by_canvas_.find(canvas_id);
                     const bool socket_exists = socket_it != sockets_by_canvas_.end() && socket_it->second.count(ws) > 0;
@@ -500,6 +694,34 @@ void WebSocketServer::runServer() {
                     }
                     if (close_code != 0) {
                         ws->end(close_code, close_reason);
+                        endWorker();
+                        return;
+                    }
+                    bool latest_authorized = false;
+                    {
+                        std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
+                        if (!canvas->unloading) {
+                            RedisClient latest_redis(canvas->getRedisIp(), canvas->getRedisPort());
+                            auto latest_raw = latest_redis.get("canvas:" + std::to_string(canvas_id));
+                            if (latest_raw) {
+                                try {
+                                    auto latest_doc = nlohmann::json::parse(*latest_raw);
+                                    latest_authorized = isCanvasParticipant(latest_doc, user_id)
+                                        && latest_doc.value("settings-revision", 0LL) == token_revision;
+                                    if (latest_authorized) doc = std::move(latest_doc);
+                                } catch (...) {}
+                            }
+                        }
+                    }
+                    if (!latest_authorized) {
+                        if (!canvas->isUserActive(user_id)) {
+                            const std::string db_host = pool_.getDbHost();
+                            const int db_port = pool_.getDbPort();
+                            std::thread([db_host, db_port, user_id]() {
+                                MssqlClient(db_host, db_port).updateUserSessionDisconnected(user_id);
+                            }).detach();
+                        }
+                        ws->end(1008, "Canvas settings changed; request a new access token");
                         endWorker();
                         return;
                     }
@@ -556,6 +778,18 @@ void WebSocketServer::runServer() {
                             {"timestamp", static_cast<long long>(time(nullptr))}
                         };
                         ws->send(pong.dump(), uWS::OpCode::TEXT);
+                        return;
+                    }
+
+                    if (event.is_object() && event.contains("type") && event["type"].is_string()
+                        && event["type"].get<std::string>().rfind("canvas_settings_", 0) == 0) {
+                        try {
+                            handleCanvasSettings(ws, event);
+                        } catch (const std::exception& e) {
+                            std::cerr << "[uWebSockets] Canvas settings event rejected: " << e.what() << "\n";
+                            ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                                                    {"code", "SETTINGS_INVALID_INPUT"}}.dump(), uWS::OpCode::TEXT);
+                        }
                         return;
                     }
 

@@ -231,6 +231,36 @@ bool RedisClient::setJsonPath(const std::string& key, const std::string& path, c
     return readResponse() == "OK";
 }
 
+RedisClient::CompareSetResult RedisClient::compareAndSetJsonPaths(
+        const std::string& key, long long expected_revision,
+        const std::vector<std::pair<std::string, nlohmann::json>>& values) {
+    if (values.empty()) return CompareSetResult::Error;
+    static const std::string script = R"LUA(
+local raw = redis.call('JSON.GET', KEYS[1], '$["settings-revision"]')
+if redis.call('EXISTS', KEYS[1]) == 0 then return 'MISSING' end
+local current = 0
+if raw then
+    local versions = cjson.decode(raw)
+    current = tonumber(versions[1] or 0)
+end
+if current ~= tonumber(ARGV[1]) then return 'CONFLICT' end
+for i = 2, #ARGV, 2 do
+    redis.call('JSON.SET', KEYS[1], ARGV[i], ARGV[i + 1])
+end
+return 'OK'
+)LUA";
+    std::vector<std::string> command = {"EVAL", script, "1", key, std::to_string(expected_revision)};
+    for (const auto& [path, value] : values) {
+        command.push_back(path);
+        command.push_back(value.dump());
+    }
+    if (!sendCommand(command)) return CompareSetResult::Error;
+    const std::string result = readResponse();
+    if (result == "OK") return CompareSetResult::Applied;
+    if (result == "CONFLICT") return CompareSetResult::Conflict;
+    return CompareSetResult::Error;
+}
+
 bool RedisClient::deleteJsonPath(const std::string& key, const std::string& path) {
     if (!sendCommand({"JSON.DEL", key, path})) return false;
     const std::string response = readResponse();

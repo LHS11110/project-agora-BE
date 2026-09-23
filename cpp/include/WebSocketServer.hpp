@@ -20,6 +20,7 @@ struct PerSocketData {
     int user_id{0};
     int tag_number{0};
     std::string nickname;
+    long long settings_revision{0};
     int message_count{0};
     long long last_reset_time{0};
     bool is_admin{false};
@@ -53,6 +54,7 @@ private:
     void unregisterSocket(Socket* ws);
     void beginWorker();
     void endWorker();
+    void handleCanvasSettings(Socket* ws, const nlohmann::json& event);
 
     CanvasPool& pool_;
     std::string host_;

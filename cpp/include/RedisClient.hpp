@@ -7,6 +7,7 @@
 
 class RedisClient {
 public:
+    enum class CompareSetResult { Applied, Conflict, Error };
     RedisClient(const std::string& host = "127.0.0.1", int port = 6379,
                 const std::string& user = "", const std::string& password = "");
     ~RedisClient();
@@ -18,6 +19,8 @@ public:
     bool set(const std::string& key, const std::string& value);
     std::optional<std::string> get(const std::string& key);
     bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
+    CompareSetResult compareAndSetJsonPaths(const std::string& key, long long expected_revision,
+                            const std::vector<std::pair<std::string, nlohmann::json>>& values);
     bool deleteJsonPath(const std::string& key, const std::string& path);
     bool del(const std::string& key);
     bool deletePattern(const std::string& pattern);

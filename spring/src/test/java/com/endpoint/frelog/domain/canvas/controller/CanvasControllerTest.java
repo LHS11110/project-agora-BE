@@ -28,6 +28,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class CanvasControllerTest {
@@ -114,5 +115,38 @@ class CanvasControllerTest {
         // when & then
         mockMvc.perform(delete("/api/canvases/10"))
                 .andExpect(status().isNoContent());
+    }
+
+    @Test
+    @DisplayName("닉네임과 태그 번호로 참여자를 추가한다")
+    void addParticipant_UsesNicknameAndTag() throws Exception {
+        mockMvc.perform(post("/api/canvases/10/people")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"nickname\":\"동료\",\"tag_number\":7}"))
+                .andExpect(status().isNoContent());
+        verify(canvasService).addCanvasParticipant(eq(10), eq("동료"), eq(7), any());
+    }
+
+    @Test
+    @DisplayName("참여자 제외도 사용자 ID 없이 닉네임과 태그 번호를 사용한다")
+    void removeParticipant_UsesNicknameAndTag() throws Exception {
+        mockMvc.perform(delete("/api/canvases/10/people")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"nickname\":\"동료\",\"tag_number\":7}"))
+                .andExpect(status().isNoContent());
+        verify(canvasService).removeCanvasParticipant(eq(10), eq("동료"), eq(7), any());
+    }
+
+    @Test
+    @DisplayName("캔버스 접속 비밀번호를 서비스 검증 경로로 전달한다")
+    void accessCanvas_ForwardsPassword() throws Exception {
+        given(canvasService.accessCanvas(eq(10), any(), any(), eq("secret")))
+                .willReturn(new com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos.AccessResponse(1, "8002", "token"));
+        mockMvc.perform(post("/api/canvases/10/access")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"password\":\"secret\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.canvas_access_token").value("token"));
+        verify(canvasService).accessCanvas(eq(10), any(), any(), eq("secret"));
     }
 }

@@ -10,7 +10,12 @@ let state = {
     ws: null,
     cppIp: '',
     cppPort: '',
-    wsPort: ''
+    wsPort: '',
+    items: Object.create(null),
+    itemGroups: [],
+    pendingItemChange: null,
+    settingsRevision: null,
+    settingsPending: null
 };
 
 // --- DOM Elements ---
@@ -37,7 +42,14 @@ const el = {
     
     chatContainer: document.getElementById('chatContainer'),
     chatInput: document.getElementById('chatInput'),
-    sendBtn: document.getElementById('sendBtn')
+    sendBtn: document.getElementById('sendBtn'),
+    itemStatus: document.getElementById('itemStatus'),
+    canvasItemsList: document.getElementById('canvasItemsList'),
+    itemIdInput: document.getElementById('itemIdInput'),
+    itemJsonInput: document.getElementById('itemJsonInput'),
+    newItemBtn: document.getElementById('newItemBtn'),
+    saveItemBtn: document.getElementById('saveItemBtn'),
+    deleteItemBtn: document.getElementById('deleteItemBtn')
 };
 
 // --- Core Initialization ---
@@ -247,18 +259,26 @@ async function loadCanvases() {
         const activeIds = new Set(activeRes.ok && activeRes.data.canvases ? activeRes.data.canvases.map(c => c.canvas_id) : []);
 
         res.data.forEach(c => {
+            if (state.ws?.readyState === WebSocket.OPEN && state.currentCanvas?.canvas_id === c.canvas_id) {
+                c.canvas_name = state.currentCanvas.canvas_name;
+                c.user_count = state.currentCanvas.user_count;
+            }
             const isActive = activeIds.has(c.canvas_id);
             const card = document.createElement('div');
             card.className = `canvas-card ${state.currentCanvas?.canvas_id === c.canvas_id ? 'active' : ''}`;
             card.onclick = () => selectCanvas(c);
-            
-            card.innerHTML = `
-                <div>
-                    <div class="canvas-name">#${c.canvas_id} ${c.canvas_name}</div>
-                    <div class="canvas-meta">참여자: ${c.user_count || 0}명</div>
-                </div>
-                <div class="status-dot ${isActive ? 'active' : ''}" title="${isActive ? 'C++ 로드됨' : '미접속'}"></div>
-            `;
+            const info = document.createElement('div');
+            const name = document.createElement('div');
+            name.className = 'canvas-name';
+            name.textContent = `#${c.canvas_id} ${c.canvas_name}`;
+            const count = document.createElement('div');
+            count.className = 'canvas-meta';
+            count.textContent = `참여자: ${c.user_count || 0}명`;
+            info.append(name, count);
+            const dot = document.createElement('div');
+            dot.className = `status-dot ${isActive ? 'active' : ''}`;
+            dot.title = isActive ? 'C++ 로드됨' : '미접속';
+            card.append(info, dot);
             el.canvasList.appendChild(card);
         });
     }
@@ -283,6 +303,9 @@ async function createCanvas() {
 }
 
 function selectCanvas(canvas) {
+    disconnectWebSocket();
+    closeSettingsModal();
+    state.settingsRevision = null;
     state.currentCanvas = canvas;
     el.broadcastArea.style.opacity = '1';
     el.broadcastArea.style.pointerEvents = 'auto';
@@ -291,36 +314,122 @@ function selectCanvas(canvas) {
     el.activeCanvasMeta.innerText = `현재 선택된 캔버스입니다. 우측 상단의 접속 버튼을 눌러 통신을 시작하세요.`;
     document.getElementById('settingsBtn').style.display = 'block';
     
-    // Fetch participants list
-    const participantsEl = document.getElementById('activeCanvasParticipants');
-    if (participantsEl) {
-        participantsEl.innerText = '참여자 정보 불러오는 중...';
-        Promise.all([
-            apiCall(`/api/canvases/${canvas.canvas_id}/document`),
-            apiCall('/api/users')
-        ]).then(([docRes, usersRes]) => {
-            if (docRes.ok && usersRes.ok) {
-                const peopleIds = docRes.data.people || docRes.data.peoples || [];
-                const users = usersRes.data || [];
-                const userMap = new Map(users.map(u => [u.userId, u.nickname]));
-                
-                const participantNames = peopleIds.map(id => userMap.get(id) || `알수없음(ID:${id})`);
-                participantsEl.innerHTML = `<strong>👥 초대된 참여자:</strong> ${participantNames.length > 0 ? participantNames.join(', ') : '없음'}`;
-            } else {
-                participantsEl.innerText = '참여자 정보를 불러오지 못했습니다.';
-            }
-        }).catch(() => {
-            participantsEl.innerText = '';
-        });
-    }
-    
-    disconnectWebSocket();
     loadCanvases(); // Refresh active UI states
+}
+
+function setItemEditorEnabled(enabled) {
+    for (const field of [el.itemIdInput, el.itemJsonInput, el.newItemBtn, el.saveItemBtn, el.deleteItemBtn]) {
+        field.disabled = !enabled;
+    }
+}
+
+function renderCanvasItems() {
+    el.canvasItemsList.replaceChildren();
+    const ids = Object.keys(state.items).sort();
+    if (ids.length === 0) {
+        el.canvasItemsList.textContent = '아이템이 없습니다. 새 아이템을 추가해보세요.';
+        return;
+    }
+    for (const id of ids) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn-outline';
+        button.textContent = id;
+        button.onclick = () => {
+            el.itemIdInput.value = id;
+            el.itemJsonInput.value = JSON.stringify(state.items[id], null, 2);
+            el.itemStatus.textContent = `아이템 ${id} 편집 중`;
+        };
+        el.canvasItemsList.appendChild(button);
+    }
+}
+
+function newCanvasItem() {
+    el.itemIdInput.value = `item-${Date.now()}`;
+    el.itemJsonInput.value = JSON.stringify({
+        type: 'note', text: 'test', x: 100, y: 100,
+        permission: state.itemGroups[0] || 'admin-group'
+    }, null, 2);
+    el.itemStatus.textContent = '새 아이템 작성 중';
+    el.itemIdInput.focus();
+}
+
+function saveCanvasItem() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (state.pendingItemChange) return;
+    const id = el.itemIdInput.value.trim();
+    if (!id) return alert('아이템 ID를 입력하세요.');
+
+    let item;
+    try {
+        item = JSON.parse(el.itemJsonInput.value);
+    } catch {
+        return alert('아이템 JSON 형식이 올바르지 않습니다.');
+    }
+    if (!item || Array.isArray(item) || typeof item !== 'object' || !item.permission) {
+        return alert('아이템은 permission 필드를 가진 JSON 객체여야 합니다.');
+    }
+    const previous = state.items[id];
+    const event = { type: 'item_update', item_id: id, item };
+    state.ws.send(JSON.stringify(event));
+    trackItemChange(id, previous);
+    state.items[id] = item;
+    renderCanvasItems();
+    el.itemStatus.textContent = `${id} 수정 이벤트 전송됨. 서버 응답 대기 중...`;
+}
+
+function deleteCanvasItem() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (state.pendingItemChange) return;
+    const id = el.itemIdInput.value.trim();
+    if (!id || !Object.hasOwn(state.items, id)) return alert('목록에서 삭제할 아이템을 선택하세요.');
+    if (!confirm(`${id} 아이템을 삭제할까요?`)) return;
+    state.ws.send(JSON.stringify({ type: 'item_delete', item_id: id }));
+    trackItemChange(id, state.items[id]);
+    delete state.items[id];
+    renderCanvasItems();
+    el.itemIdInput.value = '';
+    el.itemJsonInput.value = '';
+    el.itemStatus.textContent = `${id} 삭제 이벤트 전송됨. 서버 응답 대기 중...`;
+}
+
+function trackItemChange(id, previous) {
+    const change = { id, previous };
+    state.pendingItemChange = change;
+    setItemEditorEnabled(false);
+    // Messages on one WebSocket are processed in order. A pong after the item
+    // event means the server has finished its permission check for that event.
+    state.ws.send(JSON.stringify({ type: 'ping' }));
+    setTimeout(() => {
+        if (state.pendingItemChange !== change) return;
+        state.pendingItemChange = null;
+        setItemEditorEnabled(true);
+        el.itemStatus.textContent = '서버 응답을 확인하지 못했습니다. 재접속해 저장 결과를 확인하세요.';
+    }, 10000);
+}
+
+function applyCanvasItemEvent(data) {
+    const id = data.item_id ?? data['item-id'];
+    if (id == null) return false;
+    const key = String(id);
+    if (data.type === 'item_delete' || data.type === 'delete_item') {
+        delete state.items[key];
+    } else if (data.item && typeof data.item === 'object' && !Array.isArray(data.item)) {
+        state.items[key] = data.item;
+    } else if (data.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
+        state.items[key] = data.data;
+    } else {
+        return false;
+    }
+    renderCanvasItems();
+    el.itemStatus.textContent = `${key} 변경 이벤트 수신됨`;
+    return true;
 }
 
 // --- Realtime WebSocket Flow ---
 async function connectActiveCanvas() {
     if (!state.currentCanvas) return;
+    const canvasId = state.currentCanvas.canvas_id;
     
     if (state.ws) {
         disconnectWebSocket();
@@ -334,7 +443,16 @@ async function connectActiveCanvas() {
     addSystemMessage('Spring Boot P2C 로드밸런싱 API 호출 중...');
 
     // 1. Spring Access API
-    const accessRes = await apiCall(`/api/canvases/${state.currentCanvas.canvas_id}/access`, 'POST');
+    let accessRes = await apiCall(`/api/canvases/${canvasId}/access`, 'POST');
+    if (accessRes.data?.code === 'CANVAS_004') {
+        const password = prompt('이 캔버스의 비밀번호를 입력하세요.');
+        if (password === null) {
+            resetConnectionUI();
+            return;
+        }
+        accessRes = await apiCall(`/api/canvases/${canvasId}/access`, 'POST', { password });
+    }
+    if (state.currentCanvas?.canvas_id !== canvasId || state.ws) return;
     if (!accessRes.ok) {
         alert('Access API 실패: ' + (accessRes.data?.message || '알 수 없는 오류'));
         resetConnectionUI();
@@ -348,12 +466,14 @@ async function connectActiveCanvas() {
     addSystemMessage(`할당된 실시간 서버: (서버 ID: ${state.cppServerId}). WebSocket 연결 시도...`);
 
     // 2. WebSocket Connect (Route through Nginx using wss://)
-    const wsUrl = `wss://${window.location.host}/wss/port/${state.wsPort}/canvas/${state.currentCanvas.canvas_id}?token=${accessRes.data.canvas_access_token}`;
+    const wsUrl = `wss://${window.location.host}/wss/port/${state.wsPort}/canvas/${canvasId}?token=${accessRes.data.canvas_access_token}`;
 
     try {
-        state.ws = new WebSocket(wsUrl);
+        const socket = new WebSocket(wsUrl);
+        state.ws = socket;
 
-        state.ws.onopen = () => {
+        socket.onopen = () => {
+            if (state.ws !== socket) return;
             el.connectionText.innerText = '실시간 접속 중';
             el.connectionDot.className = 'status-dot active';
             el.connectBtn.innerText = '접속 종료';
@@ -361,15 +481,84 @@ async function connectActiveCanvas() {
             
             el.chatInput.disabled = false;
             el.sendBtn.disabled = false;
+            el.itemStatus.textContent = '초기 아이템 목록을 기다리는 중...';
             
             addSystemMessage('🟢 WebSocket 연결이 성공적으로 수립되었습니다. 실시간 브로드캐스팅이 가능합니다.');
             loadCanvases(); // Refresh C++ active dots
         };
 
-        state.ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
+            if (state.ws !== socket) return;
             try {
                 const data = JSON.parse(event.data);
-                if (data.type === 'init' || data.type === 'ping' || data.type === 'init_items') return;
+                if (data.type === 'init' || data.type === 'ping') return;
+                if (data.type === 'pong') {
+                    if (state.pendingItemChange) {
+                        const id = state.pendingItemChange.id;
+                        state.pendingItemChange = null;
+                        setItemEditorEnabled(true);
+                        el.itemStatus.textContent = `${id} 이벤트가 서버에서 승인되었습니다. 재접속하면 저장 결과를 확인할 수 있습니다.`;
+                    }
+                    return;
+                }
+                if (data.type === 'init_items') {
+                    state.items = data.items && typeof data.items === 'object' && !Array.isArray(data.items)
+                        ? Object.assign(Object.create(null), data.items) : Object.create(null);
+                    state.pendingItemChange = null;
+                    const ownId = data.user_id;
+                    state.itemGroups = Object.entries(data['inner-group'] || {})
+                        .filter(([, members]) => Array.isArray(members) && members.includes(ownId))
+                        .map(([group]) => group);
+                    renderCanvasItems();
+                    setItemEditorEnabled(true);
+                    el.itemStatus.textContent = `아이템 ${Object.keys(state.items).length}개 로드됨`;
+                    socket.send(JSON.stringify({ type: 'canvas_settings_get' }));
+                    return;
+                }
+                if (data.type === 'canvas_settings_snapshot' || data.type === 'canvas_settings_changed') {
+                    renderCanvasSettings(data.settings);
+                    if (data.type === 'canvas_settings_changed') loadCanvases();
+                    if (document.getElementById('settingsModal').style.display !== 'none') {
+                        document.getElementById('settingsStatus').textContent = data.type === 'canvas_settings_changed'
+                            ? '다른 접속자의 설정 변경이 반영되었습니다.' : '최신 설정을 불러왔습니다.';
+                    }
+                    return;
+                }
+                if (data.type === 'canvas_settings_result') {
+                    const pending = state.settingsPending;
+                    if (pending && data.request_id === pending.id) state.settingsPending = null;
+                    if (data.settings) renderCanvasSettings(data.settings);
+                    if (data.ok) {
+                        if (pending?.field === 'password') document.getElementById('settingCanvasPwd').value = '';
+                        document.getElementById('settingsStatus').textContent = '설정이 저장되었습니다.';
+                        loadCanvases();
+                    } else {
+                        document.getElementById('settingsStatus').textContent = data.code === 'SETTINGS_CONFLICT'
+                            ? '다른 접속자가 먼저 수정했습니다. 최신 값을 확인한 뒤 다시 시도하세요.'
+                            : `설정 변경 실패: ${data.code || '서버 오류'}`;
+                    }
+                    return;
+                }
+                if (data.type === 'error' && data.code === 'ITEM_ACCESS_DENIED') {
+                    const change = state.pendingItemChange;
+                    state.pendingItemChange = null;
+                    if (change) {
+                        if (change.previous === undefined) delete state.items[change.id];
+                        else state.items[change.id] = change.previous;
+                        renderCanvasItems();
+                        setItemEditorEnabled(true);
+                    }
+                    el.itemStatus.textContent = '아이템 수정 권한이 거부되었습니다.';
+                    addSystemMessage('아이템 수정 권한이 거부되었습니다. permission 그룹을 확인하세요.');
+                    return;
+                }
+                if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
+                    state.items = Object.assign(Object.create(null), data.items);
+                    renderCanvasItems();
+                    el.itemStatus.textContent = '캔버스 아이템 전체 변경 이벤트 수신됨';
+                    return;
+                }
+                if (applyCanvasItemEvent(data)) return;
                 
                 // Show received message
                 const senderName = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.user_id) || '알 수 없는 사용자';
@@ -379,14 +568,17 @@ async function connectActiveCanvas() {
             }
         };
 
-        state.ws.onclose = (e) => {
+        socket.onclose = (e) => {
+            if (state.ws !== socket) return;
             addSystemMessage(`🔴 WebSocket 연결이 종료되었습니다. (Code: ${e.code})`);
             resetConnectionUI();
             loadCanvases();
         };
 
-        state.ws.onerror = () => {
+        socket.onerror = () => {
+            if (state.ws !== socket) return;
             addSystemMessage('❌ WebSocket 연결 에러가 발생했습니다.');
+            socket.close();
             resetConnectionUI();
         };
 
@@ -410,6 +602,17 @@ async function disconnectWebSocket() {
 }
 
 function resetConnectionUI() {
+    state.ws = null;
+    state.items = Object.create(null);
+    state.itemGroups = [];
+    state.pendingItemChange = null;
+    state.settingsPending = null;
+    state.settingsRevision = null;
+    renderCanvasItems();
+    el.itemIdInput.value = '';
+    el.itemJsonInput.value = '';
+    el.itemStatus.textContent = 'WebSocket 접속 후 편집할 수 있습니다.';
+    setItemEditorEnabled(false);
     el.connectionText.innerText = '미연결';
     el.connectionDot.className = 'status-dot';
     el.connectionDot.style.background = 'var(--text-muted)';
@@ -454,14 +657,84 @@ function addSystemMessage(text) {
 }
 
 // --- Canvas Settings Modal ---
-function openSettingsModal() {
+async function openSettingsModal() {
     if (!state.currentCanvas) return;
+    const canvasId = state.currentCanvas.canvas_id;
     document.getElementById('settingsModal').style.display = 'flex';
-    document.getElementById('settingCanvasName').value = state.currentCanvas.canvas_name || '';
+    document.getElementById('settingCanvasPwd').value = '';
+    await loadCanvasSettings(canvasId);
 }
 
 function closeSettingsModal() {
     document.getElementById('settingsModal').style.display = 'none';
+}
+
+async function loadCanvasSettings(canvasId) {
+    const status = document.getElementById('settingsStatus');
+    status.textContent = '설정을 불러오는 중...';
+    if (state.ws?.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({ type: 'canvas_settings_get' }));
+        return;
+    }
+    const res = await apiCall(`/api/canvases/${canvasId}/settings`);
+    if (state.currentCanvas?.canvas_id !== canvasId || document.getElementById('settingsModal').style.display === 'none') return;
+    if (!res.ok) {
+        status.textContent = '설정을 불러오지 못했습니다: ' + (res.data?.message || res.error || '요청 실패');
+        return;
+    }
+    renderCanvasSettings(res.data);
+    status.textContent = '설정 변경은 캔버스가 비활성 상태일 때만 가능합니다. 참여자를 클릭하면 입력칸에 선택됩니다.';
+}
+
+function renderCanvasSettings(settings) {
+    if (!settings || settings.canvas_id !== state.currentCanvas?.canvas_id) return;
+    state.settingsRevision = settings.settings_revision ?? 0;
+    state.currentCanvas.canvas_name = settings.canvas_name || '';
+    state.currentCanvas.description = settings.description || '';
+    state.currentCanvas.user_count = (settings.participants || []).length;
+    el.activeCanvasTitle.innerText = `🎨 #${settings.canvas_id} ${settings.canvas_name || ''}`;
+    document.getElementById('settingCanvasName').value = settings.canvas_name || '';
+    document.getElementById('settingCanvasDesc').value = settings.description || '';
+    document.getElementById('passwordStatus').textContent = settings.password_protected ? '(설정됨)' : '(없음)';
+    const list = document.getElementById('settingsParticipantList');
+    list.replaceChildren();
+    const participants = settings.participants || [];
+    if (participants.length === 0) list.textContent = '참여자가 없습니다.';
+    for (const participant of participants) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn-outline';
+        button.textContent = `${participant.nickname}#${participant.tag_number}`;
+        button.title = '클릭하면 입력칸에 선택됩니다';
+        button.onclick = () => {
+            document.getElementById('settingParticipantNickname').value = participant.nickname;
+            document.getElementById('settingParticipantTag').value = participant.tag_number;
+        };
+        list.appendChild(button);
+    }
+}
+
+function sendCanvasSettingsUpdate(field, details) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+    if (state.settingsPending) {
+        document.getElementById('settingsStatus').textContent = '이전 설정 변경의 응답을 기다리는 중입니다.';
+        return true;
+    }
+    if (state.settingsRevision == null) {
+        document.getElementById('settingsStatus').textContent = '최신 설정을 불러온 뒤 다시 시도하세요.';
+        return true;
+    }
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    state.settingsPending = { id, field };
+    state.ws.send(JSON.stringify({ type: 'canvas_settings_update', request_id: id,
+        expected_revision: state.settingsRevision, field, ...details }));
+    document.getElementById('settingsStatus').textContent = '서버의 설정 변경 결과를 기다리는 중...';
+    setTimeout(() => {
+        if (state.settingsPending?.id !== id) return;
+        state.settingsPending = null;
+        document.getElementById('settingsStatus').textContent = '응답이 없습니다. 최신 설정을 다시 불러온 뒤 확인하세요.';
+    }, 10000);
+    return true;
 }
 
 async function updateCanvasSetting(type) {
@@ -470,7 +743,7 @@ async function updateCanvasSetting(type) {
     let url, value;
 
     if (type === 'name') {
-        value = document.getElementById('settingCanvasName').value;
+        value = document.getElementById('settingCanvasName').value.trim();
         url = `/api/canvases/${cid}/name`;
     } else if (type === 'description') {
         value = document.getElementById('settingCanvasDesc').value;
@@ -480,47 +753,50 @@ async function updateCanvasSetting(type) {
         url = `/api/canvases/${cid}/password`;
     }
 
-    if (!value) return alert('값을 입력해주세요.');
+    if (value == null || (type !== 'description' && !value.trim())) return alert('값을 입력해주세요.');
 
     const payload = {};
     if (type === 'name') payload.canvasName = value;
     if (type === 'description') payload.description = value;
     if (type === 'password') payload.password = value;
 
+    if (sendCanvasSettingsUpdate(type, { value })) return;
     const res = await apiCall(url, 'PATCH', payload);
     if (res.ok) {
-        alert('성공적으로 변경되었습니다.');
-        loadCanvases();
         if (type === 'name') {
             state.currentCanvas.canvas_name = value;
             document.getElementById('activeCanvasTitle').innerText = `🎨 #${cid} ${value}`;
         }
+        if (type === 'password') document.getElementById('settingCanvasPwd').value = '';
+        await loadCanvasSettings(cid);
+        document.getElementById('settingsStatus').textContent = '설정이 저장되었습니다.';
+        loadCanvases();
     } else {
-        alert('변경 실패: ' + (res.data?.message || '권한이 없거나 오류가 발생했습니다.'));
+        document.getElementById('settingsStatus').textContent = '변경 실패: ' + (res.data?.message || res.error || '권한 또는 서버 상태를 확인하세요.');
     }
 }
 
 async function manageParticipant(action) {
     if (!state.currentCanvas) return;
     const cid = state.currentCanvas.canvas_id;
-    const targetUserId = document.getElementById('settingParticipantId').value;
-    
-    if (!targetUserId) return alert('유저 ID를 입력해주세요.');
-
-    let url = `/api/canvases/${cid}/people`;
-    let method = 'POST';
-    
-    if (action === 'remove') {
-        url = `/api/canvases/${cid}/people/${targetUserId}`;
-        method = 'DELETE';
+    const nickname = document.getElementById('settingParticipantNickname').value.trim();
+    const tag = document.getElementById('settingParticipantTag').value.trim();
+    const tagNumber = Number(tag);
+    if (!nickname || !/^[1-9]\d*$/.test(tag) || !Number.isSafeInteger(tagNumber)) {
+        return alert('닉네임과 올바른 태그 번호를 입력하세요.');
     }
-
-    const res = await apiCall(url, method, action === 'add' ? { userId: parseInt(targetUserId) } : null);
+    if (action === 'remove' && !confirm(`${nickname}#${tagNumber} 참여자를 제외할까요?`)) return;
+    if (sendCanvasSettingsUpdate(action === 'add' ? 'participant_add' : 'participant_remove',
+            { nickname, tag_number: tagNumber })) return;
+    const res = await apiCall(`/api/canvases/${cid}/people`, action === 'add' ? 'POST' : 'DELETE', {
+        nickname, tag_number: tagNumber
+    });
     if (res.ok) {
-        alert(`참여자가 성공적으로 ${action === 'add' ? '추가' : '제외'}되었습니다.`);
-        selectCanvas(state.currentCanvas); // Refresh participant list
+        await loadCanvasSettings(cid);
+        document.getElementById('settingsStatus').textContent = `참여자가 ${action === 'add' ? '추가' : '제외'}되었습니다.`;
+        loadCanvases();
     } else {
-        alert('처리 실패: ' + (res.data?.message || '오류가 발생했습니다.'));
+        document.getElementById('settingsStatus').textContent = '처리 실패: ' + (res.data?.message || res.error || '권한 또는 서버 상태를 확인하세요.');
     }
 }
 

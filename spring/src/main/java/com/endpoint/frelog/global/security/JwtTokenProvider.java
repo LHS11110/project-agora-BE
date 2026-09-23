@@ -50,7 +50,8 @@ public class JwtTokenProvider {
                 .compact();
     }
 
-    public String createCanvasAccessToken(String nickname, Integer tagNumber, Integer canvasId, String clientIp, String serverHash) {
+    public String createCanvasAccessToken(String nickname, Integer tagNumber, Integer canvasId,
+                                          String clientIp, String serverHash, long settingsRevision) {
         Date now = new Date();
         // 캔버스 접속 토큰은 비교적 짧은 유효시간(예: 5분)을 가질 수 있지만 여기서는 편의상 동일하게 부여
         Date validity = new Date(now.getTime() + expirationMs);
@@ -62,6 +63,7 @@ public class JwtTokenProvider {
                 .claim("canvasId", canvasId)
                 .claim("clientIp", clientIp)
                 .claim("serverHash", serverHash)
+                .claim("settingsRevision", settingsRevision)
                 .issuedAt(now)
                 .expiration(validity)
                 .signWith(key, Jwts.SIG.HS256)

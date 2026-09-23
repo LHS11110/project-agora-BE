@@ -103,14 +103,36 @@
                     <input type="text" id="chatInput" placeholder="메시지를 입력하세요... (Enter 키로 전송)" onkeypress="handleChatKey(event)" disabled>
                     <button class="btn-primary" id="sendBtn" onclick="sendMessage()" disabled>전송</button>
                 </div>
+
+                <section class="item-editor" aria-labelledby="itemEditorTitle">
+                    <div class="item-editor-heading">
+                        <h3 id="itemEditorTitle">캔버스 아이템 편집</h3>
+                        <span id="itemStatus" role="status">WebSocket 접속 후 편집할 수 있습니다.</span>
+                    </div>
+                    <div class="item-editor-body">
+                        <div class="item-list" id="canvasItemsList">접속하면 아이템 목록이 표시됩니다.</div>
+                        <div class="item-form">
+                            <label for="itemIdInput">아이템 ID</label>
+                            <input type="text" id="itemIdInput" placeholder="예: note-1" disabled>
+                            <label for="itemJsonInput">아이템 JSON (permission 필수)</label>
+                            <textarea id="itemJsonInput" spellcheck="false" disabled></textarea>
+                            <div class="item-actions">
+                                <button class="btn-outline" id="newItemBtn" onclick="newCanvasItem()" disabled>새 아이템</button>
+                                <button class="btn-primary" id="saveItemBtn" onclick="saveCanvasItem()" disabled>추가 / 수정</button>
+                                <button class="btn-danger" id="deleteItemBtn" onclick="deleteCanvasItem()" disabled>삭제</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
             </div>
         </div>
         
         <!-- Canvas Settings Modal -->
-        <div id="settingsModal" style="display:none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center;">
-            <div class="auth-container" style="background: #111; border: 1px solid var(--glass-border); border-radius: 16px; padding: 30px; position: relative; max-width: 450px;">
+        <div id="settingsModal" class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" style="display:none;">
+            <div class="settings-panel">
                 <button class="btn-outline" style="position: absolute; top: 15px; right: 15px; border: none; padding: 5px 10px;" onclick="closeSettingsModal()">✕</button>
-                <h3 style="margin-bottom: 20px; font-size: 1.2rem;">⚙️ 캔버스 설정</h3>
+                <h3 id="settingsTitle" style="margin-bottom: 12px; font-size: 1.2rem;">⚙️ 캔버스 설정</h3>
+                <p id="settingsStatus" role="status" class="settings-hint">설정을 불러오는 중...</p>
                 
                 <div class="auth-form" style="text-align: left; gap: 12px;">
                     <div>
@@ -130,9 +152,9 @@
                     </div>
 
                     <div>
-                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">비밀번호 설정</label>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">비밀번호 설정 <span id="passwordStatus"></span></label>
                         <div style="display: flex; gap: 8px;">
-                            <input type="password" id="settingCanvasPwd" placeholder="새 비밀번호">
+                            <input type="password" id="settingCanvasPwd" placeholder="새 비밀번호" autocomplete="new-password">
                             <button class="btn-outline" onclick="updateCanvasSetting('password')">설정</button>
                         </div>
                     </div>
@@ -140,11 +162,15 @@
                     <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;">
 
                     <div>
-                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">참여자 관리 (User ID)</label>
-                        <div style="display: flex; gap: 8px;">
-                            <input type="number" id="settingParticipantId" placeholder="유저 ID">
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">참여자 관리 (닉네임#태그번호)</label>
+                        <div id="settingsParticipantList" class="settings-participants">불러오는 중...</div>
+                        <div class="settings-participant-inputs">
+                            <input type="text" id="settingParticipantNickname" placeholder="닉네임">
+                            <input type="number" id="settingParticipantTag" min="1" step="1" placeholder="태그 번호">
+                        </div>
+                        <div class="settings-actions">
                             <button class="btn-outline" onclick="manageParticipant('add')">추가</button>
-                            <button class="btn-danger" style="border:none; border-radius: 12px; padding: 14px 24px; font-weight: 600;" onclick="manageParticipant('remove')">제외</button>
+                            <button class="btn-danger" onclick="manageParticipant('remove')">제외</button>
                         </div>
                     </div>
                 </div>

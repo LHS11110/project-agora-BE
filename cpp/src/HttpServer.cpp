@@ -128,7 +128,13 @@ std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const st
         }
         const std::string nickname = decoded.get_payload_claim("nickname").as_string();
         const auto tag_number = decoded.get_payload_claim("tagNumber").as_integer();
-        if (nickname.empty() || tag_number < 0 || tag_number > std::numeric_limits<int>::max()) {
+        if (!decoded.has_payload_claim("settingsRevision")) {
+            std::cerr << "[HttpServer] JWT missing settingsRevision claim\n";
+            return std::nullopt;
+        }
+        const auto settings_revision = decoded.get_payload_claim("settingsRevision").as_integer();
+        if (nickname.empty() || tag_number < 0 || tag_number > std::numeric_limits<int>::max()
+            || settings_revision < 0) {
             std::cerr << "[HttpServer] JWT has invalid nickname or tagNumber claim\n";
             return std::nullopt;
         }
@@ -140,7 +146,7 @@ std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const st
             return std::nullopt;
         }
 
-        return AuthenticatedUser{user_id, static_cast<int>(tag_number), nickname};
+        return AuthenticatedUser{user_id, static_cast<int>(tag_number), nickname, settings_revision};
     } catch (const std::exception& e) {
         std::cerr << "[HttpServer] JWT verification failed: " << e.what() << "\n";
         return std::nullopt;

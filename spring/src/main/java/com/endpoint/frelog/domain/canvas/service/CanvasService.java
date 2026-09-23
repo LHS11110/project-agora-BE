@@ -19,6 +19,7 @@ import com.endpoint.frelog.global.security.JwtTokenProvider;
 import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.domain.user.entity.User;
 import com.endpoint.frelog.domain.user.entity.UserSession;
+import com.endpoint.frelog.domain.user.entity.UserStatus;
 import com.endpoint.frelog.domain.user.repository.UserRepository;
 import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import com.endpoint.frelog.global.exception.CustomException;
@@ -33,6 +34,8 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Set;
@@ -57,6 +60,7 @@ public class CanvasService {
     private final ServerInfoRepository serverInfoRepository;
     private final UserSessionRepository userSessionRepository;
     private final JwtTokenProvider jwtTokenProvider;
+    private final CanvasRedisDocumentReader redisDocumentReader;
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
@@ -68,7 +72,8 @@ public class CanvasService {
             RedisInfoRepository redisInfoRepository,
             ServerInfoRepository serverInfoRepository,
             UserSessionRepository userSessionRepository,
-            JwtTokenProvider jwtTokenProvider) {
+            JwtTokenProvider jwtTokenProvider,
+            CanvasRedisDocumentReader redisDocumentReader) {
         this.canvasInfoRepository = canvasInfoRepository;
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
@@ -79,6 +84,7 @@ public class CanvasService {
         this.serverInfoRepository = serverInfoRepository;
         this.userSessionRepository = userSessionRepository;
         this.jwtTokenProvider = jwtTokenProvider;
+        this.redisDocumentReader = redisDocumentReader;
     }
 
     /**
@@ -114,7 +120,7 @@ public class CanvasService {
                 canvasName,
                 targetId,
                 userId,
-                canvasPassword,
+                CanvasPasswords.hashForStorage(canvasPassword),
                 "default"
         );
         document.setDescription(description != null ? description : "");
@@ -168,6 +174,116 @@ public class CanvasService {
 
         return canvasElasticsearchService.getCanvasDocumentById(canvasId)
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
+    }
+
+    @Transactional
+    public CanvasUpdateDtos.SettingsResponse getCanvasSettings(Integer canvasId, CustomUserDetails currentUser) {
+        CanvasDocument doc = currentCanvasDocument(canvasId, getCanvasInfoWithLockOrThrow(canvasId));
+        if (currentUser == null || currentUser.getUserId() == null) {
+            throw new CustomException(ErrorCode.UNAUTHORIZED);
+        }
+        boolean systemAdmin = currentUser.getUser() != null && currentUser.getUser().getRole() == Role.ROLE_ADMIN;
+        if (!systemAdmin && (doc.getPeople() == null || !doc.getPeople().contains(currentUser.getUserId()))) {
+            throw new CustomException(ErrorCode.ACCESS_DENIED);
+        }
+        List<Long> people = doc.getPeople() == null ? List.of() : doc.getPeople();
+        Map<Long, CanvasUpdateDtos.ParticipantResponse> users = new LinkedHashMap<>();
+        userRepository.findAllById(people).forEach(user -> users.put(user.getUserId(),
+                new CanvasUpdateDtos.ParticipantResponse(user.getNickname(), user.getTagNumber())));
+        List<CanvasUpdateDtos.ParticipantResponse> participants = people.stream()
+                .map(users::get).filter(java.util.Objects::nonNull).toList();
+        return new CanvasUpdateDtos.SettingsResponse(canvasId, doc.getCanvasName(), doc.getDescription(),
+                doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
+                doc.getSettingsRevision(), participants);
+    }
+
+    @Transactional
+    public void updateCanvasName(Integer canvasId, String name, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        if (name == null || name.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 이름을 입력하세요.");
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, Map.of("canvas-name", name.trim())));
+    }
+
+    @Transactional
+    public void updateCanvasDescription(Integer canvasId, String description, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        if (description == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "설명을 입력하세요.");
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, Map.of("description", description)));
+    }
+
+    @Transactional
+    public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        if (password == null || password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
+                Map.of("canvas-password-hash", CanvasPasswords.hashForStorage(password))));
+    }
+
+    @Transactional
+    public void addCanvasParticipant(Integer canvasId, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        User target = findParticipant(nickname, tagNumber, true);
+        if (doc.getPeople().contains(target.getUserId())) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "이미 참여 중인 사용자입니다.");
+        }
+        List<Long> people = new ArrayList<>(doc.getPeople());
+        people.add(target.getUserId());
+        Map<String, List<Long>> groups = copyGroups(doc.getInnerGroup());
+        String initialGroup = doc.getInitGroup() == null || doc.getInitGroup().isBlank() ? "default" : doc.getInitGroup();
+        groups.computeIfAbsent(initialGroup, unused -> new ArrayList<>()).add(target.getUserId());
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
+                Map.of("people", people, "inner-group", groups)));
+    }
+
+    @Transactional
+    public void removeCanvasParticipant(Integer canvasId, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        User target = findParticipant(nickname, tagNumber, false);
+        if (target.getUserId().equals(doc.getAdminUserId())) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "캔버스 소유자는 제외할 수 없습니다.");
+        }
+        if (!doc.getPeople().contains(target.getUserId())) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "참여하지 않은 사용자입니다.");
+        }
+        List<Long> people = new ArrayList<>(doc.getPeople());
+        people.remove(target.getUserId());
+        Map<String, List<Long>> groups = copyGroups(doc.getInnerGroup());
+        groups.values().forEach(members -> members.remove(target.getUserId()));
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
+                Map.of("people", people, "inner-group", groups)));
+    }
+
+    private CanvasDocument editableInactiveCanvas(Integer canvasId, CustomUserDetails currentUser) {
+        if (Boolean.TRUE.equals(getCanvasInfoWithLockOrThrow(canvasId).getIsCached())) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "활성 캔버스의 설정은 변경할 수 없습니다. 모든 연결을 종료하고 캐시가 해제된 뒤 다시 시도하세요.");
+        }
+        CanvasDocument doc = getInactiveCanvasDocumentWithPasswordMigration(canvasId);
+        validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
+        return doc;
+    }
+
+    private User findParticipant(String nickname, Integer tagNumber, boolean requireActive) {
+        if (nickname == null || nickname.isBlank() || tagNumber == null || tagNumber < 1) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "닉네임과 태그 번호를 확인하세요.");
+        }
+        User user = userRepository.findByNicknameAndTagNumber(nickname.trim(), tagNumber)
+                .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND));
+        if (requireActive && user.getStatus() != UserStatus.ACTIVE) {
+            throw new CustomException(ErrorCode.BAD_REQUEST, "활성 사용자만 참여자로 추가할 수 있습니다.");
+        }
+        return user;
+    }
+
+    private Map<String, List<Long>> copyGroups(Map<String, List<Long>> source) {
+        Map<String, List<Long>> copy = new LinkedHashMap<>();
+        if (source != null) source.forEach((name, members) -> copy.put(name, new ArrayList<>(members)));
+        return copy;
+    }
+
+    private Map<String, Object> withNextRevision(CanvasDocument doc, Map<String, Object> fields) {
+        Map<String, Object> updated = new LinkedHashMap<>(fields);
+        updated.put("settings-revision", (doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision()) + 1L);
+        return updated;
     }
 
     // =========================================================================
@@ -228,21 +344,35 @@ public class CanvasService {
      */
     @Transactional
     public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest, CustomUserDetails currentUser) {
+        return accessCanvas(canvasId, httpRequest, currentUser, null);
+    }
+
+    @Transactional
+    public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest,
+                                                         CustomUserDetails currentUser, String suppliedPassword) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
         Long userId = currentUser.getUserId();
 
-        // 1. 캔버스 도큐먼트 조회 및 people 목록 검증
-        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+        // Lock the allocation row before choosing Elasticsearch or the live
+        // Redis document. A settings change must not race a cache handoff.
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
+        CanvasDocument doc = currentCanvasDocument(canvasId, canvasInfo);
         if (doc.getPeople() == null || !doc.getPeople().contains(userId)) {
             throw new CustomException(ErrorCode.ACCESS_DENIED, "초대된 사용자 리스트(people)에 속한 경우에만 접근할 수 있습니다.");
         }
+        String storedPassword = doc.getCanvasPasswordHash();
+        if (storedPassword != null && !storedPassword.isBlank()) {
+            if (suppliedPassword == null || suppliedPassword.isBlank()) {
+                throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
+            }
+            boolean matches = CanvasPasswords.matches(suppliedPassword, storedPassword);
+            if (!matches) throw new CustomException(ErrorCode.CANVAS_PASSWORD_INVALID);
+        }
 
         // 2. MS SQL canvas_info 확인 (동시 삭제/할당 방지를 위한 비관적 락 사용)
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-
         String serverIp = "none";
         String wsPort = "none";
         Integer serverId = null;
@@ -309,7 +439,8 @@ public class CanvasService {
                 currentUser.getUser().getTagNumber(),
                 canvasId,
                 httpRequest.getRemoteAddr(), 
-                serverHash
+                serverHash,
+                doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision()
         );
 
         // 6. C++ 실시간 서버의 ID, Port 및 Access Token 반환
@@ -396,6 +527,23 @@ public class CanvasService {
     private CanvasDocument getCanvasDocumentOrThrow(Integer canvasId) {
         return canvasElasticsearchService.getCanvasDocumentById(canvasId)
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
+    }
+
+    private CanvasDocument currentCanvasDocument(Integer canvasId, CanvasInfo info) {
+        return Boolean.TRUE.equals(info.getIsCached())
+                ? redisDocumentReader.read(info) : getInactiveCanvasDocumentWithPasswordMigration(canvasId);
+    }
+
+    private CanvasDocument getInactiveCanvasDocumentWithPasswordMigration(Integer canvasId) {
+        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+        String password = doc.getCanvasPasswordHash();
+        if (password != null && !password.isBlank() && !CanvasPasswords.isHash(password)) {
+            doc.setCanvasPasswordHash(CanvasPasswords.hashForStorage(password));
+            if (!canvasElasticsearchService.saveCanvas(doc)) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "기존 캔버스 비밀번호를 안전하게 이전하지 못했습니다.");
+            }
+        }
+        return doc;
     }
 
     private CanvasInfo getCanvasInfoOrThrow(Integer canvasId) {

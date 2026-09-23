@@ -95,6 +95,7 @@ public class CanvasElasticsearchService {
      */
     public boolean saveCanvas(CanvasDocument document) {
         try {
+            document.setCanvasPasswordHash(CanvasPasswords.normalizeStoredHash(document.getCanvasPasswordHash()));
             String docId = String.valueOf(document.getCanvasId());
             String docJson = objectMapper.writeValueAsString(document);
             restClient.put()
@@ -115,6 +116,25 @@ public class CanvasElasticsearchService {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 색인 실패: " + e.getMessage());
             }
             return false;
+        }
+    }
+
+    /** Update only settings fields so an item snapshot is never written over newer canvas items. */
+    public void patchCanvasFields(Integer canvasId, Map<String, Object> fields) {
+        try {
+            Map<String, Object> normalized = new java.util.HashMap<>(fields);
+            if (normalized.containsKey("canvas-password-hash")) {
+                normalized.put("canvas-password-hash", CanvasPasswords.normalizeStoredHash((String) normalized.get("canvas-password-hash")));
+            }
+            restClient.post()
+                    .uri("/{index}/_update/{id}?refresh=true&retry_on_conflict=3", properties.getIndex(), String.valueOf(canvasId))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(objectMapper.writeValueAsString(Map.of("doc", normalized)))
+                    .retrieve()
+                    .toBodilessEntity();
+        } catch (Exception e) {
+            log.warn("캔버스 #{} 설정 저장 실패: {}", canvasId, e.getMessage());
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "캔버스 설정 저장에 실패했습니다.");
         }
     }
 

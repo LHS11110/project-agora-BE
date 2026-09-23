@@ -3,6 +3,7 @@ package com.endpoint.frelog.domain.canvas.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import java.util.List;
 
 public class CanvasUpdateDtos {
 
@@ -38,6 +39,25 @@ public class CanvasUpdateDtos {
             Long userId
     ) {}
 
+    public record ParticipantHandleRequest(
+            @NotBlank String nickname,
+            @NotNull @JsonProperty("tag_number") Integer tagNumber
+    ) {}
+
+    public record ParticipantResponse(
+            String nickname,
+            @JsonProperty("tag_number") Integer tagNumber
+    ) {}
+
+    public record SettingsResponse(
+            @JsonProperty("canvas_id") Integer canvasId,
+            @JsonProperty("canvas_name") String canvasName,
+            String description,
+            @JsonProperty("password_protected") boolean passwordProtected,
+            @JsonProperty("settings_revision") Long settingsRevision,
+            List<ParticipantResponse> participants
+    ) {}
+
     public record GroupRequest(
             @NotBlank(message = "그룹명은 비어있을 수 없습니다.")
             @JsonProperty("group_name")
@@ -65,6 +85,8 @@ public class CanvasUpdateDtos {
             @com.fasterxml.jackson.annotation.JsonAlias({"canvasId"})
             Integer canvasId
     ) {}
+
+    public record AccessPasswordRequest(String password) {}
 
     public record AccessResponse(
             @JsonProperty("server_id")
