@@ -229,6 +229,8 @@ wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
 
 ## 주요 API
 
+전체 REST 및 WebSocket 요청·응답 필드는 [API_SPEC.md](API_SPEC.md)를 참조하세요.
+
 보호 API에는 `Authorization: Bearer <accessToken>` 헤더가 필요합니다.
 
 | 목적 | 메서드·경로 | 인증 |
