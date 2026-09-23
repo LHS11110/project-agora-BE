@@ -136,12 +136,20 @@ async function showDashboard() {
     }, 400);
 
     el.logoutBtn.style.display = 'block';
-    el.userNameText.innerText = `👋 ${state.user.nickname} (${state.user.email})`;
+    el.userNameText.innerText = `👋 ${formatUserHandle(state.user)} (${state.user.email})`;
     el.userNameText.style.color = 'var(--text-main)';
 
 
 
     loadCanvases();
+}
+
+function formatUserHandle(user, fallback = '알 수 없는 사용자') {
+    if (!user) return fallback;
+    const nickname = user.nickname || user.sender;
+    const tagNumber = user.tag_number ?? user.tagNumber;
+    if (nickname && tagNumber != null) return `${nickname}#${tagNumber}`;
+    return nickname || (tagNumber != null ? `#${tagNumber}` : fallback);
 }
 
 async function login() {
@@ -561,7 +569,10 @@ async function connectActiveCanvas() {
                 if (applyCanvasItemEvent(data)) return;
                 
                 // Show received message
-                const senderName = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.user_id) || '알 수 없는 사용자';
+                const senderName = formatUserHandle({
+                    nickname: data.sender,
+                    tag_number: data.tag_number
+                });
                 addChatMessage(senderName, data.text || JSON.stringify(data), false);
             } catch {
                 addChatMessage('Unknown', event.data, false);
@@ -643,7 +654,7 @@ function sendMessage() {
     }
 
     state.ws.send(JSON.stringify(payload));
-    addChatMessage('나 (Me)', text, true);
+    addChatMessage(formatUserHandle(state.user, '나 (Me)'), text, true);
     
     el.chatInput.value = '';
 }
