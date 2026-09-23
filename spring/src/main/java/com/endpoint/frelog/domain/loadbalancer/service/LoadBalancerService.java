@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 @Service
 public class LoadBalancerService {
@@ -62,7 +63,7 @@ public class LoadBalancerService {
      */
     @Transactional(readOnly = true)
     public AllocateServerResponse allocateServer() {
-        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(15);
+        LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15);
         List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff)
                 .stream()
                 .filter(s -> cppServerClient.isHealthy(s.getServerIp(), s.getServerPort()))

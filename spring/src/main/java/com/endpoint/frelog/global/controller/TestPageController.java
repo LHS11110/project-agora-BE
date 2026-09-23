@@ -17,6 +17,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
@@ -39,7 +40,7 @@ public class TestPageController {
     private boolean isFresh(ServerInfo server) {
         return Boolean.TRUE.equals(server.getIsActivated())
                 && server.getLastHeartbeatAt() != null
-                && server.getLastHeartbeatAt().isAfter(LocalDateTime.now().minus(SERVER_HEARTBEAT_MAX_AGE));
+                && server.getLastHeartbeatAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minus(SERVER_HEARTBEAT_MAX_AGE));
     }
 
     private Optional<ServerInfo> resolveRestServer(String host, int port) {
@@ -50,7 +51,7 @@ public class TestPageController {
     private Optional<ServerInfo> resolveSocketServer(String host, int port) {
         String requestedPort = Integer.toString(port);
         return serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(
-                        LocalDateTime.now().minus(SERVER_HEARTBEAT_MAX_AGE))
+                        LocalDateTime.now(ZoneOffset.UTC).minus(SERVER_HEARTBEAT_MAX_AGE))
                 .stream()
                 .filter(server -> server.getServerIp().equals(host)
                         && (server.getServerPort().equals(requestedPort) || server.getWsPort().equals(requestedPort)))

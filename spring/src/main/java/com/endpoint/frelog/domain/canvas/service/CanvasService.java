@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Set;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -251,7 +252,7 @@ public class CanvasService {
                 && assignedServer != null
                 && Boolean.TRUE.equals(assignedServer.getIsActivated())
                 && assignedServer.getLastHeartbeatAt() != null
-                && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now().minusSeconds(15))
+                && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15))
                 && cppServerClient.isHealthy(assignedServer.getServerIp(), assignedServer.getServerPort());
 
         if (!assignedServerHealthy) {

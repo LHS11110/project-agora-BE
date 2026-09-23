@@ -9,6 +9,7 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 @Entity
 @Table(name = "cpp_server")
@@ -59,13 +60,13 @@ public class ServerInfo {
     @PrePersist
     protected void onCreate() {
         if (this.createdAt == null) {
-            this.createdAt = LocalDateTime.now();
+            this.createdAt = LocalDateTime.now(ZoneOffset.UTC);
         }
         if (this.isActivated == null) {
             this.isActivated = true;
         }
         if (this.lastHeartbeatAt == null) {
-            this.lastHeartbeatAt = LocalDateTime.now();
+            this.lastHeartbeatAt = LocalDateTime.now(ZoneOffset.UTC);
         }
     }
 
