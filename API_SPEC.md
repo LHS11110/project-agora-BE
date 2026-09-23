@@ -237,16 +237,15 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {
   "type":"init_items",
   "canvas_id":1,
-  "user_id":1,
   "server_protocol":"uWebSockets",
   "status":"connected",
   "items":{},
-  "inner-group":{},
+  "groups":["default"],
   "canvas_name":"이름"
 }
 ```
 
-`items`는 접속자의 permission 그룹으로 필터링됩니다. `user_id`는 초기 내부 호환 필드이며 채팅 공개 payload에는 포함하지 않습니다.
+`items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담으며, 내부 사용자 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
 
 ### 일반 이벤트
 
@@ -291,7 +290,7 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 응답:
 
 ```json
-{"type":"pong","canvas_id":1,"user_id":1,"timestamp":1700000000}
+{"type":"pong","canvas_id":1,"timestamp":1700000000}
 ```
 
 ### 설정 이벤트

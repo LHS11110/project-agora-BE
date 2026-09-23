@@ -513,10 +513,7 @@ async function connectActiveCanvas() {
                     state.items = data.items && typeof data.items === 'object' && !Array.isArray(data.items)
                         ? Object.assign(Object.create(null), data.items) : Object.create(null);
                     state.pendingItemChange = null;
-                    const ownId = data.user_id;
-                    state.itemGroups = Object.entries(data['inner-group'] || {})
-                        .filter(([, members]) => Array.isArray(members) && members.includes(ownId))
-                        .map(([group]) => group);
+                    state.itemGroups = Array.isArray(data.groups) ? data.groups : [];
                     renderCanvasItems();
                     setItemEditorEnabled(true);
                     el.itemStatus.textContent = `아이템 ${Object.keys(state.items).length}개 로드됨`;

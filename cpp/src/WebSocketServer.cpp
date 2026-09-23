@@ -738,12 +738,14 @@ void WebSocketServer::runServer() {
                         }
                     }
                     nlohmann::json init_msg = {
-                        {"type", "init_items"}, {"canvas_id", canvas_id}, {"user_id", user_id},
+                        {"type", "init_items"}, {"canvas_id", canvas_id},
                         {"server_protocol", "uWebSockets"}, {"status", "connected"},
                         {"items", nlohmann::json::object()}
                     };
                     init_msg["items"] = filterItemsForUser(doc, user_id);
-                    if (doc.contains("inner-group")) init_msg["inner-group"] = doc["inner-group"];
+                    nlohmann::json visible_groups = nlohmann::json::array();
+                    for (const auto& group : ws->getUserData()->groups) visible_groups.push_back(group);
+                    init_msg["groups"] = std::move(visible_groups);
                     if (doc.contains("canvas-name")) init_msg["canvas_name"] = doc["canvas-name"];
                     ws->send(init_msg.dump(), uWS::OpCode::TEXT);
                     std::cout << "[uWebSockets] Sent init_items to User #" << user_id
@@ -774,7 +776,6 @@ void WebSocketServer::runServer() {
                         nlohmann::json pong = {
                             {"type", "pong"},
                             {"canvas_id", data->canvas_id},
-                            {"user_id", data->user_id},
                             {"timestamp", static_cast<long long>(time(nullptr))}
                         };
                         ws->send(pong.dump(), uWS::OpCode::TEXT);
@@ -796,19 +797,20 @@ void WebSocketServer::runServer() {
                     if (event.is_object()) {
                         // Socket metadata is authoritative; clients cannot spoof identities or canvas.
                         event["canvas_id"] = data->canvas_id;
+                        // Internal database identities never cross the WebSocket boundary.
+                        event.erase("user_id");
+                        event.erase("userId");
+                        event.erase("sender_id");
+                        event.erase("senderId");
                         if (event.value("type", "") == "chat") {
                             // Public chat payloads use the nickname/tag pair,
                             // while internal authorization keeps the DB user ID.
-                            event.erase("user_id");
-                            event.erase("userId");
-                            event.erase("sender_id");
-                            event.erase("senderId");
                             event.erase("tagNumber");
                             event["sender"] = data->nickname;
                             event["tag_number"] = data->tag_number;
                         } else {
-                            event["user_id"] = data->user_id;
-                            event["sender_id"] = data->user_id;
+                            // Keep database identity server-side. Public events use
+                            // canvas/item fields only and never expose user IDs.
                         }
                         const bool bulk_items = event.contains("items") && event["items"].is_object();
                         const std::string item_key = eventItemKey(event);
