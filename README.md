@@ -173,11 +173,23 @@ sudo systemctl enable --now agora-spring agora-cpp
 
 ## Nginx와 WSS
 
-[nginx/agora.conf.example](nginx/agora.conf.example)는 C++ 포트별 WSS 라우팅 예시입니다. 전체 Nginx 서버 블록에는 Spring 프록시도 추가합니다.
+[nginx/agora.conf.example](nginx/agora.conf.example) 파일에는 Spring Boot API 프록시와 C++ 포트별 WSS 라우팅이 통합된 전체 Nginx 설정 예시가 포함되어 있습니다.
 
-```nginx
-location /api/ { proxy_pass http://127.0.0.1:8080; }
-location / { proxy_pass http://127.0.0.1:8080; }
+Nginx 환경 설정과 로컬 SSL 구성은 다음 명령어로 빠르게 세팅할 수 있습니다:
+
+```bash
+# Nginx 설치 및 자체 서명 인증서(Local 테스트용) 생성
+sudo apt-get install -y nginx
+mkdir -p nginx/ssl
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout nginx/ssl/key.pem -out nginx/ssl/cert.pem \
+  -subj "/C=KR/ST=Seoul/L=Seoul/O=Project Agora/OU=Dev/CN=localhost"
+
+# Nginx 환경 설정 적용
+sudo cp nginx/agora.conf.example /etc/nginx/sites-available/agora.conf
+sudo ln -sf /etc/nginx/sites-available/agora.conf /etc/nginx/sites-enabled/agora.conf
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo systemctl restart nginx
 ```
 
 WSS 주소는 다음 형식을 사용합니다.

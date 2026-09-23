@@ -1,10 +1,38 @@
 server {
+    listen 80;
+    server_name _;
+    
+    # HTTP 요청을 HTTPS로 리디렉션
+    return 301 https://$host$request_uri;
+}
+
+server {
     listen 443 ssl;
     server_name _;
 
-    ssl_certificate /home/ubuntu/github/project-agora-BE/nginx/ssl/cert.pem;
-    ssl_certificate_key /home/ubuntu/github/project-agora-BE/nginx/ssl/key.pem;
+    # 로컬 테스트용 SSL 인증서 (운영 환경에서는 Let's Encrypt 등 실제 인증서 사용 권장)
+    ssl_certificate /home/steam/Github/project-agora-BE/nginx/ssl/cert.pem;
+    ssl_certificate_key /home/steam/Github/project-agora-BE/nginx/ssl/key.pem;
 
+    # Spring Boot API 라우팅
+    location /api/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    # 기본 경로 라우팅 (Spring Boot 처리)
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # C++ 서버 WebSocket 라우팅
     # Local C++ instances use distinct WS ports. Only the configured 8002-8099
     # range is accepted, preventing this endpoint from becoming an open proxy.
     location ~ ^/wss/port/(?<cpp_ws_port>80(?:0[2-9]|[1-9][0-9]))/canvas/(?<canvas_id>[0-9]+)$ {
