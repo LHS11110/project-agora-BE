@@ -125,13 +125,12 @@ Spring 서버를 실행합니다.
 
 ```bash
 cd /path/to/project-agora-BE
-set -a
-source ./.env
-set +a
-java -jar spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
+bash spring/run-local.sh
 ```
 
-Spring Boot는 프로젝트 루트의 `.env`를 자동으로 읽지 않습니다. Spring을 별도 터미널에서 실행할 때마다 해당 터미널에서 환경 변수를 불러와야 합니다. `JWT_SECRET`은 필수이며, 설정되지 않으면 애플리케이션은 시작하지 않습니다.
+로컬 실행 스크립트가 프로젝트 루트의 `.env`를 불러오고 `JWT_SECRET`이 설정됐는지 확인한 뒤 JAR을 시작합니다. 운영 환경에서는 기존처럼 서비스 관리자가 환경변수를 주입해야 합니다.
+
+프로젝트 루트에서 `java -jar spring/build/libs/frelog-0.0.1-SNAPSHOT.jar`를 직접 실행해도 Spring이 같은 `.env`를 읽습니다. 다른 디렉터리에서 실행할 때는 실행 스크립트를 사용하세요.
 
 다른 터미널에서 C++ 서버를 실행합니다.
 
