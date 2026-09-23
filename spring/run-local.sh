@@ -26,8 +26,14 @@ if [[ ! -f "$JAR_FILE" ]]; then
     exit 1
 fi
 
+# Gradle may overwrite build/libs while the server is running. Keep this
+# process on an immutable snapshot so static resources remain readable.
+RUN_JAR="$(mktemp --suffix=.jar /tmp/agora-spring.XXXXXXXX)"
+trap 'rm -f -- "$RUN_JAR"' EXIT
+cp -- "$JAR_FILE" "$RUN_JAR"
+
 set +e
-java -jar "$JAR_FILE"
+java -jar "$RUN_JAR"
 status=$?
 set -e
 
