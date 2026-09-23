@@ -349,7 +349,7 @@ async function connectActiveCanvas() {
                 if (data.type === 'init' || data.type === 'ping') return;
                 
                 // Show received message
-                const senderName = data.sender || data.user_id || '알 수 없는 사용자';
+                const senderName = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.user_id) || '알 수 없는 사용자';
                 addChatMessage(senderName, data.text || JSON.stringify(data), false);
             } catch {
                 addChatMessage('Unknown', event.data, false);

@@ -322,7 +322,7 @@ async function connectActiveCanvas() {
             const data = JSON.parse(e.data);
             if (data.type === 'ping' || data.type === 'init' || data.type === 'init_items') return;
             logToConsole('WS', 'Message Received', e.data);
-            const sender = data.sender_id || data.sender || data.user_id || '알 수 없음';
+            const sender = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.sender_id || data.user_id) || '알 수 없음';
             addChatMessage(sender, data.text || JSON.stringify(data), false);
         } catch {
             addChatMessage('Unknown', e.data, false);

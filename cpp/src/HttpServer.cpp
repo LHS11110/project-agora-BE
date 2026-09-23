@@ -61,9 +61,9 @@ void HttpServer::stop() {
 
 
 
-int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port) {
+std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port) {
     if (canvas_id <= 0 || token.empty()) {
-        return -1;
+        return std::nullopt;
     }
 
     try {
@@ -76,18 +76,18 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
             !decoded.has_payload_claim("canvasId") ||
             decoded.get_payload_claim("canvasId").as_integer() != canvas_id) {
             std::cerr << "[HttpServer] JWT is not authorized for canvas #" << canvas_id << "\n";
-            return -1;
+            return std::nullopt;
         }
 
         if (decoded.has_payload_claim("clientIp")) {
             std::string token_ip = decoded.get_payload_claim("clientIp").as_string();
             if (normalizeClientIp(token_ip) != normalizeClientIp(client_ip)) {
                 std::cerr << "[HttpServer] IP mismatch: token IP (" << token_ip << ") != client IP (" << client_ip << ")\n";
-                return -1;
+                return std::nullopt;
             }
         } else {
             std::cerr << "[HttpServer] JWT missing valid clientIp claim\n";
-            return -1;
+            return std::nullopt;
         }
 
         if (decoded.has_payload_claim("serverHash")) {
@@ -115,35 +115,35 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
             
             if (token_hash != generated_hash) {
                 std::cerr << "[HttpServer] Server Hash mismatch: " << token_hash << " != " << generated_hash << "\n";
-                return -1;
+                return std::nullopt;
             }
         } else {
             std::cerr << "[HttpServer] JWT missing valid serverHash claim\n";
-            return -1;
+            return std::nullopt;
         }
         
         if (!decoded.has_payload_claim("nickname") || !decoded.has_payload_claim("tagNumber")) {
             std::cerr << "[HttpServer] JWT missing nickname or tagNumber claim\n";
-            return -1;
+            return std::nullopt;
         }
         const std::string nickname = decoded.get_payload_claim("nickname").as_string();
         const auto tag_number = decoded.get_payload_claim("tagNumber").as_integer();
         if (nickname.empty() || tag_number < 0 || tag_number > std::numeric_limits<int>::max()) {
             std::cerr << "[HttpServer] JWT has invalid nickname or tagNumber claim\n";
-            return -1;
+            return std::nullopt;
         }
 
         MssqlClient mssql(db_host_, db_port_);
         int user_id = mssql.getActiveUserId(nickname, static_cast<int>(tag_number));
         if (user_id <= 0) {
             std::cerr << "[HttpServer] Rejected connection: User inactive, not found, or database unavailable (" << nickname << "#" << tag_number << ")\n";
-            return -1;
+            return std::nullopt;
         }
 
-        return user_id;
+        return AuthenticatedUser{user_id, static_cast<int>(tag_number), nickname};
     } catch (const std::exception& e) {
         std::cerr << "[HttpServer] JWT verification failed: " << e.what() << "\n";
-        return -1;
+        return std::nullopt;
     }
 }
 

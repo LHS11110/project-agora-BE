@@ -387,7 +387,7 @@ void WebSocketServer::runServer() {
                 return;
             }
 
-            int user_id = -1;
+            std::optional<AuthenticatedUser> authenticated_user;
             std::string token = getQueryParam(query, "token");
             if (token_validator_ && !token.empty()) {
                 std::string client_ip = std::string(res->getRemoteAddressAsText());
@@ -397,10 +397,10 @@ void WebSocketServer::runServer() {
                         client_ip.assign(forwarded_ip.data(), forwarded_ip.size());
                     }
                 }
-                user_id = token_validator_(token, canvas_id, client_ip);
+                authenticated_user = token_validator_(token, canvas_id, client_ip);
             }
 
-            if (user_id <= 0) {
+            if (!authenticated_user || authenticated_user->user_id <= 0 || authenticated_user->tag_number < 0) {
                 std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid, missing, or unauthorized JWT token for canvas #"
                           << canvas_id << ")" << std::endl;
                 res->writeStatus("401 Unauthorized")->end("Invalid, missing, or unauthorized JWT token");
@@ -409,7 +409,9 @@ void WebSocketServer::runServer() {
 
             res->template upgrade<PerSocketData>({
                 canvas_id,
-                user_id,
+                authenticated_user->user_id,
+                authenticated_user->tag_number,
+                std::move(authenticated_user->nickname),
                 0,
                 0,
                 false,
@@ -558,10 +560,22 @@ void WebSocketServer::runServer() {
                     }
 
                     if (event.is_object()) {
-                        // Socket metadata is authoritative; clients cannot spoof the sender or canvas.
+                        // Socket metadata is authoritative; clients cannot spoof identities or canvas.
                         event["canvas_id"] = data->canvas_id;
-                        event["user_id"] = data->user_id;
-                        event["sender_id"] = data->user_id;
+                        if (event.value("type", "") == "chat") {
+                            // Public chat payloads use the nickname/tag pair,
+                            // while internal authorization keeps the DB user ID.
+                            event.erase("user_id");
+                            event.erase("userId");
+                            event.erase("sender_id");
+                            event.erase("senderId");
+                            event.erase("tagNumber");
+                            event["sender"] = data->nickname;
+                            event["tag_number"] = data->tag_number;
+                        } else {
+                            event["user_id"] = data->user_id;
+                            event["sender_id"] = data->user_id;
+                        }
                         const bool bulk_items = event.contains("items") && event["items"].is_object();
                         const std::string item_key = eventItemKey(event);
                         const bool item_event = bulk_items || !item_key.empty();

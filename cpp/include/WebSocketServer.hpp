@@ -9,13 +9,17 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <condition_variable>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include "App.h"
+#include "AuthenticatedUser.hpp"
 #include "CanvasPool.hpp"
 
 struct PerSocketData {
     int canvas_id{0};
     int user_id{0};
+    int tag_number{0};
+    std::string nickname;
     int message_count{0};
     long long last_reset_time{0};
     bool is_admin{false};
@@ -25,7 +29,7 @@ struct PerSocketData {
 class WebSocketServer {
 public:
     using Socket = uWS::WebSocket<false, true, PerSocketData>;
-    using TokenValidator = std::function<int(const std::string&, int, const std::string&)>;
+    using TokenValidator = std::function<std::optional<AuthenticatedUser>(const std::string&, int, const std::string&)>;
 
     WebSocketServer(CanvasPool& pool, const std::string& host = "0.0.0.0", int ws_port = 8001,
                     TokenValidator validator = nullptr,

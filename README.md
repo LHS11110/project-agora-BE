@@ -147,6 +147,8 @@ set +a
 
 명령 인자는 `BIND_IP ADVERTISE_IP REST_PORT WS_PORT` 순서입니다. 위 구성은 C++ 포트를 로컬에만 열고 Nginx가 외부 HTTPS/WSS 트래픽을 전달합니다. 다중 C++ 인스턴스는 포트를 겹치지 않게 지정합니다. Nginx 예시 설정은 `8002`부터 `8099`의 WS 포트만 전달합니다.
 
+채팅 WebSocket 이벤트는 클라이언트가 `{"type":"chat","text":"test"}`를 보내면 C++ 서버가 인증된 접속 정보로 `sender`와 `tag_number`, `canvas_id`를 채워 다른 접속자에게 전달합니다. 예: `{"type":"chat","text":"test","sender":"아고라관리자","tag_number":1,"canvas_id":1}`. 채팅 브로드캐스트에는 내부 DB `user_id`나 중복 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID가 계속 사용됩니다.
+
 ## systemd 운영 예시
 
 ```ini

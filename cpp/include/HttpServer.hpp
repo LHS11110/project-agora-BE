@@ -1,11 +1,13 @@
 #pragma once
 
 #include <string>
+#include <optional>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <httplib.h>
 #include "CanvasPool.hpp"
+#include "AuthenticatedUser.hpp"
 
 class HttpServer {
 public:
@@ -17,7 +19,7 @@ public:
     void start();
     void stop();
 
-    int authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port);
+    std::optional<AuthenticatedUser> authenticateTokenForCanvas(const std::string& token, int canvas_id, const std::string& client_ip, int ws_port);
 
     CanvasPool* getPool() { return &canvas_pool_; }
 
