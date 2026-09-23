@@ -20,6 +20,9 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
+import java.util.Arrays;
+
+import org.springframework.beans.factory.annotation.Value;
 
 @Configuration
 @EnableWebSecurity
@@ -27,9 +30,17 @@ import java.util.List;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final List<String> allowedCorsOrigins;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(
+            JwtAuthenticationFilter jwtAuthenticationFilter,
+            @Value("${app.security.cors.allowed-origins:}") String allowedCorsOrigins
+    ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.allowedCorsOrigins = Arrays.stream(allowedCorsOrigins.split(","))
+                .map(String::trim)
+                .filter(origin -> !origin.isEmpty())
+                .toList();
     }
 
     @Bean
@@ -69,13 +80,10 @@ public class SecurityConfig {
                                 "/api/auth/signup",
                                 "/api/auth/me",
                                 "/api/auth/health",
-                                "/api/database/**",
-                                "/api/test/**",
-                                "/api/internal/**",
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
-                        .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**").hasRole("ADMIN")
+                        .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**", "/api/database/**", "/api/test/**", "/api/internal/**").hasRole("ADMIN")
                         .requestMatchers("/api/users/**").authenticated()
                         .requestMatchers("/api/canvases/**").authenticated()
                         .anyRequest().authenticated()
@@ -89,7 +97,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedOrigins(allowedCorsOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);

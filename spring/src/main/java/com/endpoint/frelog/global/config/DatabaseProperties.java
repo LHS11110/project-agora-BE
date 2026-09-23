@@ -16,6 +16,8 @@ public class DatabaseProperties {
     private String name = "agora_db";
     private String username = "agora_user";
     private String password;
+    private boolean encrypt = true;
+    private boolean trustServerCertificate;
 
     public String getAddress() {
         if (address != null && !address.isBlank()) {
@@ -79,5 +81,21 @@ public class DatabaseProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public boolean isEncrypt() {
+        return encrypt;
+    }
+
+    public void setEncrypt(boolean encrypt) {
+        this.encrypt = encrypt;
+    }
+
+    public boolean isTrustServerCertificate() {
+        return trustServerCertificate;
+    }
+
+    public void setTrustServerCertificate(boolean trustServerCertificate) {
+        this.trustServerCertificate = trustServerCertificate;
     }
 }

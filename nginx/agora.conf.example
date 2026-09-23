@@ -1,4 +1,5 @@
 server {
+    server_tokens off;
     listen 80;
     server_name _;
     
@@ -7,12 +8,22 @@ server {
 }
 
 server {
+    server_tokens off;
     listen 443 ssl;
     server_name _;
 
-    # 로컬 테스트용 SSL 인증서 (운영 환경에서는 Let's Encrypt 등 실제 인증서 사용 권장)
-    ssl_certificate /home/steam/Github/project-agora-BE/nginx/ssl/cert.pem;
-    ssl_certificate_key /home/steam/Github/project-agora-BE/nginx/ssl/key.pem;
+    # Use a CA-issued certificate in production. Keep the private key outside
+    # the application checkout and readable only by root.
+    ssl_certificate /etc/nginx/ssl/agora/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/agora/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:10m;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     # Spring Boot API 라우팅
     location /api/ {

@@ -51,8 +51,11 @@ Ubuntu 환경에서는 제공되는 스크립트를 통해 위 종속성들을 �
 
 ```bash
 chmod +x install_dependencies.sh
-./install_dependencies.sh
+# Oracle이 공개한, 내려받을 JDK 아카이브와 정확히 일치하는 SHA-256을 지정합니다.
+JDK_SHA256=<official-sha256> ./install_dependencies.sh
 ```
+
+설치 스크립트는 SHA-256이 주어지지 않으면 JDK를 설치하지 않습니다. `latest` URL을 사용할 때는 Oracle의 해당 아카이브 체크섬을 매 실행 전에 확인해야 합니다. 운영 환경에서는 고정된 JDK URL과 그 SHA-256을 함께 지정하는 것을 권장합니다.
 
 ## 환경 변수
 
@@ -79,11 +82,17 @@ ES_USER_PASSWORD=<elasticsearch-application-password>
 
 REDIS_USER=agora_user
 REDIS_USER_PASSWORD=<redis-application-password>
+
+# 브라우저에서 별도 프론트엔드 도메인으로 API를 호출할 때만 지정합니다.
+# 여러 도메인은 쉼표로 구분합니다. 같은 도메인에서 제공하면 비워 둡니다.
+CORS_ALLOWED_ORIGINS=https://app.example.com
 EOF
 chmod 600 .env
 ```
 
 `JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다.
+
+MSSQL은 기본적으로 TLS 인증서 검증을 사용합니다. 개발 환경에서 검증 가능한 인증서를 구성할 수 없는 경우에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 일시적으로 지정하고, 운영에서는 설정하지 마세요.
 
 ## 로컬 실행
 
@@ -175,22 +184,27 @@ sudo systemctl enable --now agora-spring agora-cpp
 
 [nginx/agora.conf.example](nginx/agora.conf.example) 파일에는 Spring Boot API 프록시와 C++ 포트별 WSS 라우팅이 통합된 전체 Nginx 설정 예시가 포함되어 있습니다.
 
-Nginx 환경 설정과 로컬 SSL 구성은 다음 명령어로 빠르게 세팅할 수 있습니다:
+Nginx 설정을 적용하기 전 `server_name`과 인증서 경로를 배포 도메인에 맞게 바꾸세요. 자체 서명 인증서는 로컬 테스트에만 사용합니다.
 
 ```bash
 # Nginx 설치 및 자체 서명 인증서(Local 테스트용) 생성
 sudo apt-get install -y nginx
-mkdir -p nginx/ssl
+sudo install -d -m 700 /etc/nginx/ssl/agora
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout nginx/ssl/key.pem -out nginx/ssl/cert.pem \
+  -keyout /tmp/agora-privkey.pem -out /tmp/agora-fullchain.pem \
   -subj "/C=KR/ST=Seoul/L=Seoul/O=Project Agora/OU=Dev/CN=localhost"
+sudo install -m 600 -o root -g root /tmp/agora-privkey.pem /etc/nginx/ssl/agora/privkey.pem
+sudo install -m 644 -o root -g root /tmp/agora-fullchain.pem /etc/nginx/ssl/agora/fullchain.pem
+rm -f /tmp/agora-privkey.pem /tmp/agora-fullchain.pem
 
 # Nginx 환경 설정 적용
 sudo cp nginx/agora.conf.example /etc/nginx/sites-available/agora.conf
 sudo ln -sf /etc/nginx/sites-available/agora.conf /etc/nginx/sites-enabled/agora.conf
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo systemctl restart nginx
+sudo nginx -t
+sudo systemctl reload nginx
 ```
+
+운영에서는 위의 자체 서명 인증서 대신 CA가 발급한 `fullchain.pem`과 `privkey.pem`을 `/etc/nginx/ssl/agora/`에 같은 권한으로 설치하세요. 기본 Nginx 사이트를 해제해야 한다면, 해당 사이트가 사용 중이지 않은지 확인한 뒤 별도로 처리합니다.
 
 WSS 주소는 다음 형식을 사용합니다.
 

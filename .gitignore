@@ -157,6 +157,15 @@ tests/
 config.json
 !config.example.json
 
+# Private cryptographic material and local credential stores
+# (existing tracked third-party test certificates are unaffected)
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+
 
 # ==============================================================================
 # IDEs & Editors

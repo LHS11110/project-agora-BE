@@ -38,8 +38,8 @@ public class DataSourceConfig {
             log.info("MSSQL 데이터베이스({}:{}) 연결을 설정합니다. DB: {}", host, port, dbProperties.getName());
             HikariDataSource ds = new HikariDataSource();
             ds.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
-            ds.setJdbcUrl(String.format("jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=false;trustServerCertificate=true;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8",
-                    host, port, dbProperties.getName()));
+            ds.setJdbcUrl(String.format("jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=%s;trustServerCertificate=%s;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8",
+                    host, port, dbProperties.getName(), dbProperties.isEncrypt(), dbProperties.isTrustServerCertificate()));
             ds.setUsername(dbProperties.getUsername());
             ds.setPassword(dbProperties.getPassword());
             return ds;
