@@ -4,7 +4,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class JwtTokenProviderTest {
 
@@ -34,6 +39,29 @@ class JwtTokenProviderTest {
         assertThat(jwtTokenProvider.validateToken(token)).isTrue();
         assertThat(jwtTokenProvider.getEmailFromToken(token)).isEqualTo(email);
         assertThat(jwtTokenProvider.getTagNumberFromToken(token)).isEqualTo(tagNumber);
+    }
+
+    @Test
+    @DisplayName("캔버스 토큰은 비밀키 길이에 관계없이 C++ 검증기와 동일한 HS256으로 서명한다")
+    void canvasToken_UsesHs256ForSupportedKeyLengths() {
+        for (String secret : List.of("0123456789abcdef0123456789abcdef", SECRET)) {
+            JwtTokenProvider provider = new JwtTokenProvider(secret, EXPIRATION_MS);
+            String token = provider.createCanvasAccessToken("테스터", 1234, 1, "127.0.0.1", "server-hash");
+            String header = new String(Base64.getUrlDecoder().decode(token.split("\\.")[0]), StandardCharsets.UTF_8);
+            String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]), StandardCharsets.UTF_8);
+
+            assertThat(header).contains("\"alg\":\"HS256\"");
+            assertThat(payload).doesNotContain("\"userId\"");
+            assertThat(provider.validateToken(token)).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("32바이트 미만의 JWT 비밀키는 거부한다")
+    void rejectsShortSecret() {
+        assertThatThrownBy(() -> new JwtTokenProvider("short-secret", EXPIRATION_MS))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 32 bytes");
     }
 
     @Test

@@ -6,6 +6,10 @@
 #include <nlohmann/json.hpp>
 #include <vector>
 
+static bool isLocalProxyPeer(std::string_view ip) {
+    return ip == "127.0.0.1" || ip == "::1" || ip == "::ffff:127.0.0.1";
+}
+
 static std::string getQueryParam(std::string_view query, const std::string& key) {
     std::string q(query);
     std::string pattern = key + "=";
@@ -387,6 +391,12 @@ void WebSocketServer::runServer() {
             std::string token = getQueryParam(query, "token");
             if (token_validator_ && !token.empty()) {
                 std::string client_ip = std::string(res->getRemoteAddressAsText());
+                if (isLocalProxyPeer(client_ip)) {
+                    const auto forwarded_ip = req->getHeader("x-real-ip");
+                    if (!forwarded_ip.empty()) {
+                        client_ip.assign(forwarded_ip.data(), forwarded_ip.size());
+                    }
+                }
                 user_id = token_validator_(token, canvas_id, client_ip);
             }
 

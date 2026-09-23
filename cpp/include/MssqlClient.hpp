@@ -32,8 +32,8 @@ public:
     // Checks if the canvas has any active sessions
     bool isCanvasActiveInDb(int canvasId);
 
-    // Checks if the user is deleted (status = 'WITHDRAWN')
-    int getUserIdAndCheckWithdrawn(const std::string& nickname, int tagNumber);
+    // Resolve an active user from the nickname and tag in the canvas token.
+    int getActiveUserId(const std::string& nickname, int tagNumber);
 
 private:
     std::string host_;

@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include "MssqlClient.hpp"
 
@@ -68,7 +69,7 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
     try {
         auto decoded = jwt::decode(token);
         auto verifier = jwt::verify()
-            .allow_algorithm(jwt::algorithm::hs512(jwt_secret_));
+            .allow_algorithm(jwt::algorithm::hs256(jwt_secret_));
         verifier.verify(decoded);
 
         if (decoded.get_subject() != "canvas-access" ||
@@ -121,25 +122,21 @@ int HttpServer::authenticateTokenForCanvas(const std::string& token, int canvas_
             return -1;
         }
         
-        std::string nickname = "";
-        if (decoded.has_payload_claim("nickname")) {
-            nickname = decoded.get_payload_claim("nickname").as_string();
+        if (!decoded.has_payload_claim("nickname") || !decoded.has_payload_claim("tagNumber")) {
+            std::cerr << "[HttpServer] JWT missing nickname or tagNumber claim\n";
+            return -1;
         }
-        
-        int tag_number = -1;
-        if (decoded.has_payload_claim("tagNumber")) {
-            tag_number = static_cast<int>(decoded.get_payload_claim("tagNumber").as_integer());
-        }
-
-        if (nickname.empty() || tag_number < 0) {
-            std::cerr << "[HttpServer] JWT missing valid nickname or tagNumber claim\n";
+        const std::string nickname = decoded.get_payload_claim("nickname").as_string();
+        const auto tag_number = decoded.get_payload_claim("tagNumber").as_integer();
+        if (nickname.empty() || tag_number < 0 || tag_number > std::numeric_limits<int>::max()) {
+            std::cerr << "[HttpServer] JWT has invalid nickname or tagNumber claim\n";
             return -1;
         }
 
         MssqlClient mssql(db_host_, db_port_);
-        int user_id = mssql.getUserIdAndCheckWithdrawn(nickname, tag_number);
+        int user_id = mssql.getActiveUserId(nickname, static_cast<int>(tag_number));
         if (user_id <= 0) {
-            std::cerr << "[HttpServer] Rejected connection: User withdrawn or not found (" << nickname << "#" << tag_number << ")\n";
+            std::cerr << "[HttpServer] Rejected connection: User inactive, not found, or database unavailable (" << nickname << "#" << tag_number << ")\n";
             return -1;
         }
 

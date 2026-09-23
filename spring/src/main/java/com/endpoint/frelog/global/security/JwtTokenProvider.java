@@ -4,13 +4,13 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
@@ -25,15 +25,12 @@ public class JwtTokenProvider {
     public JwtTokenProvider(
             @Value("${jwt.secret}") String secret,
             @Value("${jwt.expiration-ms:86400000}") long expirationMs) {
-        // JJWT HMAC-SHA algorithms require at least 256 bits (32 bytes)
+        // Match the C++ server's HS256 verifier for every supported key length.
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
-            byte[] padded = new byte[32];
-            System.arraycopy(keyBytes, 0, padded, 0, Math.min(keyBytes.length, 32));
-            this.key = Keys.hmacShaKeyFor(padded);
-        } else {
-            this.key = Keys.hmacShaKeyFor(keyBytes);
+            throw new IllegalArgumentException("JWT_SECRET must be at least 32 bytes long");
         }
+        this.key = new SecretKeySpec(keyBytes, "HmacSHA256");
         this.expirationMs = expirationMs;
     }
 
@@ -49,7 +46,7 @@ public class JwtTokenProvider {
                 .claim("clientIp", clientIp)
                 .issuedAt(now)
                 .expiration(validity)
-                .signWith(key)
+                .signWith(key, Jwts.SIG.HS256)
                 .compact();
     }
 
@@ -67,7 +64,7 @@ public class JwtTokenProvider {
                 .claim("serverHash", serverHash)
                 .issuedAt(now)
                 .expiration(validity)
-                .signWith(key)
+                .signWith(key, Jwts.SIG.HS256)
                 .compact();
     }
 

@@ -77,17 +77,39 @@ public:
         lock.unlock();
 
         LOGINREC* login = dblogin();
+        if (!login) {
+            std::cerr << "[MssqlClient] dblogin failed." << std::endl;
+            lock.lock();
+            active_connections_--;
+            lock.unlock();
+            cv_.notify_one();
+            return nullptr;
+        }
         DBSETLUSER(login, user_.c_str());
         DBSETLPWD(login, pass_.c_str());
         DBSETLAPP(login, "AgoraCppServer");
+        // Token nicknames and SQL text are UTF-8. FreeTDS otherwise depends on
+        // freetds.conf/LANG and may interpret Korean bytes as ISO-8859-1.
+        if (DBSETLCHARSET(login, "UTF-8") != SUCCEED) {
+            std::cerr << "[MssqlClient] Failed to configure UTF-8 client charset." << std::endl;
+            dbloginfree(login);
+            lock.lock();
+            active_connections_--;
+            lock.unlock();
+            cv_.notify_one();
+            return nullptr;
+        }
 
         std::string server_str = host_ + ":" + std::to_string(port_);
         DBPROCESS* dbproc = dbopen(login, server_str.c_str());
         dbloginfree(login);
 
-        if (dbproc) {
-            dbuse(dbproc, db_.c_str());
-        } else {
+        if (dbproc && dbuse(dbproc, db_.c_str()) != SUCCEED) {
+            std::cerr << "[MssqlClient] Failed to select database '" << db_ << "'." << std::endl;
+            dbclose(dbproc);
+            dbproc = nullptr;
+        }
+        if (!dbproc) {
             lock.lock();
             active_connections_--;
             lock.unlock();
@@ -498,64 +520,53 @@ bool MssqlClient::isCanvasActiveInDb(int canvasId) {
     return active_count > 0;
 }
 
-int MssqlClient::getUserIdAndCheckWithdrawn(const std::string& nickname, int tagNumber) {
+int MssqlClient::getActiveUserId(const std::string& nickname, int tagNumber) {
+    if (nickname.empty() || tagNumber < 0) return -1;
     PooledConnection pconn;
     DBPROCESS* dbproc = pconn.get();
     if (!dbproc) {
-        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: Failed to get connection." << std::endl;
+        std::cerr << "[MssqlClient] getActiveUserId: Failed to get connection." << std::endl;
         return -1; 
     }
 
-    std::string sql = 
-        "BEGIN TRAN; "
-        "BEGIN TRY "
-        "   SELECT user_id, status FROM users WHERE nickname = N'" + sqlLiteral(nickname) + "' AND tag_number = " + std::to_string(tagNumber) + "; "
-        "   COMMIT TRAN; "
-        "END TRY "
-        "BEGIN CATCH "
-        "   IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
-        "   THROW; "
-        "END CATCH;";
+    std::string sql = "SELECT user_id FROM users WHERE nickname = N'" +
+        sqlLiteral(nickname) + "' AND tag_number = " + std::to_string(tagNumber) +
+        " AND status = 'ACTIVE';";
         
     if (dbcmd(dbproc, sql.c_str()) != SUCCEED) {
-        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: dbcmd failed." << std::endl;
+        std::cerr << "[MssqlClient] getActiveUserId: dbcmd failed." << std::endl;
         return -1;
     }
 
     if (dbsqlexec(dbproc) != SUCCEED) {
-        std::cerr << "[MssqlClient] getUserIdAndCheckWithdrawn: dbsqlexec failed." << std::endl;
+        std::cerr << "[MssqlClient] getActiveUserId: dbsqlexec failed." << std::endl;
         return -1;
     }
 
-    int user_id = -1;
-    // Wait, UserStatus in Java is Enum (ACTIVE, SUSPENDED, WITHDRAWN).
-    // Usually stored as TINYINT in SQL Server if @Enumerated(EnumType.ORDINAL).
-    bool withdrawn = false;
+    int active_user_id = -1;
     
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) break;
+        if (ret == FAIL) {
+            std::cerr << "[MssqlClient] getActiveUserId: dbresults failed." << std::endl;
+            return -1;
+        }
         if (DBROWS(dbproc)) {
-            DBINT id_val;
-            char status_val[32] = {0};
-            
-            dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val);
-            dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)status_val);
+            DBINT id_val = -1;
+            if (dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&id_val) != SUCCEED) {
+                std::cerr << "[MssqlClient] getActiveUserId: dbbind failed." << std::endl;
+                return -1;
+            }
 
             while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-                if (ret == FAIL) break;
-                user_id = id_val;
-                if (strcmp(status_val, "WITHDRAWN") == 0) {
-                    withdrawn = true;
+                if (ret == FAIL) {
+                    std::cerr << "[MssqlClient] getActiveUserId: dbnextrow failed." << std::endl;
+                    return -1;
                 }
+                active_user_id = id_val;
             }
         }
     }
 
-    if (withdrawn) {
-        std::cout << "[MssqlClient] getUserIdAndCheckWithdrawn: User is WITHDRAWN. id=" << user_id << std::endl;
-        return -1;
-    }
-
-    return user_id;
+    return active_user_id;
 }

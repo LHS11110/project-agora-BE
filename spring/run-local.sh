@@ -15,8 +15,9 @@ set -a
 source "$ENV_FILE"
 set +a
 
-if [[ -z "${JWT_SECRET:-}" || ${#JWT_SECRET} -lt 32 ]]; then
-    echo "JWT_SECRET must be set in $ENV_FILE and contain at least 32 characters." >&2
+secret_length_bytes=$(printf '%s' "${JWT_SECRET:-}" | LC_ALL=C wc -c)
+if (( secret_length_bytes < 32 )); then
+    echo "JWT_SECRET must be set in $ENV_FILE and contain at least 32 bytes." >&2
     exit 1
 fi
 
