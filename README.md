@@ -42,17 +42,16 @@ C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spri
 
 - JDK 26
 - CMake 3.16 이상, C++17 컴파일러, `pkg-config`
-- `cpp-httplib`, OpenSSL, FreeTDS (`sybdb`), zlib 개발 패키지
+- `cpp-httplib`, `nlohmann-json3`, OpenSSL, FreeTDS (`sybdb`), zlib 개발 패키지
 - Docker 및 Docker Compose v2
 - Project Agora DB의 MS SQL Server, Redis Stack, Elasticsearch
 - TLS 인증서와 Nginx (외부 WSS 제공 시)
 
-Ubuntu 예시:
+Ubuntu 환경에서는 제공되는 스크립트를 통해 위 종속성들을 한번에 설치할 수 있습니다:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config libcpp-httplib-dev \
-  libssl-dev freetds-dev zlib1g-dev
+chmod +x install_dependencies.sh
+./install_dependencies.sh
 ```
 
 ## 환경 변수
