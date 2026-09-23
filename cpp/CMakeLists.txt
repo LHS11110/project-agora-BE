@@ -57,3 +57,18 @@ target_link_libraries(agora_cpp_server
 )
 
 target_compile_options(agora_cpp_server PRIVATE ${HTTPLIB_CFLAGS_OTHER} -Wall -Wextra -O2)
+
+# Keep attribution/license texts with an installed C++ binary. System shared
+# libraries are not copied by this install target.
+install(TARGETS agora_cpp_server RUNTIME DESTINATION bin)
+install(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_LICENSES.md
+    DESTINATION share/agora/licenses
+)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/LICENSE
+    DESTINATION share/agora/licenses RENAME uWebSockets-Apache-2.0.txt)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/LICENSE
+    DESTINATION share/agora/licenses RENAME uSockets-Apache-2.0.txt)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jwt-cpp/LICENSE
+    DESTINATION share/agora/licenses RENAME jwt-cpp-MIT.txt)

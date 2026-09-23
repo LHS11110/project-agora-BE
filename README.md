@@ -284,3 +284,5 @@ nginx/        TLS/WSS 프록시 예시
 ## 라이선스
 
 이 프로젝트는 [MIT License](LICENSE)를 따릅니다. 외부 라이브러리 고지는 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)에서 확인할 수 있습니다.
+
+C++ 실행 파일을 배포할 때는 실행 파일만 복사하지 말고 `cmake --install cpp/build --prefix <배포 경로>`로 라이선스 파일도 함께 설치하세요. Spring 실행 JAR에는 프로젝트 및 주요 외부 라이선스 고지가 포함됩니다. 운영체제 공유 라이브러리나 Docker 이미지를 별도로 묶어 배포한다면 해당 버전의 라이선스·고지도 추가로 확인해야 합니다.

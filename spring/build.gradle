@@ -51,3 +51,16 @@ tasks.named('test') {
 tasks.withType(JavaCompile).configureEach {
 	options.encoding = 'UTF-8'
 }
+
+tasks.named('bootJar') {
+	from(rootProject.file('../LICENSE')) {
+		into 'META-INF/agora-licenses'
+	}
+	from(rootProject.file('../THIRD_PARTY_LICENSES.md')) {
+		into 'META-INF/agora-licenses'
+	}
+	from(rootProject.file('../cpp/third_party/uWebSockets/LICENSE')) {
+		into 'META-INF/agora-licenses'
+		rename { 'Apache-2.0.txt' }
+	}
+}
