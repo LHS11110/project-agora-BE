@@ -2,3 +2,6 @@
 	path = cpp/third_party/uWebSockets
 	url = https://github.com/uNetworking/uWebSockets.git
 	ignore = dirty
+[submodule "cpp/third_party/jwt-cpp"]
+	path = cpp/third_party/jwt-cpp
+	url = https://github.com/Thalhammer/jwt-cpp.git
