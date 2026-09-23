@@ -241,11 +241,10 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 접속 시 초대된 사용자인 경우 미캐시 상태면 P2C로 할당하고 JWT를 C++ 서버에 등록한다")
+    @DisplayName("캔버스 접속 시 참여자 목록과 무관하게 미캐시 상태면 P2C로 할당하고 JWT를 C++ 서버에 등록한다")
     void accessCanvas_NotCached_AllocatesAndRegisters() {
         // given
         CanvasDocument doc = new CanvasDocument("Access Canvas", 300, 1L, "hashedPass", "default");
-        doc.getPeople().add(1L);
         given(canvasElasticsearchService.getCanvasDocumentById(300)).willReturn(Optional.of(doc));
         given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
 

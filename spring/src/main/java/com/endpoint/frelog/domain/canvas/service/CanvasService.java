@@ -335,7 +335,8 @@ public class CanvasService {
     /**
      * 5. Access API:
      * - 특정 캔버스 아이디에 대한 접속 API
-     * - 로그인한 사용자만 허용하고 그 중에서도 초대된 사용자 리스트(people)에 속한 경우에만 허용
+     * - 로그인한 사용자만 허용
+     * - 참여자 목록(people)은 설정/관리 정보로만 사용하며 접속 권한을 제한하지 않음
      * - is_cached가 true: 해당 테이블의 redis, server 정보 반환
      * - is_cached가 false: redis 및 server 정보 테이블에서 is_activated가 true인 행에 대해서만 로드 밸런싱 수행 후 canvas_info 업데이트 및 is_cached=true 설정
      * - 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록
@@ -360,9 +361,6 @@ public class CanvasService {
         // Redis document. A settings change must not race a cache handoff.
         CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
         CanvasDocument doc = currentCanvasDocument(canvasId, canvasInfo);
-        if (doc.getPeople() == null || !doc.getPeople().contains(userId)) {
-            throw new CustomException(ErrorCode.ACCESS_DENIED, "초대된 사용자 리스트(people)에 속한 경우에만 접근할 수 있습니다.");
-        }
         String storedPassword = doc.getCanvasPasswordHash();
         if (storedPassword != null && !storedPassword.isBlank()) {
             if (suppliedPassword == null || suppliedPassword.isBlank()) {
