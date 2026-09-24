@@ -14,6 +14,11 @@
 
 class CanvasPool {
 public:
+    struct CanvasSessionReservation {
+        std::shared_ptr<Canvas> canvas;
+        std::uint64_t generation;
+    };
+
     CanvasPool(const std::string& db_host = "127.0.0.1", int db_port = 1433,
                const std::string& es_host = "127.0.0.1", int es_port = 9200,
                const std::string& java_host = "127.0.0.1", int java_port = 8080,
@@ -28,8 +33,9 @@ public:
     // or user-session update.
     bool isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision);
     
-    // Connect user session in DB
-    std::optional<std::uint64_t> updateUserSessionConnected(int user_id, int canvas_id);
+    // Load the canvas and reserve the user's DB session atomically with respect
+    // to canvas unload for this ID.
+    std::optional<CanvasSessionReservation> connectUserSession(int user_id, int canvas_id);
 
     // Disconnect user session in DB (for rejected connections)
     bool updateUserSessionDisconnected(int user_id, int canvas_id, std::uint64_t session_generation);
@@ -66,6 +72,9 @@ public:
     int getCppServerPort() const { return cpp_server_port_; }
 
 private:
+    std::shared_ptr<std::mutex> lifecycleMutexForCanvas(int canvas_id);
+    std::shared_ptr<Canvas> getOrCreateCanvasWithLifecycleLock(int canvas_id);
+    bool removeCanvasImpl(int canvas_id, bool only_if_inactive);
     bool unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;

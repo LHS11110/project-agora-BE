@@ -531,10 +531,9 @@ async function connectActiveCanvas() {
                     return;
                 }
                 if (data.type === 'chat') {
+                    renderChatRecord(data.room_id, data);
                     if (data.room_created) {
                         socket.send(JSON.stringify({ type: 'chat_history', room_id: data.room_id, limit: 50 }));
-                    } else {
-                        renderChatRecord(data.room_id, data);
                     }
                     return;
                 }

@@ -92,6 +92,7 @@ private:
     std::condition_variable worker_cv_;
     int active_workers_{0};
     int active_blocking_workers_{0};
+    std::unordered_set<Socket*> registered_sockets_;
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
     std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<Socket*>>> sockets_by_canvas_group_;

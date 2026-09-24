@@ -28,6 +28,9 @@ include_directories(
 file(GLOB_RECURSE USOCKETS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/src/*.c"
 )
+# Keep the epoll pointer fix in this repository rather than changing a nested
+# Git submodule, whose dirty files are ignored by the parent repository.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PatchUSocketsEpoll.cmake")
 add_library(usockets STATIC ${USOCKETS_SOURCES})
 target_include_directories(usockets PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/src

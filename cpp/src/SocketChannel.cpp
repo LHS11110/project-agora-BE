@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <initializer_list>
 #include <poll.h>
+#include <pthread.h>
 #include <set>
 
 UserSockets::UserSockets(int user_id, int rx_port, int tx_port, Canvas* canvas)
@@ -179,6 +180,7 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
 }
 
 void UserSockets::rxLoop() {
+    pthread_setname_np(pthread_self(), "agora-rx");
     while (running_) {
         const int server_fd = rx_server_fd_.load(std::memory_order_acquire);
         if (server_fd < 0) break;
@@ -250,6 +252,7 @@ void UserSockets::rxLoop() {
 }
 
 void UserSockets::txLoop() {
+    pthread_setname_np(pthread_self(), "agora-tx");
     while (running_) {
         const int server_fd = tx_server_fd_.load(std::memory_order_acquire);
         if (server_fd < 0) break;

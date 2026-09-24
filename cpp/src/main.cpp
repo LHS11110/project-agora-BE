@@ -2,6 +2,8 @@
 #include <string>
 #include <cstdlib>
 #include <csignal>
+#include <cstdint>
+#include <cerrno>
 #include <thread>
 #include <chrono>
 #include <mutex>
@@ -11,6 +13,10 @@
 #include <initializer_list>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
@@ -34,13 +40,46 @@ namespace {
 void writeSignalText(const char* text, std::size_t length) {
     while (length > 0) {
         const ssize_t written = write(STDERR_FILENO, text, length);
+        if (written < 0 && errno == EINTR) continue;
         if (written <= 0) return;
         text += written;
         length -= static_cast<std::size_t>(written);
     }
 }
 
-void crashTraceHandler(int signal_number, siginfo_t*, void*) {
+void writeSignalNumber(const char* label, long long value) {
+    char buffer[32];
+    std::size_t position = sizeof(buffer);
+    const bool negative = value < 0;
+    unsigned long long magnitude = negative
+        ? static_cast<unsigned long long>(-(value + 1)) + 1
+        : static_cast<unsigned long long>(value);
+    do {
+        buffer[--position] = static_cast<char>('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude);
+    if (negative) buffer[--position] = '-';
+    writeSignalText(label, std::char_traits<char>::length(label));
+    writeSignalText(buffer + position, sizeof(buffer) - position);
+    writeSignalText("\n", 1);
+}
+
+void writeSignalHex(const char* label, std::uintptr_t value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    char buffer[2 + sizeof(value) * 2];
+    buffer[0] = '0';
+    buffer[1] = 'x';
+    for (std::size_t i = 0; i < sizeof(value) * 2; ++i) {
+        const std::size_t shift = (sizeof(value) * 2 - i - 1) * 4;
+        buffer[2 + i] = digits[(value >> shift) & 0xf];
+    }
+    writeSignalText(label, std::char_traits<char>::length(label));
+    writeSignalText(buffer, sizeof(buffer));
+    static constexpr char newline[] = "\n";
+    writeSignalText(newline, sizeof(newline) - 1);
+}
+
+void crashTraceHandler(int signal_number, siginfo_t* signal_info, void* raw_context) {
     const char* signal_name = "fatal signal";
     std::size_t name_length = sizeof("fatal signal") - 1;
     switch (signal_number) {
@@ -62,6 +101,68 @@ void crashTraceHandler(int signal_number, siginfo_t*, void*) {
     static constexpr char suffix[] = "\n";
     writeSignalText(suffix, sizeof(suffix) - 1);
 
+    // Emit context before unwinding: backtrace itself may fail if the heap or
+    // stack is corrupt. These calls do not allocate or take C++ locks.
+    timespec now{};
+    if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+        writeSignalNumber("[CrashTrace] unix_seconds=", now.tv_sec);
+        writeSignalNumber("[CrashTrace] nanoseconds=", now.tv_nsec);
+    }
+    writeSignalNumber("[CrashTrace] pid=", getpid());
+    writeSignalNumber("[CrashTrace] tid=", syscall(SYS_gettid));
+    char thread_name[16]{};
+    if (syscall(SYS_prctl, PR_GET_NAME, thread_name, 0, 0, 0) == 0) {
+        static constexpr char thread_prefix[] = "[CrashTrace] thread_name=";
+        writeSignalText(thread_prefix, sizeof(thread_prefix) - 1);
+        std::size_t length = 0;
+        while (length < sizeof(thread_name) && thread_name[length]) ++length;
+        writeSignalText(thread_name, length);
+        writeSignalText("\n", 1);
+    }
+    writeSignalNumber("[CrashTrace] signal_number=", signal_number);
+
+    if (signal_info) {
+        writeSignalNumber("[CrashTrace] signal_code=", signal_info->si_code);
+        writeSignalNumber("[CrashTrace] signal_errno=", signal_info->si_errno);
+        if (signal_number == SIGSEGV || signal_number == SIGBUS
+            || signal_number == SIGILL || signal_number == SIGFPE) {
+            writeSignalHex("[CrashTrace] fault_address=", reinterpret_cast<std::uintptr_t>(signal_info->si_addr));
+        } else if (signal_number == SIGABRT) {
+            writeSignalNumber("[CrashTrace] sender_pid=", signal_info->si_pid);
+            writeSignalNumber("[CrashTrace] sender_uid=", signal_info->si_uid);
+        }
+    }
+#if defined(__x86_64__) && defined(REG_RIP)
+    if (raw_context) {
+        const auto* context = static_cast<const ucontext_t*>(raw_context);
+#define TRACE_REGISTER(name, index) \
+        writeSignalHex("[CrashTrace] " name "=", static_cast<std::uintptr_t>(context->uc_mcontext.gregs[index]))
+        TRACE_REGISTER("rip", REG_RIP);
+        TRACE_REGISTER("rsp", REG_RSP);
+        TRACE_REGISTER("rbp", REG_RBP);
+        TRACE_REGISTER("rax", REG_RAX);
+        TRACE_REGISTER("rbx", REG_RBX);
+        TRACE_REGISTER("rcx", REG_RCX);
+        TRACE_REGISTER("rdx", REG_RDX);
+        TRACE_REGISTER("rdi", REG_RDI);
+        TRACE_REGISTER("rsi", REG_RSI);
+        TRACE_REGISTER("r8", REG_R8);
+        TRACE_REGISTER("r9", REG_R9);
+        TRACE_REGISTER("r10", REG_R10);
+        TRACE_REGISTER("r11", REG_R11);
+        TRACE_REGISTER("r12", REG_R12);
+        TRACE_REGISTER("r13", REG_R13);
+        TRACE_REGISTER("r14", REG_R14);
+        TRACE_REGISTER("r15", REG_R15);
+        TRACE_REGISTER("eflags", REG_EFL);
+        TRACE_REGISTER("error_code", REG_ERR);
+        TRACE_REGISTER("trap_number", REG_TRAPNO);
+#undef TRACE_REGISTER
+    }
+#endif
+
+    static constexpr char stack_header[] = "[CrashTrace] stack_trace:\n";
+    writeSignalText(stack_header, sizeof(stack_header) - 1);
     void* frames[64];
     const int frame_count = backtrace(frames, static_cast<int>(sizeof(frames) / sizeof(frames[0])));
     if (frame_count > 0) backtrace_symbols_fd(frames, frame_count, STDERR_FILENO);
@@ -111,6 +212,7 @@ void stop_servers() {
 
 int main(int argc, char* argv[]) {
     installCrashTraceHandlers();
+    pthread_setname_np(pthread_self(), "agora-main");
 
     sigset_t handled_signals;
     sigemptyset(&handled_signals);
@@ -166,6 +268,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "========================================\n";
     std::cout << " Agora C++ Realtime Canvas Server\n";
+    std::cout << " Process PID:            " << getpid() << "\n";
     std::cout << " REST Listening on:      " << host << ":" << g_port << "\n";
     std::cout << " uWS WebSocket Port:     " << host << ":" << ws_port << "\n";
     std::cout << " MSSQL:                  " << g_db_host << ":" << g_db_port << "\n";
@@ -200,6 +303,7 @@ int main(int argc, char* argv[]) {
     g_ws_server = &ws_server;
 
     std::thread signal_thread([&]() {
+        pthread_setname_np(pthread_self(), "agora-signal");
         while (g_cleanup_running) {
             timespec timeout{1, 0};
             int signal = sigtimedwait(&handled_signals, nullptr, &timeout);
@@ -220,6 +324,7 @@ int main(int argc, char* argv[]) {
     });
 
     std::thread cleanup_thread([&]() {
+        pthread_setname_np(pthread_self(), "agora-cleanup");
         while (g_cleanup_running) {
             if (!g_graceful_shutdown && !mssql.heartbeatServer(g_advertise_ip, g_port)) {
                 std::cerr << "[Agora C++ Server] Server heartbeat update failed\n";

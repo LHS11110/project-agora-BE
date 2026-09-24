@@ -46,22 +46,20 @@ CanvasPool::~CanvasPool() {
     canvases_.clear();
 }
 
+std::shared_ptr<std::mutex> CanvasPool::lifecycleMutexForCanvas(int canvas_id) {
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto& lifecycle_mtx = lifecycle_mutexes_[canvas_id];
+    if (!lifecycle_mtx) lifecycle_mtx = std::make_shared<std::mutex>();
+    return lifecycle_mtx;
+}
+
 std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
-    std::shared_ptr<std::mutex> lifecycle_mtx;
-    {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        auto mtx_it = lifecycle_mutexes_.find(canvas_id);
-        if (mtx_it == lifecycle_mutexes_.end()) {
-            lifecycle_mtx = std::make_shared<std::mutex>();
-            lifecycle_mutexes_[canvas_id] = lifecycle_mtx;
-        } else {
-            lifecycle_mtx = mtx_it->second;
-        }
-    }
-
-    // Serialize even the existing-canvas fast path with unload.
+    auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
     std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
+    return getOrCreateCanvasWithLifecycleLock(canvas_id);
+}
 
+std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canvas_id) {
     // Double check if another thread initialized it while we were waiting
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
@@ -184,10 +182,9 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     canvas->setCanvasName(canvas_name);
     canvas->setAdminUserId(admin_uid);
     canvas->setSettingsRevision(canvas_doc->value("settings-revision", 0LL));
-    canvas->setWebSocketCallbacks(web_socket_callbacks_);
-
     {
         std::lock_guard<std::mutex> lock(pool_mutex_);
+        canvas->setWebSocketCallbacks(web_socket_callbacks_);
         canvases_[canvas_id] = canvas;
     }
     
@@ -206,6 +203,12 @@ std::shared_ptr<Canvas> CanvasPool::getCanvas(int canvas_id) {
 
 bool CanvasPool::isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision) {
     if (canvas_id <= 0 || user_id <= 0) return false;
+
+    // Serialize the authorization source selection with unload. Otherwise a
+    // request can read the old cached assignment, wait for unload to finish,
+    // and then reject against a Canvas object that has already left the pool.
+    auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
+    std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
 
     MssqlClient mssql(db_host_, db_port_);
     const auto assignment = mssql.getCanvasStorageAssignment(canvas_id);
@@ -333,13 +336,11 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
 }
 
 bool CanvasPool::removeCanvas(int canvas_id) {
-    std::shared_ptr<std::mutex> lifecycle_mtx;
-    {
-        std::lock_guard<std::mutex> lock(pool_mutex_);
-        auto& entry = lifecycle_mutexes_[canvas_id];
-        if (!entry) entry = std::make_shared<std::mutex>();
-        lifecycle_mtx = entry;
-    }
+    return removeCanvasImpl(canvas_id, false);
+}
+
+bool CanvasPool::removeCanvasImpl(int canvas_id, bool only_if_inactive) {
+    auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
     std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
 
     std::shared_ptr<Canvas> canvas;
@@ -352,6 +353,13 @@ bool CanvasPool::removeCanvas(int canvas_id) {
     }
 
     if (!canvas) return false;
+
+    // The cleanup scan can race a new WebSocket reservation. Recheck while
+    // holding the same per-canvas lifecycle lock used by connectUserSession.
+    if (only_if_inactive) {
+        MssqlClient mssql(db_host_, db_port_);
+        if (mssql.isCanvasActiveInDb(canvas_id)) return false;
+    }
 
     // Keep the shared instance discoverable while unload marks it as closing
     // and drains persistence. Removing it first lets concurrent close/auth
@@ -410,12 +418,9 @@ std::vector<int> CanvasPool::getActiveCanvasIds() {
 
 void CanvasPool::cleanupInactiveCanvases() {
     std::vector<int> active_ids = getActiveCanvasIds();
-    MssqlClient mssql(db_host_, db_port_);
-    
     for (int canvas_id : active_ids) {
-        if (!mssql.isCanvasActiveInDb(canvas_id)) {
+        if (removeCanvasImpl(canvas_id, true)) {
             std::cout << "[CanvasPool] Cleanup task found no active users for Canvas #" << canvas_id << ". Unloading.\n";
-            removeCanvas(canvas_id);
         }
     }
 }
@@ -430,7 +435,13 @@ std::pair<int, int> CanvasPool::allocatePortPair() {
     return {rx, tx};
 }
 
-std::optional<std::uint64_t> CanvasPool::updateUserSessionConnected(int user_id, int canvas_id) {
+std::optional<CanvasPool::CanvasSessionReservation> CanvasPool::connectUserSession(int user_id, int canvas_id) {
+    auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
+    std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
+
+    auto canvas = getOrCreateCanvasWithLifecycleLock(canvas_id);
+    if (!canvas || canvas->unloading) return std::nullopt;
+
     std::shared_ptr<std::mutex> session_mutex;
     {
         std::lock_guard<std::mutex> lock(session_generation_mutex_);
@@ -444,7 +455,7 @@ std::optional<std::uint64_t> CanvasPool::updateUserSessionConnected(int user_id,
         return std::nullopt;
     }
     std::lock_guard<std::mutex> generation_lock(session_generation_mutex_);
-    return ++user_session_generations_[user_id];
+    return CanvasSessionReservation{std::move(canvas), ++user_session_generations_[user_id]};
 }
 
 bool CanvasPool::updateUserSessionDisconnected(int user_id, int canvas_id, std::uint64_t session_generation) {

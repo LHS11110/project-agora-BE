@@ -10,6 +10,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <pthread.h>
 #include <random>
 #include <sstream>
 #include <vector>
@@ -736,6 +737,7 @@ void WebSocketServer::clearSessionAsync(int user_id, int canvas_id, std::uint64_
     beginWorker();
     try {
         std::thread([this, user_id, canvas_id, session_generation]() {
+            pthread_setname_np(pthread_self(), "agora-disconn");
             try {
                 pool_.updateUserSessionDisconnected(user_id, canvas_id, session_generation);
             } catch (const std::exception& e) {
@@ -790,7 +792,7 @@ void WebSocketServer::stop() {
                 authorization_epochs_by_canvas_.clear();
 
                 for (Socket* ws : sockets) {
-                    ws->end(1001, "Server shutting down");
+                    closeSocketSession(ws, 1001, "Server shutting down");
                 }
                 if (listen_socket_) {
                     us_listen_socket_close(0, static_cast<us_listen_socket_t*>(listen_socket_));
@@ -890,6 +892,7 @@ void WebSocketServer::disconnectCanvas(int canvas_id) {
 
 void WebSocketServer::registerSocket(Socket* ws) {
     const PerSocketData* data = ws->getUserData();
+    registered_sockets_.insert(ws);
     sockets_by_canvas_[data->canvas_id].insert(ws);
     sockets_by_connection_id_[data->connection_id] = ws;
 }
@@ -945,6 +948,7 @@ std::unordered_set<WebSocketServer::Socket*> WebSocketServer::socketsForGroups(
 
 void WebSocketServer::unregisterSocket(Socket* ws) {
     const PerSocketData* data = ws->getUserData();
+    registered_sockets_.erase(ws);
     const auto connection = sockets_by_connection_id_.find(data->connection_id);
     if (connection != sockets_by_connection_id_.end() && connection->second == ws) {
         sockets_by_connection_id_.erase(connection);
@@ -1004,13 +1008,12 @@ void WebSocketServer::detachRtcPeer(Socket* ws) {
 }
 
 void WebSocketServer::closeSocketSession(Socket* ws, int code, const std::string& reason) {
-    if (!ws) return;
+    if (!ws || registered_sockets_.count(ws) == 0) return;
     PerSocketData* data = ws->getUserData();
-    if (!data->closing) {
-        data->closing = true;
-        detachRtcPeer(ws);
-        unindexSocket(ws);
-    }
+    if (data->closing) return;
+    data->closing = true;
+    detachRtcPeer(ws);
+    unindexSocket(ws);
     ws->end(code, reason);
 }
 
@@ -1070,6 +1073,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
         std::thread([this, connection_id, canvas, canvas_id, user_id, nickname = identity.nickname,
                      tag_number = identity.tag_number, event, request_id,
                      pending_participant_removal, pending_removal_nickname, pending_removal_tag]() mutable {
+            pthread_setname_np(pthread_self(), "agora-settings");
             CanvasSettingsTaskResult result;
             std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
             if (canvas->unloading) {
@@ -1124,7 +1128,8 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                         }
                         auto sockets = sockets_by_canvas_.find(canvas_id);
                         if (pending_participant_removal && sockets != sockets_by_canvas_.end()) {
-                            for (Socket* target : sockets->second) {
+                            const std::vector<Socket*> targets(sockets->second.begin(), sockets->second.end());
+                            for (Socket* target : targets) {
                                 auto* target_data = target->getUserData();
                                 const bool target_by_id = result.removed_user_id > 0
                                     && target_data->user_id == result.removed_user_id;
@@ -1136,7 +1141,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                                 }
                                 if (target_by_id) {
                                     closeSocketSession(target, 1008, "Canvas access revoked");
-                                    target_data->access_authorized = false;
+                                    continue;
                                 }
                                 target_data->permission_update_pending = target_data->access_authorized
                                     && target_data->permission_update_pending_count > 0;
@@ -1147,10 +1152,12 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                             if (result.removed_user_id > 0) {
                                 pool_.disconnectUser(canvas_id, result.removed_user_id);
                             }
-                            if (sockets != sockets_by_canvas_.end()) {
-                                for (Socket* target : sockets->second) {
+                            const auto current_sockets = sockets_by_canvas_.find(canvas_id);
+                            if (current_sockets != sockets_by_canvas_.end()) {
+                                for (Socket* target : current_sockets->second) {
                                     const auto* target_data = target->getUserData();
                                     if (target != sender && target_data->access_authorized
+                                        && !target_data->closing
                                         && result.participant_ids.count(target_data->user_id) > 0) {
                                         target->send(notification_payload, uWS::OpCode::TEXT);
                                     }
@@ -1261,7 +1268,10 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     }
     if (start_worker) {
         try {
-            std::thread([canvas]() { drainCanvasPersistenceQueue(canvas); }).detach();
+            std::thread([canvas]() {
+                pthread_setname_np(pthread_self(), "agora-persist");
+                drainCanvasPersistenceQueue(canvas);
+            }).detach();
         } catch (...) {
             canvas->cancelPersistenceQueue();
             if (create_room) {
@@ -1286,10 +1296,16 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
             {"type", "item_update"}, {"canvas_id", identity->canvas_id},
             {"item_id", room_id}, {"item", item}
         }.dump();
+        bool sender_received_item = false;
         for (Socket* target : recipients) {
-            if (target->getUserData()->access_authorized) {
+            const auto* target_data = target->getUserData();
+            if (target_data->access_authorized && !target_data->closing) {
                 target->send(created_item, uWS::OpCode::TEXT);
+                if (target == ws) sender_received_item = true;
             }
+        }
+        if (!sender_received_item && identity->access_authorized && !identity->closing) {
+            ws->send(created_item, uWS::OpCode::TEXT);
         }
     }
 
@@ -1297,10 +1313,16 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     // it is internal metadata and is not part of the public chat event.
     event.erase("room_permission");
     const std::string payload = event.dump();
+    bool sender_received_message = false;
     for (Socket* target : recipients) {
-        if (target->getUserData()->access_authorized) {
+        const auto* target_data = target->getUserData();
+        if (target_data->access_authorized && !target_data->closing) {
             target->send(payload, uWS::OpCode::TEXT);
+            if (target == ws) sender_received_message = true;
         }
+    }
+    if (!sender_received_message && identity->access_authorized && !identity->closing) {
+        ws->send(payload, uWS::OpCode::TEXT);
     }
 }
 
@@ -1364,6 +1386,7 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
         std::thread([this, connection_id, canvas, canvas_id, user_id, room_id, request_id,
                      authorization_epoch, persistence_barrier, has_from, has_to,
                      from_sequence, to_sequence, limit]() {
+            pthread_setname_np(pthread_self(), "agora-history");
             std::string response_payload;
             auto errorPayload = [&request_id](const char* code) {
                 return nlohmann::json{{"type", "error"}, {"code", code},
@@ -1469,6 +1492,7 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
 }
 
 void WebSocketServer::runServer() {
+    pthread_setname_np(pthread_self(), "agora-ws");
     {
         std::lock_guard<std::mutex> lock(loop_mutex_);
         loop_ = uWS::Loop::get();
@@ -1542,6 +1566,7 @@ void WebSocketServer::runServer() {
                 std::thread([this, response, websocket_context, request_active, canvas_id,
                              token = std::move(token), client_ip = std::move(client_ip),
                              websocket_key, websocket_protocol, websocket_extensions]() mutable {
+                    pthread_setname_np(pthread_self(), "agora-auth");
                     std::optional<AuthenticatedUser> authenticated_user;
                     try {
                         if (token_validator_ && !token.empty()) {
@@ -1617,11 +1642,12 @@ void WebSocketServer::runServer() {
             const int user_id = data->user_id;
             const long long token_revision = data->settings_revision;
             if (!beginBlockingWorker()) {
-                ws->end(1013, "Connection workers are busy");
+                closeSocketSession(ws, 1013, "Connection workers are busy");
                 return;
             }
             try {
                 std::thread([this, connection_id, canvas_id, user_id, token_revision]() {
+                pthread_setname_np(pthread_self(), "agora-connect");
                 std::shared_ptr<Canvas> canvas;
                 nlohmann::json doc;
                 std::unordered_set<std::string> prepared_groups;
@@ -1640,19 +1666,14 @@ void WebSocketServer::runServer() {
                     close_code = 1008;
                     close_reason = "Canvas access is unauthorized or settings changed";
                 } else {
-                    canvas = pool_.getOrCreateCanvas(canvas_id);
-                    if (!canvas) {
+                    const auto reservation = pool_.connectUserSession(user_id, canvas_id);
+                    if (!reservation) {
                         close_code = 1011;
-                        close_reason = "Canvas initialization failed";
+                        close_reason = "Canvas initialization or session reservation failed";
                     } else {
-                        const auto reservation = pool_.updateUserSessionConnected(user_id, canvas_id);
-                        session_connected = reservation.has_value();
-                        if (!session_connected) {
-                            close_code = 1008;
-                            close_reason = "Already connected to another canvas or the canvas assignment changed";
-                        } else {
-                            session_generation = *reservation;
-                        }
+                        canvas = reservation->canvas;
+                        session_connected = true;
+                        session_generation = reservation->generation;
                     }
                 }
 
@@ -1746,7 +1767,7 @@ void WebSocketServer::runServer() {
                                 clearSessionAsync(user_id, canvas_id, session_generation);
                             }
                         }
-                        ws->end(close_code, close_reason);
+                        closeSocketSession(ws, close_code, close_reason);
                         endBlockingWorker();
                         return;
                     }
@@ -1785,7 +1806,7 @@ void WebSocketServer::runServer() {
                         } else {
                             clearSessionAsync(user_id, canvas_id, session_generation);
                         }
-                        ws->end(1008, "Canvas settings changed; request a new access token");
+                        closeSocketSession(ws, 1008, "Canvas settings changed; request a new access token");
                         endBlockingWorker();
                         return;
                     }
@@ -1825,7 +1846,7 @@ void WebSocketServer::runServer() {
                 }).detach();
             } catch (...) {
                 endBlockingWorker();
-                ws->end(1013, "Connection worker could not be started");
+                closeSocketSession(ws, 1013, "Connection worker could not be started");
             }
         },
 
@@ -1833,7 +1854,7 @@ void WebSocketServer::runServer() {
             PerSocketData* data = ws->getUserData();
             if (data->closing) return;
             if (!data->access_authorized) {
-                ws->end(1008, "Canvas access is not authorized");
+                closeSocketSession(ws, 1008, "Canvas access is not authorized");
                 return;
             }
             if (data->permission_update_pending) {
@@ -2146,16 +2167,19 @@ void WebSocketServer::runServer() {
                             bool start_worker = false;
                             if (!canvas || !canvas->enqueuePersistence(event, start_worker)) {
                                 restoreItemPermissions();
-                                ws->end(1012, "Canvas is closing");
+                                closeSocketSession(ws, 1012, "Canvas is closing");
                                 return;
                             }
                             if (start_worker) {
                                 try {
-                                    std::thread([canvas]() { drainCanvasPersistenceQueue(canvas); }).detach();
+                                    std::thread([canvas]() {
+                                        pthread_setname_np(pthread_self(), "agora-persist");
+                                        drainCanvasPersistenceQueue(canvas);
+                                    }).detach();
                                 } catch (...) {
                                     canvas->cancelPersistenceQueue();
                                     restoreItemPermissions();
-                                    ws->end(1012, "Canvas persistence is unavailable");
+                                    closeSocketSession(ws, 1012, "Canvas persistence is unavailable");
                                     return;
                                 }
                             }
@@ -2293,8 +2317,11 @@ void WebSocketServer::runServer() {
             if (access_authorized) detachRtcPeer(ws);
             unregisterSocket(ws);
 
+            const auto* socket_context = us_socket_context(0, reinterpret_cast<us_socket_t*>(ws));
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
-                      << " from Canvas #" << canvas_id << " (close code: " << code << ")" << std::endl;
+                      << " from Canvas #" << canvas_id << " (close code: " << code
+                      << ", socket=" << static_cast<void*>(ws)
+                      << ", context=" << static_cast<const void*>(socket_context) << ")" << std::endl;
 
             auto canvas = pool_.getCanvas(canvas_id);
             bool final_connection_closed = false;
