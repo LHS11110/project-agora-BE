@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <initializer_list>
 #include <poll.h>
 #include <set>
 
@@ -20,6 +21,14 @@ UserSockets::~UserSockets() {
 int UserSockets::createListeningSocket(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+
+    // accept() must not block after a readiness notification becomes stale
+    // while stop() is racing to shut down the listener.
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd);
+        return -1;
+    }
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -43,10 +52,11 @@ int UserSockets::createListeningSocket(int port) {
 
 void UserSockets::start() {
     running_ = true;
-    rx_server_fd_ = createListeningSocket(rx_port_);
-    tx_server_fd_ = createListeningSocket(tx_port_);
+    rx_server_fd_.store(createListeningSocket(rx_port_), std::memory_order_release);
+    tx_server_fd_.store(createListeningSocket(tx_port_), std::memory_order_release);
 
-    if (rx_server_fd_ < 0 || tx_server_fd_ < 0) {
+    if (rx_server_fd_.load(std::memory_order_acquire) < 0
+        || tx_server_fd_.load(std::memory_order_acquire) < 0) {
         std::cerr << "[UserSockets] Failed to bind listening socket on ports " << rx_port_ << "/" << tx_port_ << "\n";
     }
 
@@ -59,38 +69,38 @@ void UserSockets::stop() {
         return;
     }
 
-    if (rx_client_fd_ >= 0) {
-        shutdown(rx_client_fd_, SHUT_RDWR);
-        close(rx_client_fd_);
-        rx_client_fd_ = -1;
-    }
-    if (tx_client_fd_ >= 0) {
-        shutdown(tx_client_fd_, SHUT_RDWR);
-        close(tx_client_fd_);
-        tx_client_fd_ = -1;
-    }
-    if (rx_server_fd_ >= 0) {
-        shutdown(rx_server_fd_, SHUT_RDWR);
-        close(rx_server_fd_);
-        rx_server_fd_ = -1;
-    }
-    if (tx_server_fd_ >= 0) {
-        shutdown(tx_server_fd_, SHUT_RDWR);
-        close(tx_server_fd_);
-        tx_server_fd_ = -1;
+    {
+        std::lock_guard<std::mutex> lock(fd_mutex_);
+        for (const int fd : {rx_client_fd_.load(std::memory_order_acquire),
+                             tx_client_fd_.load(std::memory_order_acquire),
+                             rx_server_fd_.load(std::memory_order_acquire),
+                             tx_server_fd_.load(std::memory_order_acquire)}) {
+            if (fd >= 0) shutdown(fd, SHUT_RDWR);
+        }
     }
 
     if (rx_thread_.joinable()) rx_thread_.join();
     if (tx_thread_.joinable()) tx_thread_.join();
+
+    // The loop threads own accepted-client cleanup. Once joined, close any
+    // remaining descriptors and the listening sockets exactly once.
+    std::lock_guard<std::mutex> lock(fd_mutex_);
+    for (std::atomic<int>* descriptor : {&rx_client_fd_, &tx_client_fd_,
+                                         &rx_server_fd_, &tx_server_fd_}) {
+        const int fd = descriptor->exchange(-1, std::memory_order_acq_rel);
+        if (fd >= 0) close(fd);
+    }
 }
 
 bool UserSockets::sendJson(const nlohmann::json& data) {
     std::lock_guard<std::mutex> lock(send_mutex_);
-    if (rx_client_fd_ < 0) {
+    std::lock_guard<std::mutex> fd_lock(fd_mutex_);
+    const int fd = rx_client_fd_.load(std::memory_order_acquire);
+    if (fd < 0) {
         return false;
     }
     std::string text = data.dump() + "\n";
-    ssize_t sent = write(rx_client_fd_, text.data(), text.length());
+    ssize_t sent = write(fd, text.data(), text.length());
     return sent == (ssize_t)text.length();
 }
 
@@ -170,10 +180,11 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
 
 void UserSockets::rxLoop() {
     while (running_) {
-        if (rx_server_fd_ < 0) break;
+        const int server_fd = rx_server_fd_.load(std::memory_order_acquire);
+        if (server_fd < 0) break;
 
         struct pollfd pfd{};
-        pfd.fd = rx_server_fd_;
+        pfd.fd = server_fd;
         pfd.events = POLLIN;
         int ret = poll(&pfd, 1, 200);
         if (ret <= 0 || !running_) {
@@ -182,15 +193,23 @@ void UserSockets::rxLoop() {
 
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
-        int client_fd = accept(rx_server_fd_, (struct sockaddr*)&client_addr, &len);
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &len);
         if (client_fd < 0) {
             if (!running_) break;
             usleep(50000);
             continue;
         }
 
+        {
+            std::lock_guard<std::mutex> lock(fd_mutex_);
+            if (!running_) {
+                close(client_fd);
+                break;
+            }
+            rx_client_fd_.store(client_fd, std::memory_order_release);
+        }
+
         std::cout << "[UserSockets] User #" << user_id_ << " connected to RX socket\n";
-        rx_client_fd_ = client_fd;
 
         // Read cached canvas from Redis to send filtered items
         if (canvas_) {
@@ -207,34 +226,36 @@ void UserSockets::rxLoop() {
 
         // Keep connection open; monitor for client close using poll
         char buf[128];
-        while (running_ && rx_client_fd_ >= 0) {
+        while (running_) {
+            const int current_client_fd = rx_client_fd_.load(std::memory_order_acquire);
+            if (current_client_fd < 0) break;
             struct pollfd cpfd{};
-            cpfd.fd = rx_client_fd_;
+            cpfd.fd = current_client_fd;
             cpfd.events = POLLIN;
             int cret = poll(&cpfd, 1, 200);
             if (cret < 0) break;
             if (cret == 0) continue; // timeout, check running_ again
 
-            ssize_t r = recv(rx_client_fd_, buf, sizeof(buf), 0);
+            ssize_t r = recv(current_client_fd, buf, sizeof(buf), 0);
             if (r <= 0) {
                 break;
             }
         }
 
         std::cout << "[UserSockets] User #" << user_id_ << " disconnected from RX socket\n";
-        if (rx_client_fd_ >= 0) {
-            close(rx_client_fd_);
-            rx_client_fd_ = -1;
-        }
+        std::lock_guard<std::mutex> lock(fd_mutex_);
+        const int current_client_fd = rx_client_fd_.exchange(-1, std::memory_order_acq_rel);
+        if (current_client_fd >= 0) close(current_client_fd);
     }
 }
 
 void UserSockets::txLoop() {
     while (running_) {
-        if (tx_server_fd_ < 0) break;
+        const int server_fd = tx_server_fd_.load(std::memory_order_acquire);
+        if (server_fd < 0) break;
 
         struct pollfd pfd{};
-        pfd.fd = tx_server_fd_;
+        pfd.fd = server_fd;
         pfd.events = POLLIN;
         int ret = poll(&pfd, 1, 200);
         if (ret <= 0 || !running_) {
@@ -243,26 +264,36 @@ void UserSockets::txLoop() {
 
         sockaddr_in client_addr{};
         socklen_t len = sizeof(client_addr);
-        int client_fd = accept(tx_server_fd_, (struct sockaddr*)&client_addr, &len);
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &len);
         if (client_fd < 0) {
             if (!running_) break;
             usleep(50000);
             continue;
         }
 
+        {
+            std::lock_guard<std::mutex> lock(fd_mutex_);
+            if (!running_) {
+                close(client_fd);
+                break;
+            }
+            tx_client_fd_.store(client_fd, std::memory_order_release);
+        }
+
         std::cout << "[UserSockets] User #" << user_id_ << " connected to TX socket\n";
-        tx_client_fd_ = client_fd;
 
         char buf[4096];
-        while (running_ && tx_client_fd_ >= 0) {
+        while (running_) {
+            const int current_client_fd = tx_client_fd_.load(std::memory_order_acquire);
+            if (current_client_fd < 0) break;
             struct pollfd cpfd{};
-            cpfd.fd = tx_client_fd_;
+            cpfd.fd = current_client_fd;
             cpfd.events = POLLIN;
             int cret = poll(&cpfd, 1, 200);
             if (cret < 0) break;
             if (cret == 0) continue; // timeout, check running_ again
 
-            ssize_t r = recv(tx_client_fd_, buf, sizeof(buf) - 1, 0);
+            ssize_t r = recv(current_client_fd, buf, sizeof(buf) - 1, 0);
             if (r <= 0) {
                 break;
             }
@@ -279,9 +310,8 @@ void UserSockets::txLoop() {
         }
 
         std::cout << "[UserSockets] User #" << user_id_ << " disconnected from TX socket\n";
-        if (tx_client_fd_ >= 0) {
-            close(tx_client_fd_);
-            tx_client_fd_ = -1;
-        }
+        std::lock_guard<std::mutex> lock(fd_mutex_);
+        const int current_client_fd = tx_client_fd_.exchange(-1, std::memory_order_acq_rel);
+        if (current_client_fd >= 0) close(current_client_fd);
     }
 }

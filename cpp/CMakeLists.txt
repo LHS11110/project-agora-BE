@@ -56,7 +56,14 @@ target_link_libraries(agora_cpp_server
     sybdb
 )
 
-target_compile_options(agora_cpp_server PRIVATE ${HTTPLIB_CFLAGS_OTHER} -Wall -Wextra -O2)
+target_compile_options(agora_cpp_server PRIVATE
+    ${HTTPLIB_CFLAGS_OTHER}
+    -Wall -Wextra -O2 -g -fno-omit-frame-pointer
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Keep application symbols available to the fatal-signal stack trace.
+    target_link_options(agora_cpp_server PRIVATE -rdynamic)
+endif()
 
 # Keep attribution/license texts with an installed C++ binary. System shared
 # libraries are not copied by this install target.

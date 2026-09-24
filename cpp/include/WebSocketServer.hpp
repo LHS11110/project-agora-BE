@@ -17,6 +17,7 @@
 #include "CanvasPool.hpp"
 
 struct PerSocketData {
+    std::uint64_t connection_id{0};
     int canvas_id{0};
     int user_id{0};
     int tag_number{0};
@@ -31,6 +32,7 @@ struct PerSocketData {
     unsigned int permission_update_pending_count{0};
     bool permission_update_pending{false};
     std::string rtc_peer_id;
+    bool closing{false};
 };
 
 class WebSocketServer {
@@ -58,6 +60,9 @@ private:
     void runServer();
     void registerSocket(Socket* ws);
     void unregisterSocket(Socket* ws);
+    Socket* findSocketByConnectionId(std::uint64_t connection_id) const;
+    void detachRtcPeer(Socket* ws);
+    void closeSocketSession(Socket* ws, int code, const std::string& reason);
     void indexSocket(Socket* ws);
     void unindexSocket(Socket* ws);
     std::unordered_set<Socket*> socketsForGroups(
@@ -88,6 +93,7 @@ private:
     int active_workers_{0};
     int active_blocking_workers_{0};
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
+    std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<Socket*>>> sockets_by_canvas_group_;
     std::unordered_map<int, std::unordered_set<Socket*>> admin_sockets_by_canvas_;
     std::unordered_map<int, std::unordered_map<std::string, Socket*>> sockets_by_canvas_peer_;

@@ -42,6 +42,13 @@ static std::string createRtcPeerId() {
     return id.str();
 }
 
+static std::uint64_t createSocketConnectionId() {
+    static std::atomic_uint64_t sequence{1};
+    std::uint64_t id = sequence.fetch_add(1, std::memory_order_relaxed);
+    if (id == 0) id = sequence.fetch_add(1, std::memory_order_relaxed);
+    return id;
+}
+
 static std::string jsonPathKey(const nlohmann::json& value) {
     std::string key;
     if (value.is_string()) key = value.get<std::string>();
@@ -750,7 +757,7 @@ void WebSocketServer::refreshUserSessionGeneration(int canvas_id, int user_id,
     if (it == sockets_by_canvas_.end()) return;
     for (Socket* ws : it->second) {
         auto* data = ws->getUserData();
-        if (data->user_id == user_id && data->access_authorized) {
+        if (data->user_id == user_id && data->access_authorized && !data->closing) {
             data->session_generation = session_generation;
         }
     }
@@ -773,6 +780,7 @@ void WebSocketServer::stop() {
                     sockets.insert(sockets.end(), canvas_sockets.begin(), canvas_sockets.end());
                 }
                 sockets_by_canvas_.clear();
+                sockets_by_connection_id_.clear();
                 sockets_by_canvas_group_.clear();
                 admin_sockets_by_canvas_.clear();
                 sockets_by_canvas_peer_.clear();
@@ -819,7 +827,7 @@ void WebSocketServer::broadcastToCanvas(int canvas_id, const nlohmann::json& dat
 
         for (Socket* ws : it->second) {
             PerSocketData* data = ws->getUserData();
-            if (!data->access_authorized) continue;
+            if (!data->access_authorized || data->closing) continue;
             if (exclude_user_id > 0 && data->user_id == exclude_user_id) continue;
             ws->send(payload, uWS::OpCode::TEXT);
         }
@@ -837,7 +845,8 @@ void WebSocketServer::sendToUser(int canvas_id, int user_id, const nlohmann::jso
         if (it == sockets_by_canvas_.end()) return;
 
         for (Socket* ws : it->second) {
-            if (ws->getUserData()->access_authorized && ws->getUserData()->user_id == user_id) {
+            if (ws->getUserData()->access_authorized && !ws->getUserData()->closing
+                && ws->getUserData()->user_id == user_id) {
                 ws->send(payload, uWS::OpCode::TEXT);
             }
         }
@@ -854,12 +863,12 @@ void WebSocketServer::disconnectUser(int canvas_id, int user_id) {
 
         std::vector<Socket*> sockets_to_close;
         for (Socket* ws : it->second) {
-            if (ws->getUserData()->user_id == user_id) {
+            if (ws->getUserData()->user_id == user_id && !ws->getUserData()->closing) {
                 sockets_to_close.push_back(ws);
             }
         }
         for (Socket* ws : sockets_to_close) {
-            ws->end(1008, "Access revoked");
+            closeSocketSession(ws, 1008, "Access revoked");
         }
     });
 }
@@ -874,7 +883,7 @@ void WebSocketServer::disconnectCanvas(int canvas_id) {
 
         std::vector<Socket*> sockets_to_close(it->second.begin(), it->second.end());
         for (Socket* ws : sockets_to_close) {
-            ws->end(1008, "Canvas session ended");
+            closeSocketSession(ws, 1008, "Canvas session ended");
         }
     });
 }
@@ -882,11 +891,17 @@ void WebSocketServer::disconnectCanvas(int canvas_id) {
 void WebSocketServer::registerSocket(Socket* ws) {
     const PerSocketData* data = ws->getUserData();
     sockets_by_canvas_[data->canvas_id].insert(ws);
+    sockets_by_connection_id_[data->connection_id] = ws;
+}
+
+WebSocketServer::Socket* WebSocketServer::findSocketByConnectionId(std::uint64_t connection_id) const {
+    const auto it = sockets_by_connection_id_.find(connection_id);
+    return it == sockets_by_connection_id_.end() ? nullptr : it->second;
 }
 
 void WebSocketServer::indexSocket(Socket* ws) {
     const auto* data = ws->getUserData();
-    if (!data->access_authorized) return;
+    if (!data->access_authorized || data->closing) return;
     if (data->is_admin) admin_sockets_by_canvas_[data->canvas_id].insert(ws);
     auto& groups = sockets_by_canvas_group_[data->canvas_id];
     for (const auto& group : data->groups) groups[group].insert(ws);
@@ -930,6 +945,10 @@ std::unordered_set<WebSocketServer::Socket*> WebSocketServer::socketsForGroups(
 
 void WebSocketServer::unregisterSocket(Socket* ws) {
     const PerSocketData* data = ws->getUserData();
+    const auto connection = sockets_by_connection_id_.find(data->connection_id);
+    if (connection != sockets_by_connection_id_.end() && connection->second == ws) {
+        sockets_by_connection_id_.erase(connection);
+    }
     unindexSocket(ws);
     if (!data->rtc_peer_id.empty()) {
         auto peers = sockets_by_canvas_peer_.find(data->canvas_id);
@@ -955,12 +974,53 @@ void WebSocketServer::unregisterSocket(Socket* ws) {
     }
 }
 
+void WebSocketServer::detachRtcPeer(Socket* ws) {
+    if (!ws) return;
+    PerSocketData* data = ws->getUserData();
+    if (data->rtc_peer_id.empty()) return;
+
+    const std::string peer_id = data->rtc_peer_id;
+    const auto peer_index = sockets_by_canvas_peer_.find(data->canvas_id);
+    if (peer_index != sockets_by_canvas_peer_.end()) {
+        const auto peer = peer_index->second.find(peer_id);
+        if (peer != peer_index->second.end() && peer->second == ws) {
+            peer_index->second.erase(peer);
+        }
+        if (peer_index->second.empty()) sockets_by_canvas_peer_.erase(peer_index);
+    }
+    data->rtc_peer_id.clear();
+
+    const auto sockets = sockets_by_canvas_.find(data->canvas_id);
+    if (sockets == sockets_by_canvas_.end()) return;
+    const std::string payload = nlohmann::json{
+        {"type", "rtc_peer_left"}, {"peer_id", peer_id}
+    }.dump();
+    for (Socket* other : sockets->second) {
+        const auto* other_data = other->getUserData();
+        if (other != ws && other_data->access_authorized && !other_data->closing) {
+            other->send(payload, uWS::OpCode::TEXT);
+        }
+    }
+}
+
+void WebSocketServer::closeSocketSession(Socket* ws, int code, const std::string& reason) {
+    if (!ws) return;
+    PerSocketData* data = ws->getUserData();
+    if (!data->closing) {
+        data->closing = true;
+        detachRtcPeer(ws);
+        unindexSocket(ws);
+    }
+    ws->end(code, reason);
+}
+
 void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& event) {
     const PerSocketData identity = *ws->getUserData();
     const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
         ? event["request_id"].get<std::string>().substr(0, 64) : "";
     const int canvas_id = identity.canvas_id;
     const int user_id = identity.user_id;
+    const std::uint64_t connection_id = identity.connection_id;
     auto canvas = pool_.getCanvas(canvas_id);
     if (!canvas) {
         ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
@@ -1007,7 +1067,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
     }
 
     try {
-        std::thread([this, ws, canvas, canvas_id, user_id, nickname = identity.nickname,
+        std::thread([this, connection_id, canvas, canvas_id, user_id, nickname = identity.nickname,
                      tag_number = identity.tag_number, event, request_id,
                      pending_participant_removal, pending_removal_nickname, pending_removal_tag]() mutable {
             CanvasSettingsTaskResult result;
@@ -1045,18 +1105,22 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
             {
                 std::lock_guard<std::mutex> loop_lock(loop_mutex_);
                 if (running_ && loop_) {
-                    loop_->defer([this, ws, canvas, canvas_id, user_id,
+                    loop_->defer([this, connection_id, canvas, canvas_id, user_id,
                                   result = std::move(result), response_payload = std::move(response_payload),
                                   notification_payload = std::move(notification_payload),
                                   pending_participant_removal,
                                   pending_removal_nickname, pending_removal_tag]() mutable {
                         if (result.canvas_name_changed) canvas->setCanvasName(result.canvas_name);
+                        Socket* sender = findSocketByConnectionId(connection_id);
                         const auto sender_sockets = sockets_by_canvas_.find(canvas_id);
-                        if (sender_sockets != sockets_by_canvas_.end()
-                            && sender_sockets->second.count(ws) > 0
-                            && ws->getUserData()->access_authorized
-                            && ws->getUserData()->user_id == user_id) {
-                            ws->send(response_payload, uWS::OpCode::TEXT);
+                        const bool sender_authorized = sender
+                            && sender_sockets != sockets_by_canvas_.end()
+                            && sender_sockets->second.count(sender) > 0
+                            && sender->getUserData()->access_authorized
+                            && !sender->getUserData()->closing
+                            && sender->getUserData()->user_id == user_id;
+                        if (sender_authorized) {
+                            sender->send(response_payload, uWS::OpCode::TEXT);
                         }
                         auto sockets = sockets_by_canvas_.find(canvas_id);
                         if (pending_participant_removal && sockets != sockets_by_canvas_.end()) {
@@ -1071,29 +1135,8 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                                     --target_data->permission_update_pending_count;
                                 }
                                 if (target_by_id) {
-                                    if (target_data->access_authorized && !target_data->rtc_peer_id.empty()) {
-                                        const auto canvas_sockets = sockets_by_canvas_.find(canvas_id);
-                                        if (canvas_sockets != sockets_by_canvas_.end()) {
-                                            const nlohmann::json peer_left = {
-                                                {"type", "rtc_peer_left"},
-                                                {"peer_id", target_data->rtc_peer_id}
-                                            };
-                                            const std::string payload = peer_left.dump();
-                                            for (Socket* other : canvas_sockets->second) {
-                                                if (other != target && other->getUserData()->access_authorized) {
-                                                    other->send(payload, uWS::OpCode::TEXT);
-                                                }
-                                            }
-                                        }
-                                        auto peer_index = sockets_by_canvas_peer_.find(canvas_id);
-                                        if (peer_index != sockets_by_canvas_peer_.end()) {
-                                            peer_index->second.erase(target_data->rtc_peer_id);
-                                            if (peer_index->second.empty()) sockets_by_canvas_peer_.erase(peer_index);
-                                        }
-                                        target_data->rtc_peer_id.clear();
-                                    }
+                                    closeSocketSession(target, 1008, "Canvas access revoked");
                                     target_data->access_authorized = false;
-                                    unindexSocket(target);
                                 }
                                 target_data->permission_update_pending = target_data->access_authorized
                                     && target_data->permission_update_pending_count > 0;
@@ -1107,7 +1150,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                             if (sockets != sockets_by_canvas_.end()) {
                                 for (Socket* target : sockets->second) {
                                     const auto* target_data = target->getUserData();
-                                    if (target != ws && target_data->access_authorized
+                                    if (target != sender && target_data->access_authorized
                                         && result.participant_ids.count(target_data->user_id) > 0) {
                                         target->send(notification_payload, uWS::OpCode::TEXT);
                                     }
@@ -1263,6 +1306,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
 
 void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json& event) {
     const PerSocketData identity = *ws->getUserData();
+    const std::uint64_t connection_id = identity.connection_id;
     const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
         ? event["request_id"].get<std::string>().substr(0, 64) : "";
     auto reject = [&](const char* code) {
@@ -1317,7 +1361,7 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
     if (!beginBlockingWorker()) return reject("SERVER_BUSY");
 
     try {
-        std::thread([this, ws, canvas, canvas_id, user_id, room_id, request_id,
+        std::thread([this, connection_id, canvas, canvas_id, user_id, room_id, request_id,
                      authorization_epoch, persistence_barrier, has_from, has_to,
                      from_sequence, to_sequence, limit]() {
             std::string response_payload;
@@ -1390,20 +1434,23 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
             {
                 std::lock_guard<std::mutex> loop_lock(loop_mutex_);
                 if (running_ && loop_) {
-                    loop_->defer([this, ws, canvas_id, user_id, request_id, authorization_epoch,
+                    loop_->defer([this, connection_id, canvas_id, user_id, request_id, authorization_epoch,
                                   response_payload = std::move(response_payload)]() {
+                        Socket* requester = findSocketByConnectionId(connection_id);
                         const auto sockets = sockets_by_canvas_.find(canvas_id);
                         const auto current_epoch = authorization_epochs_by_canvas_.find(canvas_id);
                         const std::uint64_t current_value = current_epoch == authorization_epochs_by_canvas_.end()
                             ? 0 : current_epoch->second;
-                        if (sockets != sockets_by_canvas_.end() && sockets->second.count(ws) > 0
-                            && ws->getUserData()->access_authorized
-                            && !ws->getUserData()->permission_update_pending
-                            && ws->getUserData()->user_id == user_id) {
+                        if (requester && sockets != sockets_by_canvas_.end()
+                            && sockets->second.count(requester) > 0
+                            && requester->getUserData()->access_authorized
+                            && !requester->getUserData()->closing
+                            && !requester->getUserData()->permission_update_pending
+                            && requester->getUserData()->user_id == user_id) {
                             if (current_value == authorization_epoch) {
-                                ws->send(response_payload, uWS::OpCode::TEXT);
+                                requester->send(response_payload, uWS::OpCode::TEXT);
                             } else {
-                                ws->send(nlohmann::json{{"type", "error"},
+                                requester->send(nlohmann::json{{"type", "error"},
                                     {"code", "ITEM_ACCESS_DENIED"},
                                     {"request_id", request_id}}.dump(), uWS::OpCode::TEXT);
                             }
@@ -1525,6 +1572,7 @@ void WebSocketServer::runServer() {
                                     return;
                                 }
                                 PerSocketData socket_data{
+                                    createSocketConnectionId(),
                                     canvas_id,
                                     authenticated_user->user_id,
                                     authenticated_user->tag_number,
@@ -1564,6 +1612,7 @@ void WebSocketServer::runServer() {
                       << " to Canvas #" << data->canvas_id << std::endl;
 
             registerSocket(ws);
+            const std::uint64_t connection_id = data->connection_id;
             const int canvas_id = data->canvas_id;
             const int user_id = data->user_id;
             const long long token_revision = data->settings_revision;
@@ -1572,7 +1621,7 @@ void WebSocketServer::runServer() {
                 return;
             }
             try {
-                std::thread([this, ws, canvas_id, user_id, token_revision]() {
+                std::thread([this, connection_id, canvas_id, user_id, token_revision]() {
                 std::shared_ptr<Canvas> canvas;
                 nlohmann::json doc;
                 std::unordered_set<std::string> prepared_groups;
@@ -1665,7 +1714,7 @@ void WebSocketServer::runServer() {
                     return;
                 }
 
-                loop_->defer([this, ws, canvas_id, user_id, token_revision, session_generation,
+                loop_->defer([this, connection_id, canvas_id, user_id, token_revision, session_generation,
                               canvas, prepared_groups = std::move(prepared_groups), prepared_is_admin,
                               prepared_permissions = std::move(prepared_permissions),
                               prepared_chat_rooms = std::move(prepared_chat_rooms),
@@ -1673,8 +1722,11 @@ void WebSocketServer::runServer() {
                               init_payload = std::move(init_payload), close_code,
                               close_reason = std::move(close_reason), session_connected,
                               settings_unchanged]() mutable {
+                    Socket* ws = findSocketByConnectionId(connection_id);
                     auto socket_it = sockets_by_canvas_.find(canvas_id);
-                    const bool socket_exists = socket_it != sockets_by_canvas_.end() && socket_it->second.count(ws) > 0;
+                    const bool socket_exists = ws && !ws->getUserData()->closing
+                        && socket_it != sockets_by_canvas_.end()
+                        && socket_it->second.count(ws) > 0;
                     if (!socket_exists) {
                         if (session_connected) {
                             if (canvas && canvas->isUserActive(user_id)) {
@@ -1708,7 +1760,8 @@ void WebSocketServer::runServer() {
                         const auto current_sockets = sockets_by_canvas_.find(canvas_id);
                         if (current_sockets != sockets_by_canvas_.end()) {
                             for (Socket* other : current_sockets->second) {
-                                if (other != ws && other->getUserData()->access_authorized) {
+                                if (other != ws && other->getUserData()->access_authorized
+                                    && !other->getUserData()->closing) {
                                     has_existing_authorized_socket = true;
                                     break;
                                 }
@@ -1750,7 +1803,8 @@ void WebSocketServer::runServer() {
                         for (Socket* other : connected_sockets->second) {
                             if (other == ws) continue;
                             PerSocketData* other_data = other->getUserData();
-                            if (!other_data->access_authorized || other_data->permission_update_pending
+                            if (!other_data->access_authorized || other_data->closing
+                                || other_data->permission_update_pending
                                 || other_data->rtc_peer_id.empty()) continue;
                             rtc_peers.push_back(publicRtcPeer(other_data));
                             other->send(nlohmann::json{
@@ -1777,6 +1831,7 @@ void WebSocketServer::runServer() {
 
         .message = [this](auto* ws, std::string_view message, uWS::OpCode opCode) {
             PerSocketData* data = ws->getUserData();
+            if (data->closing) return;
             if (!data->access_authorized) {
                 ws->end(1008, "Canvas access is not authorized");
                 return;
@@ -1844,6 +1899,10 @@ void WebSocketServer::runServer() {
                             // canvas/item fields only and never expose user IDs.
                         }
                         const std::string event_type = event.value("type", "");
+                        if (event_type == "rtc_disconnect") {
+                            closeSocketSession(ws, 1000, "WebRTC session ended");
+                            return;
+                        }
                         if (event_type == "rtc_signal") {
                             const std::string target_peer_id = event.value("peer_id", "");
                             const std::string action = event.value("action", "");
@@ -1875,6 +1934,7 @@ void WebSocketServer::runServer() {
                                     Socket* candidate = peer->second;
                                     const auto* candidate_data = candidate->getUserData();
                                     if (candidate != ws && candidate_data->access_authorized
+                                        && !candidate_data->closing
                                         && !candidate_data->permission_update_pending) target = candidate;
                                 }
                             }
@@ -2165,7 +2225,8 @@ void WebSocketServer::runServer() {
                             if (sockets != sockets_by_canvas_.end()) target_sockets = sockets->second;
                         }
                         for (Socket* target : target_sockets) {
-                                if (target == ws || !target->getUserData()->access_authorized) continue;
+                                if (target == ws || !target->getUserData()->access_authorized
+                                    || target->getUserData()->closing) continue;
                                 if (bulk_items) {
                                     nlohmann::json filtered_event = event;
                                     filtered_event["items"] = filterItemsForSocket(event["items"], target->getUserData());
@@ -2229,20 +2290,7 @@ void WebSocketServer::runServer() {
             int user_id = data->user_id;
             const bool access_authorized = data->access_authorized;
             const std::uint64_t session_generation = data->session_generation;
-            if (access_authorized && !data->rtc_peer_id.empty()) {
-                const auto sockets = sockets_by_canvas_.find(canvas_id);
-                if (sockets != sockets_by_canvas_.end()) {
-                    const nlohmann::json peer_left = {
-                        {"type", "rtc_peer_left"},
-                        {"peer_id", data->rtc_peer_id}
-                    };
-                    for (Socket* other : sockets->second) {
-                        if (other != ws && other->getUserData()->access_authorized) {
-                            other->send(peer_left.dump(), uWS::OpCode::TEXT);
-                        }
-                    }
-                }
-            }
+            if (access_authorized) detachRtcPeer(ws);
             unregisterSocket(ws);
 
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id

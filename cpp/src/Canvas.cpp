@@ -9,7 +9,23 @@ Canvas::Canvas(int canvas_id, const std::string& redis_ip, int redis_port)
 }
 
 Canvas::~Canvas() {
-    disconnectAll();
+    // Explicit pool teardown is responsible for notifying the WebSocket
+    // server. A destructor can run later on a persistence worker after the
+    // canvas has already left the pool; calling the saved callback here would
+    // risk invoking a WebSocketServer that has already been destroyed.
+    std::vector<std::shared_ptr<UserSockets>> sockets_to_stop;
+    {
+        std::lock_guard<std::mutex> lock(canvas_mutex);
+        for (auto& [user_id, socket] : user_sockets) {
+            (void)user_id;
+            if (socket) sockets_to_stop.push_back(socket);
+        }
+        user_sockets.clear();
+        user_conn_counts.clear();
+        active_users.clear();
+        web_socket_callbacks_ = {};
+    }
+    for (const auto& socket : sockets_to_stop) socket->stop();
 }
 
 bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker) {

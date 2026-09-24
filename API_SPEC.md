@@ -325,13 +325,21 @@ ACL은 저장될 `item` 또는 `data` 객체의 `permission` 필드에서 읽습
 
 ### WebRTC P2P signaling
 
-인증된 접속 뒤 서버는 `init_items` 다음에 각 소켓별 임의 `self_peer_id`와 같은 캔버스의 인증 피어 목록을 보냅니다. 이 식별자는 연결 세션용 토큰이며 데이터베이스 사용자 ID와 무관합니다.
+인증된 WebSocket 접속 뒤 서버는 `init_items` 다음에 해당 소켓 전용 임의 `self_peer_id`와 같은 캔버스의 인증 피어 목록을 보냅니다. 클라이언트는 이 목록과 `rtc_peer_joined`를 받아 해당 피어에 대한 WebRTC 연결을 시작해야 합니다. 피어는 사용자 계정이 아니라 WebSocket 세션 하나를 나타내므로, 같은 계정이 여러 WebSocket을 열면 각각 별도 피어로 나타납니다.
 
 ```json
 {"type":"rtc_peers","self_peer_id":"<ephemeral-peer-token>","peers":[{"peer_id":"<token>","nickname":"사용자","tag_number":12,"groups":["default"],"is_admin":false}]}
 {"type":"rtc_peer_joined","peer":{"peer_id":"<token>","nickname":"사용자","tag_number":12,"groups":["default"],"is_admin":false}}
 {"type":"rtc_peer_left","peer_id":"<token>"}
 ```
+
+WebSocket이 닫히거나 서버가 세션을 종료하면 그 소켓의 피어를 signaling 목록에서 즉시 제거하고 나머지 소켓에 `rtc_peer_left`를 보냅니다. 클라이언트는 해당 피어의 `RTCPeerConnection`을 닫아야 합니다. 해당 WebSocket이 관리하는 WebRTC 세션이 먼저 종료되면 다음 이벤트를 보내며, 서버는 발신 WebSocket을 닫고 피어를 제거합니다. 나머지 클라이언트는 `rtc_peer_left`를 받아 그 피어의 `RTCPeerConnection`을 닫고, 다른 피어를 위한 WebSocket 연결은 유지합니다.
+
+```json
+{"type":"rtc_disconnect","reason":"failed"}
+```
+
+signaling 서버는 브라우저의 실제 ICE 연결 상태를 직접 관찰할 수 없으므로 클라이언트가 WebRTC 세션의 최종 `failed` 상태를 이 이벤트로 알려야 합니다. 정상적인 WebSocket 종료는 같은 세션의 WebRTC 연결도 종료하는 것으로 처리해야 합니다.
 
 WebRTC offer/answer와 ICE candidate만 `rtc_signal` WebSocket 이벤트로 교환합니다. 서버는 발신 소켓 ID를 덮어쓰고 같은 캔버스에서 접속·권한이 유효한 지정 피어 한 곳에만 전달하며 Redis에 기록하지 않습니다.
 

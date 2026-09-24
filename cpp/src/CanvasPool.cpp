@@ -348,22 +348,25 @@ bool CanvasPool::removeCanvas(int canvas_id) {
         auto it = canvases_.find(canvas_id);
         if (it != canvases_.end()) {
             canvas = it->second;
-            canvases_.erase(it);
         }
     }
 
-    if (canvas) {
-        if (!unloadCanvas(canvas_id, canvas)) {
-            {
-                std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
-                canvas->unloading = false;
-            }
-            std::lock_guard<std::mutex> lock(pool_mutex_);
-            canvases_[canvas_id] = canvas;
-        }
-        return true;
+    if (!canvas) return false;
+
+    // Keep the shared instance discoverable while unload marks it as closing
+    // and drains persistence. Removing it first lets concurrent close/auth
+    // callbacks observe a missing canvas while its Redis and SQL state is
+    // still active, and can also race a fresh initialization for this ID.
+    if (!unloadCanvas(canvas_id, canvas)) {
+        std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
+        canvas->unloading = false;
+        return false;
     }
-    return false;
+
+    std::lock_guard<std::mutex> lock(pool_mutex_);
+    auto it = canvases_.find(canvas_id);
+    if (it != canvases_.end() && it->second == canvas) canvases_.erase(it);
+    return true;
 }
 
 void CanvasPool::disconnectUserFromAll(int user_id) {

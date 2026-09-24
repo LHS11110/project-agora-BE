@@ -31,15 +31,19 @@ private:
     int tx_port_;
     Canvas* canvas_;
 
-    int rx_server_fd_{-1};
-    int tx_server_fd_{-1};
-    int rx_client_fd_{-1};
-    int tx_client_fd_{-1};
+    // stop() can run concurrently with both socket loops and sendJson(). Keep
+    // descriptor publication race-free, and serialize shutdown/close against
+    // writes so an fd cannot be reused while another thread still uses it.
+    std::atomic<int> rx_server_fd_{-1};
+    std::atomic<int> tx_server_fd_{-1};
+    std::atomic<int> rx_client_fd_{-1};
+    std::atomic<int> tx_client_fd_{-1};
 
     std::atomic<bool> running_{false};
     std::thread rx_thread_;
     std::thread tx_thread_;
     std::mutex send_mutex_;
+    std::mutex fd_mutex_;
 
     void rxLoop();
     void txLoop();

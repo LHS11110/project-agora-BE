@@ -6,7 +6,12 @@
 #include <chrono>
 #include <mutex>
 #include <condition_variable>
+#include <cstddef>
+#include <execinfo.h>
+#include <initializer_list>
 #include <pthread.h>
+#include <signal.h>
+#include <unistd.h>
 #include "CanvasPool.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
@@ -24,6 +29,67 @@ static std::string g_advertise_ip = "127.0.0.1";
 static int g_port = 8000;
 static std::string g_db_host = "127.0.0.1";
 static int g_db_port = 1433;
+
+namespace {
+void writeSignalText(const char* text, std::size_t length) {
+    while (length > 0) {
+        const ssize_t written = write(STDERR_FILENO, text, length);
+        if (written <= 0) return;
+        text += written;
+        length -= static_cast<std::size_t>(written);
+    }
+}
+
+void crashTraceHandler(int signal_number, siginfo_t*, void*) {
+    const char* signal_name = "fatal signal";
+    std::size_t name_length = sizeof("fatal signal") - 1;
+    switch (signal_number) {
+        case SIGABRT:
+            signal_name = "SIGABRT (allocator abort)";
+            name_length = sizeof("SIGABRT (allocator abort)") - 1;
+            break;
+        case SIGSEGV:
+            signal_name = "SIGSEGV (segmentation fault)";
+            name_length = sizeof("SIGSEGV (segmentation fault)") - 1;
+            break;
+        case SIGBUS: signal_name = "SIGBUS"; name_length = sizeof("SIGBUS") - 1; break;
+        case SIGILL: signal_name = "SIGILL"; name_length = sizeof("SIGILL") - 1; break;
+        case SIGFPE: signal_name = "SIGFPE"; name_length = sizeof("SIGFPE") - 1; break;
+    }
+    static constexpr char prefix[] = "\n[CrashTrace] ";
+    writeSignalText(prefix, sizeof(prefix) - 1);
+    writeSignalText(signal_name, name_length);
+    static constexpr char suffix[] = "\n";
+    writeSignalText(suffix, sizeof(suffix) - 1);
+
+    void* frames[64];
+    const int frame_count = backtrace(frames, static_cast<int>(sizeof(frames) / sizeof(frames[0])));
+    if (frame_count > 0) backtrace_symbols_fd(frames, frame_count, STDERR_FILENO);
+
+    // Restore the default fatal-signal behavior so the process still produces
+    // a core dump when the host permits it.
+    struct sigaction default_action{};
+    default_action.sa_handler = SIG_DFL;
+    sigemptyset(&default_action.sa_mask);
+    (void)sigaction(signal_number, &default_action, nullptr);
+    sigset_t unblocked;
+    sigemptyset(&unblocked);
+    sigaddset(&unblocked, signal_number);
+    (void)sigprocmask(SIG_UNBLOCK, &unblocked, nullptr);
+    (void)raise(signal_number);
+    _exit(128 + signal_number);
+}
+
+void installCrashTraceHandlers() {
+    struct sigaction action{};
+    action.sa_sigaction = crashTraceHandler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_SIGINFO | SA_RESETHAND;
+    for (const int signal_number : {SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGFPE}) {
+        (void)sigaction(signal_number, &action, nullptr);
+    }
+}
+}
 
 void stop_servers() {
     if (g_shutdown_started.exchange(true)) return;
@@ -44,6 +110,8 @@ void stop_servers() {
 }
 
 int main(int argc, char* argv[]) {
+    installCrashTraceHandlers();
+
     sigset_t handled_signals;
     sigemptyset(&handled_signals);
     sigaddset(&handled_signals, SIGINT);
