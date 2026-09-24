@@ -30,7 +30,7 @@ Canvas::~Canvas() {
 
 bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker) {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
-    if (unloading.load()) return false;
+    if (unloading.load() || persistence_failed_) return false;
     if (last_enqueued_persistence_ == std::numeric_limits<std::uint64_t>::max()) return false;
     const auto ticket = ++last_enqueued_persistence_;
     persistence_queue_.emplace_back(ticket, event);
@@ -59,6 +59,7 @@ bool Canvas::nextPersistence(nlohmann::json& event, std::uint64_t& ticket) {
 
 void Canvas::cancelPersistenceQueue() {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
+    persistence_failed_ = true;
     if (pending_persistence_ >= persistence_queue_.size()) {
         pending_persistence_ -= persistence_queue_.size();
     } else {
@@ -72,8 +73,9 @@ void Canvas::cancelPersistenceQueue() {
     }
 }
 
-void Canvas::endPersistence(std::uint64_t ticket) {
+void Canvas::endPersistence(std::uint64_t ticket, bool succeeded) {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
+    if (!succeeded) persistence_failed_ = true;
     if (pending_persistence_ > 0) --pending_persistence_;
     last_completed_persistence_ = std::max(last_completed_persistence_, ticket);
     persistence_cv_.notify_all();
@@ -84,7 +86,7 @@ void Canvas::waitForPersistenceThrough(std::uint64_t ticket) {
     persistence_cv_.wait(lock, [this, ticket]() { return last_completed_persistence_ >= ticket; });
 }
 
-void Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
+bool Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
     (void)lock;
     std::unique_lock<std::mutex> persistence_lock(persistence_mutex_);
     unloading.store(true);
@@ -92,6 +94,7 @@ void Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
     persistence_cv_.wait(persistence_lock, [this, ticket]() {
         return last_completed_persistence_ >= ticket;
     });
+    return !persistence_failed_;
 }
 
 std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {

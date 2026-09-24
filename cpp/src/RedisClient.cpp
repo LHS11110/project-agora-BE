@@ -487,6 +487,23 @@ bool RedisClient::del(const std::string& key) {
     try { return std::stoi(response) >= 0; } catch (...) { return false; }
 }
 
+RedisClient::CompareSetResult RedisClient::deleteIfCacheGenerationMatches(
+        const std::string& key, const std::string& generation) {
+    static const std::string script = R"LUA(
+local value = redis.call('JSON.GET', KEYS[1], '$["_cache_generation"]')
+if not value then return 'CONFLICT' end
+local decoded = cjson.decode(value)
+if decoded[1] ~= ARGV[1] then return 'CONFLICT' end
+redis.call('DEL', KEYS[1])
+return 'APPLIED'
+)LUA";
+    if (!sendCommand({"EVAL", script, "1", key, generation})) return CompareSetResult::Error;
+    const auto response = readResponse();
+    if (response == "APPLIED") return CompareSetResult::Applied;
+    if (response == "CONFLICT") return CompareSetResult::Conflict;
+    return CompareSetResult::Error;
+}
+
 bool RedisClient::deletePattern(const std::string& pattern) {
     if (!sendCommand({"KEYS", pattern})) return false;
     std::string keys_str = readResponse();

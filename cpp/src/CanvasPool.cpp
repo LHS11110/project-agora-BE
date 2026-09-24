@@ -1,8 +1,26 @@
 #include "CanvasPool.hpp"
 #include "CanvasPassword.hpp"
+#include <atomic>
+#include <chrono>
 #include <iostream>
+#include <random>
 
 namespace {
+std::string newCacheGeneration() {
+    static std::atomic<std::uint64_t> sequence{0};
+    std::uint64_t random_value = 0;
+    try {
+        std::random_device random;
+        random_value = (static_cast<std::uint64_t>(random()) << 32) | random();
+    } catch (...) {
+        random_value = static_cast<std::uint64_t>(
+            std::chrono::system_clock::now().time_since_epoch().count());
+    }
+    return std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())
+        + "-" + std::to_string(random_value)
+        + "-" + std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+}
+
 bool documentAuthorizesCanvasAccess(const nlohmann::json& doc, int user_id, long long settings_revision) {
     if (!doc.is_object() || !doc.contains("people") || !doc["people"].is_array()) return false;
     long long current_revision = 0;
@@ -103,7 +121,8 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canva
     }
 
     std::optional<nlohmann::json> canvas_doc;
-    auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
+    auto cached_str = redis_was_cached ? redis.get("canvas:" + std::to_string(canvas_id))
+                                   : std::nullopt;
     if (cached_str && !cached_str->empty()) {
         try {
             canvas_doc = nlohmann::json::parse(*cached_str);
@@ -152,6 +171,7 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canva
         if (!redis_was_cached) mssql.updateCanvasUncached(canvas_id, cpp_server_ip_, cpp_server_port_);
         return nullptr;
     }
+    (*canvas_doc)["_cache_generation"] = newCacheGeneration();
     if (!redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << ": Redis document write failed\n";
         if (!redis_was_cached) {
@@ -272,15 +292,22 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
     std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
     std::cout << "[CanvasPool] Waiting for Canvas #" << canvas_id
               << " pending Redis writes before Elasticsearch snapshot\n";
-    canvas->waitForPendingPersistence(settings_lock);
+    if (!canvas->waitForPendingPersistence(settings_lock)) {
+        std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id
+                  << " assigned because a Redis write failed; Elasticsearch snapshot is unsafe\n";
+        return false;
+    }
     std::cout << "[CanvasPool] Canvas #" << canvas_id
               << " Redis writes drained; starting Elasticsearch snapshot\n";
 
     // 1. Disconnect all connected users
     canvas->disconnectAll();
 
-    // 2. Fetch canvas document from Redis and reflect to Elasticsearch
+    // 2. Fetch canvas document from Redis and reflect to Elasticsearch.
+    // Keep the Redis root until MSSQL says uncached: Spring holds the SQL
+    // canvas row lock while choosing Redis or Elasticsearch.
     nlohmann::json final_doc;
+    std::string cache_generation;
     try {
         RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
         auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
@@ -290,6 +317,14 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
             return false;
         }
         final_doc = nlohmann::json::parse(*cached_str);
+        if (!final_doc.is_object() || !final_doc.contains("_cache_generation")
+            || !final_doc["_cache_generation"].is_string()) {
+            std::cerr << "[CanvasPool] Canvas #" << canvas_id
+                      << " has no cache generation; keeping its Redis assignment\n";
+            return false;
+        }
+        cache_generation = final_doc["_cache_generation"].get<std::string>();
+        final_doc.erase("_cache_generation");
         EsClient es(es_host_, es_port_);
         if (!es.saveCanvasDocument(canvas_id, final_doc)) {
             std::cerr << "[CanvasPool] Keeping Redis cache for canvas #" << canvas_id
@@ -297,22 +332,13 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
             return false;
         }
         std::cout << "[CanvasPool] Reflected Canvas #" << canvas_id << " from Redis to Elasticsearch\n";
-
-        // 3. Clean up Redis cache
-        if (!redis.deletePattern("canvas:" + std::to_string(canvas_id) + ":*")
-            || !redis.del("canvas:" + std::to_string(canvas_id))) {
-            std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id
-                      << " assigned because its Redis cache could not be fully removed\n";
-            redis.set("canvas:" + std::to_string(canvas_id), final_doc.dump());
-            return false;
-        }
-        std::cout << "[CanvasPool] Cleaned up Redis cache for Canvas #" << canvas_id << "\n";
     } catch (const std::exception& e) {
         std::cerr << "[CanvasPool] Error during Redis/ES sync for canvas #" << canvas_id << ": " << e.what() << "\n";
         return false;
     }
 
-    // 4. Update MS SQL canvas_info: is_cached=false, redis/server ip&port=none(NULL)
+    // 3. Update MS SQL first. A new owner may load this canvas immediately
+    // afterwards, so the eventual Redis deletion must compare generations.
     try {
         MssqlClient mssql(db_host_, db_port_);
         if (!mssql.updateCanvasUncached(canvas_id, cpp_server_ip_, cpp_server_port_)) {
@@ -321,18 +347,23 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
                 || assignment->cpp_server_ip != cpp_server_ip_
                 || assignment->cpp_server_port != std::to_string(cpp_server_port_))) return true;
 
-            RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-            if (!redis.set("canvas:" + std::to_string(canvas_id), final_doc.dump())) {
-                std::cerr << "[CanvasPool] Failed to restore Canvas #" << canvas_id
-                          << " to Redis after its MSSQL assignment could not be cleared\n";
-            }
             return false;
         }
     } catch (const std::exception& e) {
         std::cerr << "[CanvasPool] Error updating MS SQL for canvas #" << canvas_id << ": " << e.what() << "\n";
-        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-        redis.set("canvas:" + std::to_string(canvas_id), final_doc.dump());
         return false;
+    }
+
+    // 4. Remove only the snapshot owned by this unload. If another load has
+    // already replaced it, leave the new cache untouched.
+    RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+    const auto cleanup = redis.deleteIfCacheGenerationMatches(
+        "canvas:" + std::to_string(canvas_id), cache_generation);
+    if (cleanup == RedisClient::CompareSetResult::Error) {
+        std::cerr << "[CanvasPool] Canvas #" << canvas_id
+                  << " is uncached in MS SQL, but old Redis snapshot cleanup failed\n";
+    } else if (cleanup == RedisClient::CompareSetResult::Applied) {
+        std::cout << "[CanvasPool] Cleaned up Redis cache for Canvas #" << canvas_id << "\n";
     }
 
     std::cout << "[CanvasPool] Canvas #" << canvas_id << " has no active users, unloaded from pool (load -1)\n";

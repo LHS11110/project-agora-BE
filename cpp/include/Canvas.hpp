@@ -111,9 +111,9 @@ public:
     std::uint64_t persistenceBarrier();
     bool nextPersistence(nlohmann::json& event, std::uint64_t& ticket);
     void cancelPersistenceQueue();
-    void endPersistence(std::uint64_t ticket);
+    void endPersistence(std::uint64_t ticket, bool succeeded);
     void waitForPersistenceThrough(std::uint64_t ticket);
-    void waitForPendingPersistence(std::unique_lock<std::mutex>& lock);
+    bool waitForPendingPersistence(std::unique_lock<std::mutex>& lock);
 
 private:
     mutable std::mutex metadata_mutex_;
@@ -126,5 +126,6 @@ private:
     std::uint64_t last_completed_persistence_{0};
     std::deque<std::pair<std::uint64_t, nlohmann::json>> persistence_queue_;
     bool persistence_worker_running_{false};
+    bool persistence_failed_{false};
     WebSocketCallbacks web_socket_callbacks_;
 };

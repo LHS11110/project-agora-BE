@@ -32,6 +32,8 @@ public:
                             const std::vector<std::string>& deletes = {});
     bool deleteJsonPath(const std::string& key, const std::string& path);
     bool del(const std::string& key);
+    // Deletes the old cache only if a newer canvas load has not replaced it.
+    CompareSetResult deleteIfCacheGenerationMatches(const std::string& key, const std::string& generation);
     bool deletePattern(const std::string& pattern);
     int getKeyCount(const std::string& pattern = "canvas*");
 

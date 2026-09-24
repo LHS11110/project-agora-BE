@@ -433,13 +433,17 @@ bool MssqlClient::updateUserSessionDisconnected(int userId, int canvasId,
             return false;
     }
 
+    bool read_ok = true;
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) break;
+        if (ret == FAIL) { read_ok = false; break; }
         while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-            if (ret == FAIL) break;
+            if (ret == FAIL) { read_ok = false; break; }
         }
+        if (!read_ok) break;
     }
+
+    if (!read_ok) return false;
 
     std::cout << "[MssqlClient] User #" << userId << " session in MS SQL updated: is_accessed=false, cpp_server_id=NULL, canvas_id=NULL\n";
     return true;
@@ -550,17 +554,19 @@ bool MssqlClient::isCanvasActiveInDb(int canvasId) {
     }
 
     int active_count = 0;
+    bool count_read = false;
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) break;
+        if (ret == FAIL) return true;
         if (DBROWS(dbproc)) {
-            dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&active_count);
+            if (dbbind(dbproc, 1, INTBIND, 0, (BYTE*)&active_count) != SUCCEED) return true;
             while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-                if (ret == FAIL) break;
+                if (ret == FAIL) return true;
+                count_read = true;
             }
         }
     }
-
+    if (!count_read) return true;
     return active_count > 0;
 }
 

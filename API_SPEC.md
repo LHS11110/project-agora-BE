@@ -514,6 +514,10 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 - MSSQL session reserve는 transaction 안에서 Canvas row와 `user_sessions` row에 `UPDLOCK, HOLDLOCK, ROWLOCK`을 사용합니다. C++는 사용자별 mutex와 session generation으로 오래된 disconnect가 새 연결 상태를 지우지 않게 합니다.
 - 회원가입 및 닉네임 변경의 `MAX(tag_number)+1`도 transaction 내 `UPDLOCK, HOLDLOCK` 쿼리로 같은 닉네임의 동시 배정을 직렬화합니다. 이름이 없는 경우까지 포함해 SQL Server가 serializable range lock을 유지합니다. `users.nickname` 인덱스가 없으면 잠금 범위가 넓어져 서로 다른 닉네임 작업도 경합할 수 있습니다.
 - C++ Canvas load/unload는 Canvas lifecycle mutex로 직렬화합니다. 설정 변경은 `settings_mutex`와 Redis revision compare-and-set으로 직렬화/충돌 감지를 하며, item/chat 저장은 Canvas별 FIFO queue와 chat append Lua로 순서를 보존합니다.
+- Redis 저장 실패는 해당 Canvas의 persistence 상태에 기록됩니다. 이후 item/chat 저장 요청을 거절하고 Redis→Elasticsearch 스냅샷 및 캐시 해제를 중단합니다. 캐시를 유지한 채 운영자가 원인을 확인해야 하며, 이미 실시간 전달된 이벤트가 영속 저장되었다고 간주해서는 안 됩니다.
+- 언로드는 Elasticsearch 저장 후 MSSQL의 `is_cached`를 먼저 해제하고, 이전 Canvas 로드에 부여한 `_cache_generation`이 일치할 때만 Redis 키를 삭제합니다. Spring의 canvas row 잠금과 이 순서로 활성 Redis 조회 중 키가 먼저 사라지는 문제를 피합니다. 새 로드는 비활성 할당에 남은 Redis 키를 무시하고 Elasticsearch 문서로 덮어씁니다.
+- 접속 해제 시 MSSQL 세션 갱신은 단일 전용 worker에 사용자별 최신 작업을 모아 처리합니다. 접속 해제 횟수에 비례해 스레드가 늘어나지 않습니다. 활성 세션 수 SQL 결과를 읽는 데 실패하면 캔버스를 활성 상태로 간주해 언로드를 미룹니다.
+- 명시적 캔버스 언로드가 모든 소켓을 닫으면서 Canvas의 활성 사용자 목록을 먼저 비운 경우에도, 각 소켓 종료 콜백이 MSSQL 세션 해제를 예약합니다.
 - Canvas persistence queue는 `settings_mutex`와 별도 mutex를 사용합니다. event loop의 enqueue는 짧은 queue lock만 얻으며, worker의 SQL/Redis/ES 작업이나 history/connect 대기와 경쟁하지 않습니다. 각 저장 이벤트에 증가하는 ticket을 붙여 history/connect는 요청 전에 접수된 write까지만 기다리고, unload는 종료를 표시한 뒤 마지막 ticket까지 기다립니다.
 - 이 잠금들은 선형 작업량을 O(1)로 바꾸지 않으며, 대기 시간은 lock hold 및 저장소 round trip에 좌우됩니다. Spring `/access`는 canvas row 잠금을 네트워크 health check 동안 유지합니다. C++ upgrade 인증, 접속 snapshot, `chat_history`, `canvas_settings_*`의 저장소 호출은 worker로 분리했습니다. 설정 worker는 동일 Canvas의 설정/unload와 직렬화되며, 최대 W개 worker가 모두 사용 중이면 새 작업을 거절합니다. 실시간 broadcast fan-out과 socket send는 event loop에 남아 있어 S/R/N이 커질수록 지연이 증가할 수 있습니다.
 - item/chat 이벤트는 Redis 저장 완료를 기다리지 않고 queue 후 전송을 진행합니다. 따라서 delivery latency는 낮지만, broadcast 시점은 Redis durable write 완료를 뜻하지 않습니다. 연결/초기 snapshot과 history는 필요한 경우 queue barrier를 기다립니다.

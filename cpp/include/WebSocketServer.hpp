@@ -11,6 +11,8 @@
 #include <condition_variable>
 #include <optional>
 #include <cstdint>
+#include <deque>
+#include <tuple>
 #include <nlohmann/json.hpp>
 #include "App.h"
 #include "AuthenticatedUser.hpp"
@@ -67,9 +69,7 @@ private:
     void unindexSocket(Socket* ws);
     std::unordered_set<Socket*> socketsForGroups(
         int canvas_id, const std::unordered_set<std::string>& groups) const;
-    void beginWorker();
     bool beginBlockingWorker();
-    void endWorker();
     void endBlockingWorker();
     void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
     void refreshUserSessionGeneration(int canvas_id, int user_id, std::uint64_t session_generation);
@@ -92,6 +92,12 @@ private:
     std::condition_variable worker_cv_;
     int active_workers_{0};
     int active_blocking_workers_{0};
+    std::thread session_cleanup_thread_;
+    std::mutex session_cleanup_mutex_;
+    std::condition_variable session_cleanup_cv_;
+    bool session_cleanup_stopping_{false};
+    std::deque<int> session_cleanup_order_;
+    std::unordered_map<int, std::pair<int, std::uint64_t>> session_cleanup_pending_;
     std::unordered_set<Socket*> registered_sockets_;
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
     std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;

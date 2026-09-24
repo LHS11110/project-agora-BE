@@ -78,19 +78,19 @@ static nlohmann::json storedChatMessage(const nlohmann::json& event) {
     return stored;
 }
 
-static void persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nlohmann::json& event) {
-    if (!canvas || !event.is_object()) return;
+static bool persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nlohmann::json& event) {
+    if (!canvas || !event.is_object()) return false;
     const std::string type = event.value("type", "");
-    if (type == "ping" || type == "pong" || type == "item_crdt_change") return;
+    if (type == "ping" || type == "pong" || type == "item_crdt_change") return true;
 
     RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
     const std::string key = "canvas:" + std::to_string(canvas->getCanvasId());
     if (type == "chat") {
         if (!event.contains("room_id") || !event["room_id"].is_string()
-            || !event.contains("sequence") || !event["sequence"].is_number_unsigned()) return;
+            || !event.contains("sequence") || !event["sequence"].is_number_unsigned()) return false;
         const std::string room_id = event["room_id"].get<std::string>();
         const std::string path_key = jsonPathKey(room_id);
-        if (path_key.empty()) return;
+        if (path_key.empty()) return false;
         const std::string item_path = "$[\"items\"][\"" + path_key + "\"]";
         const auto stored_message = storedChatMessage(event);
         if (event.value("room_created", false)) {
@@ -102,11 +102,13 @@ static void persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nloh
             };
             if (!redis.setJsonPath(key, item_path, room)) {
                 std::cerr << "[uWebSockets] Failed to create chat room item '" << room_id << "'\n";
+                return false;
             }
         } else if (!redis.appendChatMessage(key, room_id, event["sequence"].get<std::uint64_t>(), stored_message)) {
             std::cerr << "[uWebSockets] Failed to append chat message to room '" << room_id << "'\n";
+            return false;
         }
-        return;
+        return true;
     }
     if (event.contains("items") && event["items"].is_object()) {
         nlohmann::json items = event["items"];
@@ -135,21 +137,19 @@ static void persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nloh
             }
             item["next_sequence"] = next_sequence;
         }
-        redis.setJsonPath(key, "$.items", items);
-        return;
+        return redis.setJsonPath(key, "$.items", items);
     }
 
     const nlohmann::json* id = nullptr;
     if (event.contains("item_id")) id = &event["item_id"];
     else if (event.contains("item-id")) id = &event["item-id"];
-    if (!id) return;
+    if (!id) return false;
 
     const std::string item_key = jsonPathKey(*id);
-    if (item_key.empty()) return;
+    if (item_key.empty()) return false;
     const std::string path = "$[\"items\"][\"" + item_key + "\"]";
     if (type == "item_delete" || type == "delete_item") {
-        redis.deleteJsonPath(key, path);
-        return;
+        return redis.deleteJsonPath(key, path);
     }
 
     const nlohmann::json* item_payload = nullptr;
@@ -218,8 +218,9 @@ static void persistCanvasEvent(const std::shared_ptr<Canvas>& canvas, const nloh
                 item["next_sequence"] = next_sequence;
             }
         }
-        redis.setJsonPath(key, path, item);
+        return redis.setJsonPath(key, path, item);
     }
+    return false;
 }
 
 static bool hasCanvasPersistenceTarget(const nlohmann::json& event) {
@@ -235,14 +236,19 @@ static void drainCanvasPersistenceQueue(const std::shared_ptr<Canvas>& canvas) {
     nlohmann::json event;
     std::uint64_t ticket = 0;
     while (canvas && canvas->nextPersistence(event, ticket)) {
+        bool succeeded = false;
         try {
-            persistCanvasEvent(canvas, event);
+            succeeded = persistCanvasEvent(canvas, event);
         } catch (const std::exception& e) {
             std::cerr << "[uWebSockets] Failed to persist canvas item event: " << e.what() << "\n";
         } catch (...) {
             std::cerr << "[uWebSockets] Failed to persist canvas item event\n";
         }
-        canvas->endPersistence(ticket);
+        if (!succeeded) {
+            std::cerr << "[uWebSockets] Canvas #" << canvas->getCanvasId()
+                      << " Redis write failed; preventing Elasticsearch snapshot\n";
+        }
+        canvas->endPersistence(ticket, succeeded);
     }
 }
 
@@ -684,6 +690,35 @@ WebSocketServer::WebSocketServer(CanvasPool& pool, const std::string& host, int 
                                  const std::string& java_host, int java_port)
     : pool_(pool), host_(host), ws_port_(ws_port), token_validator_(std::move(validator)),
       java_host_(java_host), java_port_(java_port) {
+    session_cleanup_thread_ = std::thread([this]() {
+        pthread_setname_np(pthread_self(), "agora-disconn");
+        for (;;) {
+            int user_id = 0;
+            int canvas_id = 0;
+            std::uint64_t generation = 0;
+            {
+                std::unique_lock<std::mutex> lock(session_cleanup_mutex_);
+                session_cleanup_cv_.wait(lock, [this]() {
+                    return session_cleanup_stopping_ || !session_cleanup_order_.empty();
+                });
+                if (session_cleanup_order_.empty() && session_cleanup_stopping_) break;
+                user_id = session_cleanup_order_.front();
+                session_cleanup_order_.pop_front();
+                const auto pending = session_cleanup_pending_.find(user_id);
+                if (pending == session_cleanup_pending_.end()) continue;
+                canvas_id = pending->second.first;
+                generation = pending->second.second;
+                session_cleanup_pending_.erase(pending);
+            }
+            try {
+                pool_.updateUserSessionDisconnected(user_id, canvas_id, generation);
+            } catch (const std::exception& e) {
+                std::cerr << "[uWebSockets] Failed to update user disconnect state: " << e.what() << "\n";
+            } catch (...) {
+                std::cerr << "[uWebSockets] Failed to update user disconnect state\n";
+            }
+        }
+    });
     pool_.setWebSocketCallbacks({
         [this](int canvas_id, const nlohmann::json& data, int exclude_user_id) {
             broadcastToCanvas(canvas_id, data, exclude_user_id);
@@ -706,17 +741,13 @@ WebSocketServer::~WebSocketServer() {
         std::unique_lock<std::mutex> lock(worker_mutex_);
         worker_cv_.wait(lock, [this]() { return active_workers_ == 0; });
     }
+    {
+        std::lock_guard<std::mutex> lock(session_cleanup_mutex_);
+        session_cleanup_stopping_ = true;
+    }
+    session_cleanup_cv_.notify_one();
+    if (session_cleanup_thread_.joinable()) session_cleanup_thread_.join();
     pool_.setWebSocketCallbacks({});
-}
-
-void WebSocketServer::beginWorker() {
-    std::lock_guard<std::mutex> lock(worker_mutex_);
-    ++active_workers_;
-}
-
-void WebSocketServer::endWorker() {
-    std::lock_guard<std::mutex> lock(worker_mutex_);
-    if (--active_workers_ == 0) worker_cv_.notify_all();
 }
 
 bool WebSocketServer::beginBlockingWorker() {
@@ -735,23 +766,17 @@ void WebSocketServer::endBlockingWorker() {
 }
 
 void WebSocketServer::clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation) {
-    beginWorker();
-    try {
-        std::thread([this, user_id, canvas_id, session_generation]() {
-            pthread_setname_np(pthread_self(), "agora-disconn");
-            try {
-                pool_.updateUserSessionDisconnected(user_id, canvas_id, session_generation);
-            } catch (const std::exception& e) {
-                std::cerr << "[uWebSockets] Failed to update user disconnect state: " << e.what() << "\n";
-            } catch (...) {
-                std::cerr << "[uWebSockets] Failed to update user disconnect state\n";
-            }
-            endWorker();
-        }).detach();
-    } catch (...) {
-        endWorker();
-        std::cerr << "[uWebSockets] Failed to schedule user session cleanup for User #" << user_id << "\n";
+    {
+        std::lock_guard<std::mutex> lock(session_cleanup_mutex_);
+        if (session_cleanup_stopping_) return;
+        const auto [it, inserted] = session_cleanup_pending_.try_emplace(
+            user_id, canvas_id, session_generation);
+        if (inserted) session_cleanup_order_.push_back(user_id);
+        else if (session_generation > it->second.second) {
+            it->second = {canvas_id, session_generation};
+        }
     }
+    session_cleanup_cv_.notify_one();
 }
 
 void WebSocketServer::refreshUserSessionGeneration(int canvas_id, int user_id,
@@ -2359,7 +2384,8 @@ void WebSocketServer::runServer() {
 
             // The background initializer clears reservations for rejected or
             // prematurely closed sockets. Only established sockets own a Canvas entry.
-            if (access_authorized && (!canvas || final_connection_closed)) {
+            if (access_authorized && (!canvas || final_connection_closed
+                || !canvas->isUserActive(user_id))) {
                 clearSessionAsync(user_id, canvas_id, session_generation);
             }
         }
