@@ -183,6 +183,7 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
     auto canvas = std::make_shared<Canvas>(canvas_id, redis_ip, redis_port);
     canvas->setCanvasName(canvas_name);
     canvas->setAdminUserId(admin_uid);
+    canvas->setSettingsRevision(canvas_doc->value("settings-revision", 0LL));
     canvas->setWebSocketCallbacks(web_socket_callbacks_);
 
     {

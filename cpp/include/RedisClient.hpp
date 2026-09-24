@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 
 class RedisClient {
@@ -18,7 +19,14 @@ public:
     bool ping();
     bool set(const std::string& key, const std::string& value);
     std::optional<std::string> get(const std::string& key);
+    std::optional<std::string> getJsonPath(const std::string& key, const std::string& path);
     bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
+    bool appendChatMessage(const std::string& key, const std::string& item_id,
+                           std::uint64_t sequence, const nlohmann::json& message);
+    std::optional<std::string> getChatHistoryPage(const std::string& key, const std::string& item_id,
+                           const std::optional<std::uint64_t>& from_sequence,
+                           const std::optional<std::uint64_t>& to_sequence,
+                           std::uint64_t limit);
     CompareSetResult compareAndSetJsonPaths(const std::string& key, long long expected_revision,
                             const std::vector<std::pair<std::string, nlohmann::json>>& values,
                             const std::vector<std::string>& deletes = {});

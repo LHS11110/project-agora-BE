@@ -13,6 +13,7 @@ let state = {
     wsPort: '',
     items: Object.create(null),
     itemGroups: [],
+    chatSeen: new Set(),
     pendingItemChange: null,
     settingsRevision: null,
     settingsPending: null
@@ -518,6 +519,28 @@ async function connectActiveCanvas() {
                     setItemEditorEnabled(true);
                     el.itemStatus.textContent = `아이템 ${Object.keys(state.items).length}개 로드됨`;
                     socket.send(JSON.stringify({ type: 'canvas_settings_get' }));
+                    if (state.items.general?.type === 'chat_room') {
+                        socket.send(JSON.stringify({ type: 'chat_history', room_id: 'general', limit: 50 }));
+                    }
+                    return;
+                }
+                if (data.type === 'chat_history') {
+                    for (const message of data.messages || []) {
+                        renderChatRecord(data.room_id, message);
+                    }
+                    return;
+                }
+                if (data.type === 'chat') {
+                    if (data.room_created) {
+                        socket.send(JSON.stringify({ type: 'chat_history', room_id: data.room_id, limit: 50 }));
+                    } else {
+                        renderChatRecord(data.room_id, data);
+                    }
+                    return;
+                }
+                if (data.type === 'error' && data.code?.startsWith('CHAT_')
+                    && data.code !== 'CHAT_ROOM_NOT_FOUND') {
+                    addSystemMessage(`요청 실패: ${data.code || '서버 오류'}`);
                     return;
                 }
                 if (data.type === 'canvas_settings_snapshot' || data.type === 'canvas_settings_changed') {
@@ -552,9 +575,11 @@ async function connectActiveCanvas() {
                         else state.items[change.id] = change.previous;
                         renderCanvasItems();
                         setItemEditorEnabled(true);
+                        el.itemStatus.textContent = '아이템 수정 권한이 거부되었습니다.';
+                        addSystemMessage('아이템 수정 권한이 거부되었습니다. permission 그룹을 확인하세요.');
+                    } else {
+                        addSystemMessage('채팅방 접근 권한이 거부되었습니다. 방의 permission 그룹을 확인하세요.');
                     }
-                    el.itemStatus.textContent = '아이템 수정 권한이 거부되었습니다.';
-                    addSystemMessage('아이템 수정 권한이 거부되었습니다. permission 그룹을 확인하세요.');
                     return;
                 }
                 if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
@@ -647,12 +672,11 @@ function sendMessage() {
     try {
         payload = JSON.parse(text); // If they wrote JSON, send as JSON
     } catch {
-        payload = { type: 'chat', text: text, sender: state.user.nickname };
+        payload = { type: 'chat', room_id: 'general', text };
     }
+    if (payload?.type === 'chat' && !payload.room_id) payload.room_id = 'general';
 
     state.ws.send(JSON.stringify(payload));
-    addChatMessage(formatUserHandle(state.user, '나 (Me)'), text, true);
-    
     el.chatInput.value = '';
 }
 
@@ -662,6 +686,18 @@ function addSystemMessage(text) {
     div.innerText = text;
     document.getElementById('chatContainer').appendChild(div);
     scrollToBottom();
+}
+
+function renderChatRecord(roomId, message) {
+    if (Number.isInteger(message.sequence)) {
+        const key = `${state.currentCanvas?.canvas_id}:${roomId}:${message.sequence}`;
+        if (state.chatSeen.has(key)) return;
+        state.chatSeen.add(key);
+    }
+    addChatMessage(formatUserHandle({
+        nickname: message.sender,
+        tag_number: message.tag_number
+    }), message.text || '', false);
 }
 
 // --- Canvas Settings Modal ---

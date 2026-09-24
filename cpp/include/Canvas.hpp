@@ -33,6 +33,14 @@ public:
         std::lock_guard<std::mutex> lock(metadata_mutex_);
         canvas_name = name;
     }
+    long long getSettingsRevision() const {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        return settings_revision_;
+    }
+    void setSettingsRevision(long long revision) {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        settings_revision_ = revision;
+    }
     int getAdminUserId() const {
         std::lock_guard<std::mutex> lock(metadata_mutex_);
         return admin_user_id;
@@ -94,22 +102,29 @@ public:
     std::mutex settings_mutex;
     std::atomic<bool> unloading{false};
 
-    // Persistence workers reserve before they are launched. Unload marks the
-    // canvas as closing and waits for all reserved Redis writes to finish
-    // before taking the final Redis -> Elasticsearch snapshot.
+    // Persistence queue bookkeeping has a separate short-held mutex so event
+    // loop enqueue never waits on settings/Redis/SQL/ES work. Tickets let
+    // readers wait only for writes already accepted before their request.
+    // Unload marks the canvas as closing and waits for all reserved Redis
+    // writes before taking the final Redis -> Elasticsearch snapshot.
     bool enqueuePersistence(const nlohmann::json& event, bool& start_worker);
-    bool nextPersistence(nlohmann::json& event);
+    std::uint64_t persistenceBarrier();
+    bool nextPersistence(nlohmann::json& event, std::uint64_t& ticket);
     void cancelPersistenceQueue();
-    void endPersistence();
-    void waitForPersistenceIdle(std::unique_lock<std::mutex>& lock);
+    void endPersistence(std::uint64_t ticket);
+    void waitForPersistenceThrough(std::uint64_t ticket);
     void waitForPendingPersistence(std::unique_lock<std::mutex>& lock);
 
 private:
     mutable std::mutex metadata_mutex_;
+    long long settings_revision_{0};
     std::mutex canvas_mutex;
+    std::mutex persistence_mutex_;
     std::condition_variable persistence_cv_;
     std::size_t pending_persistence_{0};
-    std::deque<nlohmann::json> persistence_queue_;
+    std::uint64_t last_enqueued_persistence_{0};
+    std::uint64_t last_completed_persistence_{0};
+    std::deque<std::pair<std::uint64_t, nlohmann::json>> persistence_queue_;
     bool persistence_worker_running_{false};
     WebSocketCallbacks web_socket_callbacks_;
 };

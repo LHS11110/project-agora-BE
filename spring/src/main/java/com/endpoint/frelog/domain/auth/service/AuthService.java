@@ -94,7 +94,7 @@ public class AuthService {
         }
 
         String encodedPassword = passwordEncoder.encode(request.password());
-        Integer nextTagNumber = userRepository.findMaxTagNumberByNickname(request.nickname()) + 1;
+        Integer nextTagNumber = userRepository.findMaxTagNumberByNicknameForUpdate(request.nickname()) + 1;
         User newUser = new User(request.email(), encodedPassword, request.nickname(), nextTagNumber, Role.ROLE_USER);
         User savedUser = userRepository.save(newUser);
         
@@ -142,7 +142,7 @@ public class AuthService {
             String newNickname = request.nickname().trim();
             if (!newNickname.equals(user.getNickname())) {
                 user.setNickname(newNickname);
-                user.setTagNumber(userRepository.findMaxTagNumberByNickname(newNickname) + 1);
+                user.setTagNumber(userRepository.findMaxTagNumberByNicknameForUpdate(newNickname) + 1);
             }
         }
 

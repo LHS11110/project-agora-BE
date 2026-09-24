@@ -1,6 +1,8 @@
 #include "Canvas.hpp"
 #include <iostream>
 #include <vector>
+#include <algorithm>
+#include <limits>
 
 Canvas::Canvas(int canvas_id, const std::string& redis_ip, int redis_port)
     : canvas_id(canvas_id), redis_ip(redis_ip), redis_port(redis_port) {
@@ -11,28 +13,36 @@ Canvas::~Canvas() {
 }
 
 bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker) {
-    std::lock_guard<std::mutex> lock(settings_mutex);
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (unloading.load()) return false;
-    persistence_queue_.push_back(event);
+    if (last_enqueued_persistence_ == std::numeric_limits<std::uint64_t>::max()) return false;
+    const auto ticket = ++last_enqueued_persistence_;
+    persistence_queue_.emplace_back(ticket, event);
     ++pending_persistence_;
     start_worker = !persistence_worker_running_;
     persistence_worker_running_ = true;
     return true;
 }
 
-bool Canvas::nextPersistence(nlohmann::json& event) {
-    std::lock_guard<std::mutex> lock(settings_mutex);
+std::uint64_t Canvas::persistenceBarrier() {
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
+    return last_enqueued_persistence_;
+}
+
+bool Canvas::nextPersistence(nlohmann::json& event, std::uint64_t& ticket) {
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (persistence_queue_.empty()) {
         persistence_worker_running_ = false;
         return false;
     }
-    event = std::move(persistence_queue_.front());
+    ticket = persistence_queue_.front().first;
+    event = std::move(persistence_queue_.front().second);
     persistence_queue_.pop_front();
     return true;
 }
 
 void Canvas::cancelPersistenceQueue() {
-    std::lock_guard<std::mutex> lock(settings_mutex);
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (pending_persistence_ >= persistence_queue_.size()) {
         pending_persistence_ -= persistence_queue_.size();
     } else {
@@ -40,22 +50,32 @@ void Canvas::cancelPersistenceQueue() {
     }
     persistence_queue_.clear();
     persistence_worker_running_ = false;
-    if (pending_persistence_ == 0) persistence_cv_.notify_all();
+    if (pending_persistence_ == 0) {
+        last_completed_persistence_ = last_enqueued_persistence_;
+        persistence_cv_.notify_all();
+    }
 }
 
-void Canvas::endPersistence() {
-    std::lock_guard<std::mutex> lock(settings_mutex);
+void Canvas::endPersistence(std::uint64_t ticket) {
+    std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (pending_persistence_ > 0) --pending_persistence_;
-    if (pending_persistence_ == 0) persistence_cv_.notify_all();
+    last_completed_persistence_ = std::max(last_completed_persistence_, ticket);
+    persistence_cv_.notify_all();
 }
 
-void Canvas::waitForPersistenceIdle(std::unique_lock<std::mutex>& lock) {
-    persistence_cv_.wait(lock, [this]() { return pending_persistence_ == 0; });
+void Canvas::waitForPersistenceThrough(std::uint64_t ticket) {
+    std::unique_lock<std::mutex> lock(persistence_mutex_);
+    persistence_cv_.wait(lock, [this, ticket]() { return last_completed_persistence_ >= ticket; });
 }
 
 void Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
+    (void)lock;
+    std::unique_lock<std::mutex> persistence_lock(persistence_mutex_);
     unloading.store(true);
-    persistence_cv_.wait(lock, [this]() { return pending_persistence_ == 0; });
+    const auto ticket = last_enqueued_persistence_;
+    persistence_cv_.wait(persistence_lock, [this, ticket]() {
+        return last_completed_persistence_ >= ticket;
+    });
 }
 
 std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {

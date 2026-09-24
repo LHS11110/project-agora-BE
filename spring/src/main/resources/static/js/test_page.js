@@ -320,7 +320,8 @@ async function connectActiveCanvas() {
     state.ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-            if (data.type === 'ping' || data.type === 'init' || data.type === 'init_items') return;
+            if (data.type === 'ping' || data.type === 'init' || data.type === 'init_items'
+                || data.type === 'item_update' || data.type === 'chat_history') return;
             logToConsole('WS', 'Message Received', e.data);
             const sender = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.sender_id || data.user_id) || '알 수 없음';
             addChatMessage(sender, data.text || JSON.stringify(data), false);
@@ -360,11 +361,11 @@ function sendMessage() {
     try {
         payload = JSON.parse(text);
     } catch {
-        payload = { type: 'chat', text: text };
+        payload = { type: 'chat', room_id: 'general', text: text };
     }
+    if (payload?.type === 'chat' && !payload.room_id) payload.room_id = 'general';
     
     state.ws.send(JSON.stringify(payload));
-    addChatMessage('나 (Me)', text, true);
     input.value = '';
 }
 
@@ -464,7 +465,7 @@ async function runFullE2ETest() {
 
     // 7. WS Test
     setStatus(7, 'running');
-    state.ws.send(JSON.stringify({ type: 'chat', text: 'Hello from E2E!' }));
+    state.ws.send(JSON.stringify({ type: 'chat', room_id: 'general', text: 'Hello from E2E!' }));
     await new Promise(r => setTimeout(r, 500));
     setStatus(7, 'success');
 

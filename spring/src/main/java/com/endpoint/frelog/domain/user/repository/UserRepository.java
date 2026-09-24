@@ -16,8 +16,9 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByEmail(String email);
 
-    @Query("SELECT COALESCE(MAX(u.tagNumber), 0) FROM User u WHERE u.nickname = :nickname")
-    Integer findMaxTagNumberByNickname(@Param("nickname") String nickname);
+    @Query(value = "SELECT COALESCE(MAX(tag_number), 0) FROM users WITH (UPDLOCK, HOLDLOCK) WHERE nickname = :nickname",
+            nativeQuery = true)
+    Integer findMaxTagNumberByNicknameForUpdate(@Param("nickname") String nickname);
 
     Optional<User> findByNicknameAndTagNumber(String nickname, Integer tagNumber);
 }

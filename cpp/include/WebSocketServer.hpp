@@ -28,6 +28,9 @@ struct PerSocketData {
     bool access_authorized{false};
     bool is_admin{false};
     std::unordered_set<std::string> groups;
+    unsigned int permission_update_pending_count{0};
+    bool permission_update_pending{false};
+    std::string rtc_peer_id;
 };
 
 class WebSocketServer {
@@ -55,11 +58,19 @@ private:
     void runServer();
     void registerSocket(Socket* ws);
     void unregisterSocket(Socket* ws);
+    void indexSocket(Socket* ws);
+    void unindexSocket(Socket* ws);
+    std::unordered_set<Socket*> socketsForGroups(
+        int canvas_id, const std::unordered_set<std::string>& groups) const;
     void beginWorker();
+    bool beginBlockingWorker();
     void endWorker();
+    void endBlockingWorker();
     void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
     void refreshUserSessionGeneration(int canvas_id, int user_id, std::uint64_t session_generation);
     void handleCanvasSettings(Socket* ws, const nlohmann::json& event);
+    void handleChatEvent(Socket* ws, nlohmann::json event);
+    void handleChatHistoryRequest(Socket* ws, const nlohmann::json& event);
 
     CanvasPool& pool_;
     std::string host_;
@@ -75,6 +86,13 @@ private:
     std::mutex worker_mutex_;
     std::condition_variable worker_cv_;
     int active_workers_{0};
+    int active_blocking_workers_{0};
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
+    std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<Socket*>>> sockets_by_canvas_group_;
+    std::unordered_map<int, std::unordered_set<Socket*>> admin_sockets_by_canvas_;
+    std::unordered_map<int, std::unordered_map<std::string, Socket*>> sockets_by_canvas_peer_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<std::string>>> item_permissions_by_canvas_;
+    std::unordered_map<int, std::unordered_set<std::string>> chat_rooms_by_canvas_;
+    std::unordered_map<int, std::unordered_map<std::string, std::uint64_t>> chat_next_sequence_by_canvas_;
+    std::unordered_map<int, std::uint64_t> authorization_epochs_by_canvas_;
 };

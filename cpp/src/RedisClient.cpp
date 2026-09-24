@@ -226,9 +226,212 @@ std::optional<std::string> RedisClient::get(const std::string& key) {
     return res;
 }
 
+std::optional<std::string> RedisClient::getJsonPath(const std::string& key, const std::string& path) {
+    if (!sendCommand({"JSON.GET", key, path})) return std::nullopt;
+    const std::string response = readResponse();
+    if (response.empty() || response.rfind("ERR", 0) == 0) return std::nullopt;
+    return response;
+}
+
 bool RedisClient::setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value) {
     if (!sendCommand({"JSON.SET", key, path, value.dump()})) return false;
     return readResponse() == "OK";
+}
+
+bool RedisClient::appendChatMessage(const std::string& key, const std::string& item_id,
+                                   std::uint64_t sequence, const nlohmann::json& message) {
+    std::string escaped_id;
+    escaped_id.reserve(item_id.size());
+    for (char ch : item_id) {
+        if (ch == '\\' || ch == '"') escaped_id.push_back('\\');
+        escaped_id.push_back(ch);
+    }
+    const std::string room_path = "$[\"items\"][\"" + escaped_id + "\"]";
+    const std::string type_path = room_path + "[\"type\"]";
+    const std::string data_path = room_path + "[\"data\"]";
+    const std::string sequence_path = room_path + "[\"next_sequence\"]";
+    static const std::string script = R"LUA(
+local type_raw = redis.call('JSON.GET', KEYS[1], ARGV[1])
+if not type_raw then return 'MISSING_ROOM' end
+local types = cjson.decode(type_raw)
+if types[1] ~= 'chat_room' then return 'NOT_CHAT_ROOM' end
+
+local lengths_ok, lengths = pcall(redis.call, 'JSON.ARRLEN', KEYS[1], ARGV[2])
+if not lengths_ok then return 'BAD_HISTORY' end
+local length_value = type(lengths) == 'table' and lengths[1] or lengths
+local data_length = tonumber(length_value)
+if not data_length then
+    redis.call('JSON.SET', KEYS[1], ARGV[2], '[]')
+    data_length = 0
+end
+
+local next_raw = redis.call('JSON.GET', KEYS[1], ARGV[3])
+local next_sequence = nil
+if next_raw then
+    local next_matches = cjson.decode(next_raw)
+    next_sequence = tonumber(next_matches[1])
+end
+if not next_sequence then
+    local history_raw = redis.call('JSON.GET', KEYS[1], ARGV[2])
+    local maximum = 0
+    if history_raw then
+        local history_matches = cjson.decode(history_raw)
+        local history = history_matches[1]
+        if type(history) ~= 'table' then return 'BAD_HISTORY' end
+        for _, previous in ipairs(history) do
+            if type(previous) == 'table' then
+                local previous_sequence = tonumber(previous.sequence)
+                if previous_sequence and previous_sequence > maximum then maximum = previous_sequence end
+            end
+        end
+    end
+    next_sequence = maximum + 1
+end
+local expected = tonumber(ARGV[4])
+if next_sequence ~= expected then return 'SEQUENCE_CONFLICT' end
+
+local message = cjson.decode(ARGV[5])
+if tonumber(message.sequence) ~= expected then return 'BAD_MESSAGE' end
+local appended = redis.call('JSON.ARRAPPEND', KEYS[1], ARGV[2], ARGV[5])
+if not appended then return 'APPEND_FAILED' end
+redis.call('JSON.SET', KEYS[1], ARGV[3], tostring(expected + 1))
+return 'OK'
+)LUA";
+    if (!sendCommand({"EVAL", script, "1", key, type_path, data_path, sequence_path,
+                      std::to_string(sequence), message.dump()})) return false;
+    return readResponse() == "OK";
+}
+
+std::optional<std::string> RedisClient::getChatHistoryPage(
+        const std::string& key, const std::string& item_id,
+        const std::optional<std::uint64_t>& from_sequence,
+        const std::optional<std::uint64_t>& to_sequence, std::uint64_t limit) {
+    std::string escaped_id;
+    escaped_id.reserve(item_id.size());
+    for (char ch : item_id) {
+        if (ch == '\\' || ch == '"') escaped_id.push_back('\\');
+        escaped_id.push_back(ch);
+    }
+    const std::string room_path = "$[\"items\"][\"" + escaped_id + "\"]";
+    const std::string type_path = room_path + "[\"type\"]";
+    const std::string data_path = room_path + "[\"data\"]";
+    const std::string mode = from_sequence && to_sequence ? "range"
+        : from_sequence ? "from" : to_sequence ? "to" : "latest";
+    static const std::string script = R"LUA(
+local type_raw = redis.call('JSON.GET', KEYS[1], ARGV[2])
+if not type_raw then return 'ROOM_NOT_FOUND' end
+local types = cjson.decode(type_raw)
+if types[1] ~= 'chat_room' then return 'ROOM_NOT_FOUND' end
+
+local lengths_ok, lengths = pcall(redis.call, 'JSON.ARRLEN', KEYS[1], ARGV[3])
+if not lengths_ok then return 'BAD_HISTORY' end
+local length_value = type(lengths) == 'table' and lengths[1] or lengths
+local total = tonumber(length_value) or 0
+local requested_from = tonumber(ARGV[4]) or 0
+local requested_to = tonumber(ARGV[5]) or 0
+local requested_limit = tonumber(ARGV[6]) or 50
+local mode = ARGV[7]
+local start_index = 0
+local end_index = total
+local has_more = false
+
+if mode == 'latest' then
+    start_index = math.max(0, total - requested_limit)
+    has_more = start_index > 0
+elseif mode == 'from' then
+    start_index = math.min(total, requested_from - 1)
+    end_index = math.min(total, start_index + requested_limit)
+    has_more = end_index < total
+elseif mode == 'to' then
+    end_index = math.min(total, requested_to)
+    start_index = math.max(0, end_index - requested_limit)
+    has_more = start_index > 0
+else
+    start_index = math.min(total, requested_from - 1)
+    end_index = math.min(total, requested_to)
+    if end_index < start_index then end_index = start_index end
+end
+
+local slice_path = ARGV[3] .. '[' .. start_index .. ':' .. end_index .. ']'
+local slice_ok, slice_raw = pcall(redis.call, 'JSON.GET', KEYS[1], slice_path)
+if not slice_ok then slice_raw = nil end
+local messages = slice_raw and cjson.decode(slice_raw) or {}
+local contiguous = type(messages) == 'table' and #messages == end_index - start_index
+if contiguous then
+    for i, message in ipairs(messages) do
+        if type(message) ~= 'table' or tonumber(message.sequence) ~= start_index + i then
+            contiguous = false
+            break
+        end
+    end
+end
+
+if not contiguous then
+    local raw = redis.call('JSON.GET', KEYS[1], ARGV[1])
+    if not raw then return 'ROOM_NOT_FOUND' end
+    local matches = cjson.decode(raw)
+    local room = matches[1]
+    local data = room.data or {}
+    if type(data) ~= 'table' then return 'BAD_HISTORY' end
+    local rows = {}
+    for _, message in ipairs(data) do
+        if type(message) == 'table' then
+            local sequence = tonumber(message.sequence)
+            if sequence and sequence > 0 then
+                rows[#rows + 1] = {sequence = sequence, message = message}
+            end
+        end
+    end
+    table.sort(rows, function(left, right) return left.sequence < right.sequence end)
+    local selected = {}
+    total = #rows
+    if mode == 'latest' then
+        local first = math.max(1, #rows - requested_limit + 1)
+        has_more = first > 1
+        for i = first, #rows do selected[#selected + 1] = rows[i] end
+    elseif mode == 'from' then
+        local candidates = {}
+        for _, row in ipairs(rows) do
+            if row.sequence >= requested_from then candidates[#candidates + 1] = row end
+        end
+        local count = math.min(#candidates, requested_limit)
+        has_more = #candidates > count
+        for i = 1, count do selected[#selected + 1] = candidates[i] end
+    elseif mode == 'to' then
+        local candidates = {}
+        for _, row in ipairs(rows) do
+            if row.sequence <= requested_to then candidates[#candidates + 1] = row end
+        end
+        local first = math.max(1, #candidates - requested_limit + 1)
+        has_more = first > 1
+        for i = first, #candidates do selected[#selected + 1] = candidates[i] end
+    else
+        for _, row in ipairs(rows) do
+            if row.sequence >= requested_from and row.sequence <= requested_to then
+                selected[#selected + 1] = row
+            end
+        end
+    end
+    messages = {}
+    for _, row in ipairs(selected) do messages[#messages + 1] = row.message end
+    start_index = selected[1] and selected[1].sequence - 1 or 0
+    end_index = selected[#selected] and selected[#selected].sequence or 0
+end
+
+local response = {total = total, messages = messages, has_more = has_more}
+if #messages > 0 then
+    response.from_sequence = tonumber(messages[1].sequence) or start_index + 1
+    response.to_sequence = tonumber(messages[#messages].sequence) or end_index
+end
+    return cjson.encode(response)
+)LUA";
+    if (!sendCommand({"EVAL", script, "1", key, room_path, type_path, data_path,
+                      from_sequence ? std::to_string(*from_sequence) : std::string("0"),
+                      to_sequence ? std::to_string(*to_sequence) : std::string("0"),
+                      std::to_string(limit), mode})) return std::nullopt;
+    const std::string response = readResponse();
+    if (response.empty() || response.rfind("ERR", 0) == 0) return std::nullopt;
+    return response;
 }
 
 RedisClient::CompareSetResult RedisClient::compareAndSetJsonPaths(
