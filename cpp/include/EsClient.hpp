@@ -2,6 +2,7 @@
 
 #include <string>
 #include <optional>
+#include <map>
 #include <nlohmann/json.hpp>
 
 class EsClient {
@@ -13,6 +14,7 @@ public:
 
     std::optional<nlohmann::json> getCanvasDocument(int canvasId);
     bool saveCanvasDocument(int canvasId, const nlohmann::json& doc);
+    bool patchCanvasFields(int canvasId, const std::map<std::string, nlohmann::json>& fields);
 
 private:
     std::string host_;

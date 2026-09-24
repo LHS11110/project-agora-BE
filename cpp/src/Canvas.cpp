@@ -10,6 +10,54 @@ Canvas::~Canvas() {
     disconnectAll();
 }
 
+bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    if (unloading.load()) return false;
+    persistence_queue_.push_back(event);
+    ++pending_persistence_;
+    start_worker = !persistence_worker_running_;
+    persistence_worker_running_ = true;
+    return true;
+}
+
+bool Canvas::nextPersistence(nlohmann::json& event) {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    if (persistence_queue_.empty()) {
+        persistence_worker_running_ = false;
+        return false;
+    }
+    event = std::move(persistence_queue_.front());
+    persistence_queue_.pop_front();
+    return true;
+}
+
+void Canvas::cancelPersistenceQueue() {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    if (pending_persistence_ >= persistence_queue_.size()) {
+        pending_persistence_ -= persistence_queue_.size();
+    } else {
+        pending_persistence_ = 0;
+    }
+    persistence_queue_.clear();
+    persistence_worker_running_ = false;
+    if (pending_persistence_ == 0) persistence_cv_.notify_all();
+}
+
+void Canvas::endPersistence() {
+    std::lock_guard<std::mutex> lock(settings_mutex);
+    if (pending_persistence_ > 0) --pending_persistence_;
+    if (pending_persistence_ == 0) persistence_cv_.notify_all();
+}
+
+void Canvas::waitForPersistenceIdle(std::unique_lock<std::mutex>& lock) {
+    persistence_cv_.wait(lock, [this]() { return pending_persistence_ == 0; });
+}
+
+void Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
+    unloading.store(true);
+    persistence_cv_.wait(lock, [this]() { return pending_persistence_ == 0; });
+}
+
 std::pair<int, int> Canvas::connectUser(int user_id, int rx_port, int tx_port) {
     std::lock_guard<std::mutex> lock(canvas_mutex);
 

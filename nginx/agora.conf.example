@@ -34,13 +34,21 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
     
-    # 기본 경로 라우팅 (Spring Boot 처리)
+    # React/Vite frontend build. Copy the contents of project-agora-FE/dist/
+    # to /var/www/agora-frontend/ during deployment; do not expose the source
+    # checkout under /home, which is not traversable by the nginx worker.
+    root /var/www/agora-frontend;
+    index index.html;
+
+    # Vite assets must return 404 when missing, not the SPA HTML fallback.
+    # This also prevents CSS/JS requests from receiving Spring JSON/HTML MIME types.
+    location /assets/ {
+        try_files $uri =404;
+    }
+
+    # Client-side routes (/, /login, /canvas/:id, /search, /profile).
     location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        try_files $uri $uri/ /index.html;
     }
 
     # C++ 서버 WebSocket 라우팅

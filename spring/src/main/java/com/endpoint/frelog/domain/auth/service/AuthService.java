@@ -69,7 +69,8 @@ public class AuthService {
             throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         }
 
-        UserSession session = userSessionRepository.findById(user.getUserId()).orElseGet(() -> new UserSession(user));
+        UserSession session = userSessionRepository.findByIdWithPessimisticLock(user.getUserId())
+                .orElseGet(() -> new UserSession(user));
         session.updateLastLogin(LocalDateTime.now());
         userSessionRepository.save(session);
 
@@ -174,7 +175,7 @@ public class AuthService {
         }
 
         // 1. 접속 중인지 확인 후 C++ 서버에 접속 종료 요청
-        UserSession session = userSessionRepository.findById(userId).orElse(null);
+        UserSession session = userSessionRepository.findByIdWithPessimisticLock(userId).orElse(null);
         if (session != null && Boolean.TRUE.equals(session.getIsAccessed())) {
             String serverIp = session.getCppServer() != null ? session.getCppServer().getServerIp() : null;
             String serverPort = session.getCppServer() != null ? session.getCppServer().getServerPort() : null;

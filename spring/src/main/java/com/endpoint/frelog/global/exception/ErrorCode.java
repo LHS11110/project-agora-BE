@@ -19,6 +19,7 @@ public enum ErrorCode {
     ALREADY_CONNECTED(HttpStatus.CONFLICT, "CANVAS_003", "이미 캔버스에 접속 중입니다."),
     CANVAS_PASSWORD_REQUIRED(HttpStatus.FORBIDDEN, "CANVAS_004", "캔버스 비밀번호가 필요합니다."),
     CANVAS_PASSWORD_INVALID(HttpStatus.FORBIDDEN, "CANVAS_005", "캔버스 비밀번호가 올바르지 않습니다."),
+    CANVAS_ACTIVE(HttpStatus.CONFLICT, "CANVAS_006", "캔버스가 활성 상태입니다. 해당 캔버스에 접속한 뒤 캔버스 설정에서 변경해 주세요."),
 
     ELASTICSEARCH_INDEX_NOT_FOUND(HttpStatus.INTERNAL_SERVER_ERROR, "ES_001", "Elasticsearch 인덱스가 존재하지 않습니다."),
 

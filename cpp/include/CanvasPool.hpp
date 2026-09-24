@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
+#include <optional>
 #include "Canvas.hpp"
 #include "RedisClient.hpp"
 #include "EsClient.hpp"
@@ -21,12 +23,16 @@ public:
     // Select or create canvas in pool
     std::shared_ptr<Canvas> getOrCreateCanvas(int canvas_id);
     std::shared_ptr<Canvas> getCanvas(int canvas_id);
+
+    // Check participant and settings-revision access before any cache allocation
+    // or user-session update.
+    bool isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision);
     
     // Connect user session in DB
-    bool updateUserSessionConnected(int user_id, int canvas_id);
+    std::optional<std::uint64_t> updateUserSessionConnected(int user_id, int canvas_id);
 
     // Disconnect user session in DB (for rejected connections)
-    bool updateUserSessionDisconnected(int user_id);
+    bool updateUserSessionDisconnected(int user_id, int canvas_id, std::uint64_t session_generation);
 
     // Remove canvas from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
     bool removeCanvas(int canvas_id);
@@ -54,15 +60,21 @@ public:
 
     std::string getDbHost() const { return db_host_; }
     int getDbPort() const { return db_port_; }
+    std::string getEsHost() const { return es_host_; }
+    int getEsPort() const { return es_port_; }
     std::string getCppServerIp() const { return cpp_server_ip_; }
     int getCppServerPort() const { return cpp_server_port_; }
 
 private:
-    void unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
+    bool unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;
-    std::unordered_map<int, std::shared_ptr<std::mutex>> loading_mutexes_;
+    // Serializes initialization and unload for each canvas ID.
+    std::unordered_map<int, std::shared_ptr<std::mutex>> lifecycle_mutexes_;
     std::mutex pool_mutex_;
+    std::mutex session_generation_mutex_;
+    std::unordered_map<int, std::shared_ptr<std::mutex>> user_session_mutexes_;
+    std::unordered_map<int, std::uint64_t> user_session_generations_;
     Canvas::WebSocketCallbacks web_socket_callbacks_;
 
     std::string db_host_;

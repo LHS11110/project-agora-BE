@@ -10,6 +10,7 @@
 #include <unordered_set>
 #include <condition_variable>
 #include <optional>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include "App.h"
 #include "AuthenticatedUser.hpp"
@@ -21,8 +22,10 @@ struct PerSocketData {
     int tag_number{0};
     std::string nickname;
     long long settings_revision{0};
+    std::uint64_t session_generation{0};
     int message_count{0};
     long long last_reset_time{0};
+    bool access_authorized{false};
     bool is_admin{false};
     std::unordered_set<std::string> groups;
 };
@@ -54,6 +57,8 @@ private:
     void unregisterSocket(Socket* ws);
     void beginWorker();
     void endWorker();
+    void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
+    void refreshUserSessionGeneration(int canvas_id, int user_id, std::uint64_t session_generation);
     void handleCanvasSettings(Socket* ws, const nlohmann::json& event);
 
     CanvasPool& pool_;

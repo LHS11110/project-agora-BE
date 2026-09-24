@@ -142,7 +142,7 @@ Spring 오류는 다음 형태입니다.
 }
 ```
 
-변경 API는 캔버스가 비활성 상태일 때 관리자/소유자 정책으로 사용합니다. 활성 WebSocket 세션에서는 아래 WebSocket 설정 이벤트를 사용합니다.
+변경 API는 캔버스가 비활성 상태일 때 관리자 정책으로 사용합니다. 활성 캔버스에 Spring API로 변경 요청을 보내면 `409 CANVAS_006`과 함께 캔버스에 접속해 설정에서 변경하라는 안내를 반환합니다. 활성 WebSocket 세션에서는 아래 WebSocket 설정 이벤트를 사용하며, 성공한 변경은 Redis와 Elasticsearch에 동기 반영됩니다.
 
 | 메서드·경로 | 요청 본문 | 성공 |
 |---|---|---|
@@ -153,7 +153,7 @@ Spring 오류는 다음 형태입니다.
 | `DELETE /api/canvases/{canvasId}/people` | 위와 동일 | `204` |
 | `DELETE /api/canvases/{canvasId}` | 없음 | `204` |
 
-비밀번호는 저장 시 해시화되며 API 응답에 평문·해시를 포함하지 않습니다. 참여자 관리는 닉네임과 태그 번호로 수행합니다. 현재 Spring의 `/access`는 참여자 목록을 검사하지 않지만, C++ WebSocket handshake는 Redis의 `people`과 설정 revision을 다시 검사합니다(자세한 내용은 WebSocket 절 참조).
+비밀번호는 저장 시 해시화되며 API 응답에 평문·해시를 포함하지 않습니다. 참여자 관리는 닉네임과 태그 번호로 수행합니다. Spring의 `/access`는 로그인·캔버스 비밀번호를 확인하고 접속 토큰을 발급합니다. 참여 권한은 C++ WebSocket에서 캐시·세션 예약 전에 한 번 확인하며, 로드 후에는 revision만 비교해 그 사이의 설정 변경 경합을 차단합니다.
 
 ### 캔버스 접속 정보 발급
 
@@ -279,7 +279,9 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {"type":"error","code":"ITEM_ACCESS_DENIED"}
 ```
 
-허용된 이벤트는 발신자를 제외한 같은 캔버스 접속자에게 전달되고 RedisJSON에 저장됩니다. `ping`, `pong`, `chat`은 영속화하지 않습니다. 초당 100개를 초과하는 메시지는 버려집니다.
+ACL은 저장될 `item` 또는 `data` 객체의 `permission` 필드에서 읽습니다. 기존 클라이언트 호환을 위해 top-level `permission`도 받을 수 있지만, payload에 ACL이 이미 있으면 해석된 권한 그룹이 같아야 합니다. ACL이 없거나 비어 있으면 관리자에게만 보입니다. 일반 사용자는 자신이 속한 그룹만 대상으로 새 아이템을 만들 수 있고, 기존 아이템은 현재 ACL이 허용할 때 수정·삭제할 수 있지만 ACL 자체는 바꿀 수 없습니다. 전체 `items` 교체는 관리자만 할 수 있습니다.
+
+아이템을 처음 전달할 때와 실시간 이벤트를 보낼 때 모두 이 ACL을 적용합니다. ACL이 바뀌어 기존 접속자의 권한이 회수되면 서버는 해당 사용자에게 `item_delete`를 보내 로컬 표시에서도 아이템을 제거합니다. 허용된 변경은 RedisJSON에 저장됩니다. `ping`, `pong`, `chat`은 영속화하지 않습니다. 초당 100개를 초과하는 메시지는 버려집니다.
 
 #### 연결 상태 확인
 
@@ -350,4 +352,4 @@ WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. 캔
 - C++는 시작 시 `cpp_server`를 등록/활성화하고 5초마다 `last_heartbeat_at`을 갱신합니다. 정상 종료 시 row를 삭제하지 않고 비활성화합니다.
 - Spring은 서버 선택 시 15초 이내 heartbeat와 C++ `/health` 응답을 모두 확인합니다.
 - WebSocket 캔버스 세션은 Redis의 최신 문서를 기준으로 초기화하고, 마지막 접속자가 나가면 캐시를 해제하고 영속 저장 흐름을 수행합니다.
-- `people`는 참여자·설정 권한의 내부 목록입니다. Spring의 캔버스 접속 정보 발급은 이 목록을 검사하지 않지만, 현재 C++ WebSocket handshake는 목록에 포함된 사용자만 최종 연결시킵니다.
+- `people`는 참여·접속 권한의 내부 목록입니다. Spring은 로그인 및 비밀번호를 확인한 뒤 설정 revision을 포함한 토큰을 발급합니다. C++는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch에서 참여자와 revision을 한 번 확인하고, 로드 후에는 동시 설정 변경 여부를 revision으로만 확인합니다. 활성 캐시의 Redis 문서를 읽을 수 없으면 Elasticsearch의 오래된 사본으로 대체하지 않고 접속을 거부합니다.

@@ -5,8 +5,10 @@
 #include <set>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <functional>
 #include <atomic>
+#include <deque>
 #include <nlohmann/json.hpp>
 #include "SocketChannel.hpp"
 
@@ -23,14 +25,33 @@ public:
     ~Canvas();
 
     int getCanvasId() const { return canvas_id; }
-    std::string getCanvasName() const { return canvas_name; }
-    void setCanvasName(const std::string& name) { canvas_name = name; }
-    int getAdminUserId() const { return admin_user_id; }
-    void setAdminUserId(int id) { admin_user_id = id; }
+    std::string getCanvasName() const {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        return canvas_name;
+    }
+    void setCanvasName(const std::string& name) {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        canvas_name = name;
+    }
+    int getAdminUserId() const {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        return admin_user_id;
+    }
+    void setAdminUserId(int id) {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        admin_user_id = id;
+    }
 
-    std::string getRedisIp() const { return redis_ip; }
-    int getRedisPort() const { return redis_port; }
+    std::string getRedisIp() const {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        return redis_ip;
+    }
+    int getRedisPort() const {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
+        return redis_port;
+    }
     void setRedisConfig(const std::string& ip, int port) {
+        std::lock_guard<std::mutex> lock(metadata_mutex_);
         redis_ip = ip;
         redis_port = port;
     }
@@ -73,7 +94,22 @@ public:
     std::mutex settings_mutex;
     std::atomic<bool> unloading{false};
 
+    // Persistence workers reserve before they are launched. Unload marks the
+    // canvas as closing and waits for all reserved Redis writes to finish
+    // before taking the final Redis -> Elasticsearch snapshot.
+    bool enqueuePersistence(const nlohmann::json& event, bool& start_worker);
+    bool nextPersistence(nlohmann::json& event);
+    void cancelPersistenceQueue();
+    void endPersistence();
+    void waitForPersistenceIdle(std::unique_lock<std::mutex>& lock);
+    void waitForPendingPersistence(std::unique_lock<std::mutex>& lock);
+
 private:
+    mutable std::mutex metadata_mutex_;
     std::mutex canvas_mutex;
+    std::condition_variable persistence_cv_;
+    std::size_t pending_persistence_{0};
+    std::deque<nlohmann::json> persistence_queue_;
+    bool persistence_worker_running_{false};
     WebSocketCallbacks web_socket_callbacks_;
 };

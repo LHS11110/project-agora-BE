@@ -233,8 +233,9 @@ bool RedisClient::setJsonPath(const std::string& key, const std::string& path, c
 
 RedisClient::CompareSetResult RedisClient::compareAndSetJsonPaths(
         const std::string& key, long long expected_revision,
-        const std::vector<std::pair<std::string, nlohmann::json>>& values) {
-    if (values.empty()) return CompareSetResult::Error;
+        const std::vector<std::pair<std::string, nlohmann::json>>& values,
+        const std::vector<std::string>& deletes) {
+    if (values.empty() && deletes.empty()) return CompareSetResult::Error;
     static const std::string script = R"LUA(
 local raw = redis.call('JSON.GET', KEYS[1], '$["settings-revision"]')
 if redis.call('EXISTS', KEYS[1]) == 0 then return 'MISSING' end
@@ -244,16 +245,26 @@ if raw then
     current = tonumber(versions[1] or 0)
 end
 if current ~= tonumber(ARGV[1]) then return 'CONFLICT' end
-for i = 2, #ARGV, 2 do
+local value_count = tonumber(ARGV[2])
+local next_arg = 3
+for i = next_arg, next_arg + value_count * 2 - 1, 2 do
     redis.call('JSON.SET', KEYS[1], ARGV[i], ARGV[i + 1])
+end
+local delete_count_index = next_arg + value_count * 2
+local delete_count = tonumber(ARGV[delete_count_index])
+for i = delete_count_index + 1, delete_count_index + delete_count do
+    redis.call('JSON.DEL', KEYS[1], ARGV[i])
 end
 return 'OK'
 )LUA";
-    std::vector<std::string> command = {"EVAL", script, "1", key, std::to_string(expected_revision)};
+    std::vector<std::string> command = {"EVAL", script, "1", key, std::to_string(expected_revision),
+                                        std::to_string(values.size())};
     for (const auto& [path, value] : values) {
         command.push_back(path);
         command.push_back(value.dump());
     }
+    command.push_back(std::to_string(deletes.size()));
+    for (const auto& path : deletes) command.push_back(path);
     if (!sendCommand(command)) return CompareSetResult::Error;
     const std::string result = readResponse();
     if (result == "OK") return CompareSetResult::Applied;
@@ -269,13 +280,14 @@ bool RedisClient::deleteJsonPath(const std::string& key, const std::string& path
 
 bool RedisClient::del(const std::string& key) {
     if (!sendCommand({"DEL", key})) return false;
-    readResponse();
-    return true;
+    const std::string response = readResponse();
+    try { return std::stoi(response) >= 0; } catch (...) { return false; }
 }
 
 bool RedisClient::deletePattern(const std::string& pattern) {
     if (!sendCommand({"KEYS", pattern})) return false;
     std::string keys_str = readResponse();
+    if (keys_str.rfind("ERR", 0) == 0) return false;
     if (keys_str.empty()) return true;
 
     std::istringstream iss(keys_str);
@@ -285,8 +297,9 @@ bool RedisClient::deletePattern(const std::string& pattern) {
         del_args.push_back(key);
     }
     if (del_args.size() > 1) {
-        sendCommand(del_args);
-        readResponse();
+        if (!sendCommand(del_args)) return false;
+        const std::string response = readResponse();
+        try { return std::stoi(response) >= 0; } catch (...) { return false; }
     }
     return true;
 }

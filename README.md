@@ -31,9 +31,9 @@ flowchart LR
 ## 캔버스 접속 흐름
 
 1. 사용자는 `POST /api/auth/login`으로 일반 JWT를 받습니다.
-2. `POST /api/canvases/{canvasId}/access`가 heartbeat와 REST health check를 통과한 C++ 서버를 선택하고, 캔버스 전용 JWT를 발급합니다.
+2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 heartbeat 및 REST health check를 통과한 C++ 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
 3. 클라이언트는 응답의 `ws_port`를 사용해 `wss://<host>/wss/port/{wsPort}/canvas/{canvasId}?token=...`에 연결합니다.
-4. C++ 서버는 JWT, 사용자 상태, 참여자 목록을 검증한 뒤 RedisJSON에서 캔버스를 로드합니다. 이전 문자열 Redis 값은 첫 로드 시 RedisJSON으로 마이그레이션됩니다.
+4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
 5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
 
 C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 15초 이내 heartbeat와 `/health` 응답을 모두 만족한 서버만 재사용합니다.
@@ -149,7 +149,7 @@ set +a
 
 채팅 WebSocket 이벤트는 클라이언트가 `{"type":"chat","text":"test"}`를 보내면 C++ 서버가 인증된 접속 정보로 `sender`와 `tag_number`, `canvas_id`를 채워 다른 접속자에게 전달합니다. 예: `{"type":"chat","text":"test","sender":"아고라관리자","tag_number":1,"canvas_id":1}`. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
 
-캔버스 설정은 비활성 상태에서는 Spring REST API로, WebSocket 접속 중에는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 DB에서 사용자 활성 상태와 서버 할당을, Redis 최신 문서에서 참여자 및 `admin-group` 권한을 다시 검사합니다. 성공하면 `canvas_settings_result`를 보낸 사람에게, 비밀번호 해시를 제외한 `canvas_settings_changed`를 다른 참여자에게 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다. 활성 설정은 Redis가 원본이고 Elasticsearch에는 캔버스 언로드 시 반영되므로 Redis 손실 전 언로드가 완료되지 않으면 최신 설정의 내구성은 Redis의 영속성 설정에 의존합니다.
+캔버스 설정은 비활성 상태에서는 Spring REST API로, 활성 상태에서는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. 활성 캔버스에 Spring 수정 요청을 보내면 `409 CANVAS_006`과 접속 후 설정에서 변경하라는 안내를 반환합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch 문서에서 참여자와 revision을 확인하고, 설정 업데이트에서는 사용자 활성 상태·서버 할당·참여자·`admin-group` 권한을 검사합니다. 성공한 설정 변경은 Redis와 Elasticsearch에 즉시 반영되며, Elasticsearch 업데이트는 설정 필드만 패치해 실시간 아이템을 덮어쓰지 않습니다. 성공하면 `canvas_settings_result`를 보낸 사람에게, 비밀번호 해시를 제외한 `canvas_settings_changed`를 다른 참여자에게 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다.
 
 ## systemd 운영 예시
 
@@ -242,8 +242,8 @@ wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
 | 캔버스 목록·검색 | `GET /api/canvases`, `GET /api/canvases/search?name=` | 필요 |
 | 캔버스 조회·삭제 | `GET`, `DELETE /api/canvases/{canvasId}` | 필요 |
 | 캔버스 접속 정보 발급 | `POST /api/canvases/{canvasId}/access` | 필요 |
-| 캔버스 설정 조회·변경 | `GET /api/canvases/{canvasId}/settings`, `PATCH /api/canvases/{canvasId}/{name,description,password}` | 참여자 조회, 비활성 캔버스 관리자 변경 |
-| 참여자 추가·제외 | `POST`, `DELETE /api/canvases/{canvasId}/people` (`nickname`, `tag_number` 본문) | 비활성 캔버스 관리자 |
+| 캔버스 설정 조회·변경 | `GET /api/canvases/{canvasId}/settings`, `PATCH /api/canvases/{canvasId}/{name,description,password}` | 참여자 조회, 비활성 캔버스 관리자 변경; 활성 상태면 C++ 설정 이벤트 사용 |
+| 참여자 추가·제외 | `POST`, `DELETE /api/canvases/{canvasId}/people` (`nickname`, `tag_number` 본문) | 비활성 캔버스 관리자; 활성 상태면 캔버스에 접속해 변경 |
 | 서버·Redis 할당 점검 | `/api/load-balancer/**` | 관리자 |
 | C++ health | `GET http://127.0.0.1:8000/health` | 내부 |
 | C++ 활성 캔버스 | `GET http://127.0.0.1:8000/api/canvas/active` | 내부 |

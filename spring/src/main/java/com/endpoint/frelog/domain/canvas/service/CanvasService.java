@@ -178,7 +178,9 @@ public class CanvasService {
 
     @Transactional
     public CanvasUpdateDtos.SettingsResponse getCanvasSettings(Integer canvasId, CustomUserDetails currentUser) {
-        CanvasDocument doc = currentCanvasDocument(canvasId, getCanvasInfoWithLockOrThrow(canvasId));
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
+        boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
+        CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED);
         }
@@ -186,6 +188,7 @@ public class CanvasService {
         if (!systemAdmin && (doc.getPeople() == null || !doc.getPeople().contains(currentUser.getUserId()))) {
             throw new CustomException(ErrorCode.ACCESS_DENIED);
         }
+        if (!cachedCanvas) doc = migrateLegacyCanvasPassword(doc);
         List<Long> people = doc.getPeople() == null ? List.of() : doc.getPeople();
         Map<Long, CanvasUpdateDtos.ParticipantResponse> users = new LinkedHashMap<>();
         userRepository.findAllById(people).forEach(user -> users.put(user.getUserId(),
@@ -214,9 +217,10 @@ public class CanvasService {
     @Transactional
     public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
         CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
-        if (password == null || password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
+        if (password == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
         canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
-                Map.of("canvas-password-hash", CanvasPasswords.hashForStorage(password))));
+                java.util.Collections.singletonMap("canvas-password-hash",
+                        password.isBlank() ? null : CanvasPasswords.hashForStorage(password))));
     }
 
     @Transactional
@@ -255,11 +259,11 @@ public class CanvasService {
 
     private CanvasDocument editableInactiveCanvas(Integer canvasId, CustomUserDetails currentUser) {
         if (Boolean.TRUE.equals(getCanvasInfoWithLockOrThrow(canvasId).getIsCached())) {
-            throw new CustomException(ErrorCode.BAD_REQUEST, "활성 캔버스의 설정은 변경할 수 없습니다. 모든 연결을 종료하고 캐시가 해제된 뒤 다시 시도하세요.");
+            throw new CustomException(ErrorCode.CANVAS_ACTIVE);
         }
-        CanvasDocument doc = getInactiveCanvasDocumentWithPasswordMigration(canvasId);
+        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
         validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
-        return doc;
+        return migrateLegacyCanvasPassword(doc);
     }
 
     private User findParticipant(String nickname, Integer tagNumber, boolean requireActive) {
@@ -300,13 +304,11 @@ public class CanvasService {
      */
     @Transactional
     public void deleteCanvas(Integer canvasId, CustomUserDetails currentUser) {
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
         CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
         validateCanvasOwnerOrSystemAdmin(doc, currentUser);
 
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-        boolean isCached = Boolean.TRUE.equals(canvasInfo.getIsCached());
-
-        if (isCached) {
+        if (Boolean.TRUE.equals(canvasInfo.getIsCached())) {
             log.warn("캔버스 #{} 삭제 실패: 활성화(캐시) 상태인 캔버스는 삭제할 수 없습니다.", canvasId);
             throw new CustomException(ErrorCode.BAD_REQUEST, "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
@@ -336,7 +338,7 @@ public class CanvasService {
      * 5. Access API:
      * - 특정 캔버스 아이디에 대한 접속 API
      * - 로그인한 사용자만 허용
-     * - 참여자 목록(people)은 설정/관리 정보로만 사용하며 접속 권한을 제한하지 않음
+     * - 실제 참여 권한은 C++ WebSocket이 캐시/세션 예약 전에 확인
      * - is_cached가 true: 해당 테이블의 redis, server 정보 반환
      * - is_cached가 false: redis 및 server 정보 테이블에서 is_activated가 true인 행에 대해서만 로드 밸런싱 수행 후 canvas_info 업데이트 및 is_cached=true 설정
      * - 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록
@@ -355,12 +357,12 @@ public class CanvasService {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        Long userId = currentUser.getUserId();
-
         // Lock the allocation row before choosing Elasticsearch or the live
         // Redis document. A settings change must not race a cache handoff.
         CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = currentCanvasDocument(canvasId, canvasInfo);
+        boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
+        CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
+
         String storedPassword = doc.getCanvasPasswordHash();
         if (storedPassword != null && !storedPassword.isBlank()) {
             if (suppliedPassword == null || suppliedPassword.isBlank()) {
@@ -406,20 +408,10 @@ public class CanvasService {
             serverId = assignedServer.getServerId();
         }
 
-        // 3. 중복 접속 검사 (user_sessions 테이블)
-        UserSession session = userSessionRepository.findById(userId).orElseGet(() -> new UserSession(userRepository.findById(userId).orElseThrow()));
-        if (Boolean.TRUE.equals(session.getIsAccessed())
-                && (session.getCanvas() == null || !canvasId.equals(session.getCanvas().getCanvasId()))) {
-            throw new CustomException(ErrorCode.ALREADY_CONNECTED, "이미 캔버스에 접속 중인 사용자입니다. (다중 탭 접속 차단)");
-        }
+        // C++ reserves the session in one transaction when the socket arrives.
+        // Keep that single cross-canvas check at the authoritative writer.
 
-        // 4. user_sessions 테이블 상태 갱신 (접속 중 상태로 기록)은 C++ 서버로 이관됨
-        // session.setIsAccessed(true);
-        // session.setCppServer(canvasInfo.getCppServer());
-        // session.setCanvas(canvasInfo);
-        // userSessionRepository.save(session);
-
-        // 5. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
+        // 3. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
         String serverHash = "none";
         if (!"none".equals(serverIp) && !"none".equals(wsPort)) {
             try {
@@ -441,7 +433,7 @@ public class CanvasService {
                 doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision()
         );
 
-        // 6. C++ 실시간 서버의 ID, Port 및 Access Token 반환
+        // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환
         return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken);
     }
 
@@ -455,16 +447,18 @@ public class CanvasService {
         }
         Long userId = currentUser.getUserId();
 
-        UserSession session = userSessionRepository.findById(userId).orElse(null);
+        // Keep the lock order consistent with C++ session reservation: canvas row, then session row.
+        CanvasInfo fallbackCanvasInfo = canvasId == null ? null
+                : canvasInfoRepository.findByIdWithPessimisticLock(canvasId).orElse(null);
+        UserSession session = userSessionRepository.findByIdWithPessimisticLock(userId).orElse(null);
         String serverIp = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerIp() : null;
         String serverPort = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerPort() : null;
 
         if ((serverIp == null || serverPort == null) && canvasId != null) {
-            canvasInfoRepository.findById(canvasId).ifPresent(info -> {
-                if (info.getCppServer() != null) {
-                    cppServerClient.disconnectUserFromCanvas(info.getCppServer().getServerIp(), info.getCppServer().getServerPort(), canvasId, userId);
-                }
-            });
+            if (fallbackCanvasInfo != null && fallbackCanvasInfo.getCppServer() != null) {
+                cppServerClient.disconnectUserFromCanvas(fallbackCanvasInfo.getCppServer().getServerIp(),
+                        fallbackCanvasInfo.getCppServer().getServerPort(), canvasId, userId);
+            }
         } else if (serverIp != null && serverPort != null) {
             if (canvasId != null) {
                 cppServerClient.disconnectUserFromCanvas(serverIp, serverPort, canvasId, userId);
@@ -489,10 +483,10 @@ public class CanvasService {
      */
     @Transactional
     public CanvasResponse updateCanvasCache(Integer canvasId, UpdateCanvasCacheRequest request, CustomUserDetails currentUser) {
+        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
         CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
         validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
 
-        CanvasInfo canvasInfo = getCanvasInfoOrThrow(canvasId);
         Boolean isCached = request != null ? request.isCached() : null;
         String redisIp = request != null ? request.redisIp() : null;
         String redisPort = request != null ? request.redisPort() : null;
@@ -527,13 +521,7 @@ public class CanvasService {
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
     }
 
-    private CanvasDocument currentCanvasDocument(Integer canvasId, CanvasInfo info) {
-        return Boolean.TRUE.equals(info.getIsCached())
-                ? redisDocumentReader.read(info) : getInactiveCanvasDocumentWithPasswordMigration(canvasId);
-    }
-
-    private CanvasDocument getInactiveCanvasDocumentWithPasswordMigration(Integer canvasId) {
-        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+    private CanvasDocument migrateLegacyCanvasPassword(CanvasDocument doc) {
         String password = doc.getCanvasPasswordHash();
         if (password != null && !password.isBlank() && !CanvasPasswords.isHash(password)) {
             doc.setCanvasPasswordHash(CanvasPasswords.hashForStorage(password));
@@ -542,11 +530,6 @@ public class CanvasService {
             }
         }
         return doc;
-    }
-
-    private CanvasInfo getCanvasInfoOrThrow(Integer canvasId) {
-        return canvasInfoRepository.findById(canvasId)
-                .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스 메타데이터를 찾을 수 없습니다: " + canvasId));
     }
 
     private CanvasInfo getCanvasInfoWithLockOrThrow(Integer canvasId) {

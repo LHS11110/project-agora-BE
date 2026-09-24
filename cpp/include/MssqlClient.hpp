@@ -4,6 +4,20 @@
 #include <utility>
 #include <optional>
 
+struct CanvasStorageAssignment {
+    bool is_cached{false};
+    std::string cpp_server_ip;
+    std::string cpp_server_port;
+    std::string redis_ip;
+    int redis_port{0};
+};
+
+struct CanvasRedisAllocation {
+    std::string redis_ip;
+    int redis_port{0};
+    bool was_cached{false};
+};
+
 class MssqlClient {
 public:
     MssqlClient(const std::string& host = "127.0.0.1", int port = 1433,
@@ -19,13 +33,14 @@ public:
     bool setServerInactive(const std::string& ip, int rest_port);
 
     // Returns pair of <redis_ip, redis_port>. Allocates if not cached.
-    std::pair<std::string, int> getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort);
+    CanvasRedisAllocation getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort);
 
     // Updates canvas_info: is_cached=0, redis_ip=NULL, redis_port=NULL, server_ip=NULL, server_port=NULL
-    bool updateCanvasUncached(int canvasId);
+    bool updateCanvasUncached(int canvasId, const std::string& cppServerIp, int cppServerPort);
 
     // Updates user_sessions after the user's final connection closes.
-    bool updateUserSessionDisconnected(int userId);
+    bool updateUserSessionDisconnected(int userId, int canvasId,
+                                       const std::string& cppServerIp, int cppServerPort);
 
     // Updates user_sessions: is_accessed=1, cpp_server_id=(subquery), canvas_id=? (UPSERT)
     bool updateUserSessionConnected(int userId, int canvasId, const std::string& cppServerIp, int cppServerPort);
@@ -37,6 +52,7 @@ public:
     int getActiveUserId(const std::string& nickname, int tagNumber);
     std::optional<std::pair<std::string, int>> getUserHandle(int userId);
     bool isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort);
+    std::optional<CanvasStorageAssignment> getCanvasStorageAssignment(int canvasId);
 
 private:
     std::string host_;

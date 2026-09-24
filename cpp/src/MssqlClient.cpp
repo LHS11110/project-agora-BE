@@ -253,17 +253,17 @@ bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
     return res;
 }
 
-std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
+CanvasRedisAllocation MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
 
     PooledConnection dbproc;
-    if (!dbproc.get()) return {"ERROR", 0};
+    if (!dbproc.get()) return {"ERROR", 0, false};
 
     const std::string safe_ip = sqlLiteral(cppServerIp);
     std::string sql =
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "  DECLARE @is_cached BIT = NULL, @redis_ip NVARCHAR(50), @redis_port NVARCHAR(10), @assigned_cpp_id INT; "
-        "  SELECT @is_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = r.redis_port, @assigned_cpp_id = c.cpp_server_id "
+        "  DECLARE @is_cached BIT = NULL, @was_cached BIT = 0, @redis_ip NVARCHAR(50), @redis_port NVARCHAR(10), @assigned_cpp_id INT; "
+        "  SELECT @is_cached = is_cached, @was_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = r.redis_port, @assigned_cpp_id = c.cpp_server_id "
         "    FROM canvas_info c WITH (UPDLOCK, ROWLOCK) "
         "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id AND r.is_activated = 1 "
         "    WHERE c.canvas_id = " + std::to_string(canvasId) + "; "
@@ -272,11 +272,15 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
         "  IF @my_cpp_id IS NULL THROW 50001, 'C++ server is not registered or active', 1; "
         "  IF @is_cached IS NULL "
         "  BEGIN "
-        "    SELECT 'NOT_FOUND' AS redis_ip, '0' AS redis_port; "
+        "    SELECT 'NOT_FOUND' AS redis_ip, '0' AS redis_port, '0' AS was_cached; "
         "  END "
         "  ELSE IF @is_cached = 1 AND @assigned_cpp_id IS NOT NULL AND @assigned_cpp_id != @my_cpp_id "
         "  BEGIN "
-        "    SELECT 'WRONG_SERVER' AS redis_ip, '0' AS redis_port; "
+        "    SELECT 'WRONG_SERVER' AS redis_ip, '0' AS redis_port, '0' AS was_cached; "
+        "  END "
+        "  ELSE IF @is_cached = 1 AND @redis_ip IS NULL "
+        "  BEGIN "
+        "    SELECT 'ERROR' AS redis_ip, '0' AS redis_port, '1' AS was_cached; "
         "  END "
         "  ELSE "
         "  BEGIN "
@@ -288,7 +292,7 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
         "      UPDATE canvas_info SET redis_id = @new_redis_id WHERE canvas_id = " + std::to_string(canvasId) + "; "
         "    END "
         "    UPDATE canvas_info SET is_cached = 1, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId) + "; "
-        "    SELECT @redis_ip AS redis_ip, @redis_port AS redis_port; "
+        "    SELECT @redis_ip AS redis_ip, @redis_port AS redis_port, CONVERT(VARCHAR(5), @was_cached) AS was_cached; "
         "  END "
         "COMMIT TRAN; "
         "END TRY "
@@ -299,13 +303,15 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
     dbcmd(dbproc, sql.c_str());
 
     if (dbsqlexec(dbproc) == FAIL) {
-        return {"ERROR", 0};
+        return {"ERROR", 0, false};
     }
 
     char redis_ip_buf[64] = {0};
     char redis_port_buf[32] = {0};
+    char was_cached_buf[16] = {0};
     std::string found_ip;
     int found_port = 0;
+    bool was_cached = false;
 
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
@@ -313,6 +319,7 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
         if (DBROWS(dbproc)) {
             dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)redis_ip_buf);
             dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)redis_port_buf);
+            dbbind(dbproc, 3, NTBSTRINGBIND, sizeof(was_cached_buf), (BYTE*)was_cached_buf);
 
             while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
                 if (ret == FAIL) break;
@@ -326,28 +333,45 @@ std::pair<std::string, int> MssqlClient::getOrAllocateRedisAndSetCached(int canv
                         found_port = 0;
                     }
                 }
+                was_cached = std::string(was_cached_buf) == "1";
             }
         }
     }
 
     if (found_ip.empty() || found_port <= 0) {
         std::cerr << "[MssqlClient] Canvas #" << canvasId << " allocation returned no usable Redis endpoint\n";
-        return {"ERROR", 0};
+        return {"ERROR", 0, was_cached};
     }
     std::cout << "[MssqlClient] Canvas #" << canvasId << " assigned Redis from DB: " << found_ip << ":" << found_port << "\n";
-    return {found_ip, found_port};
+    return {found_ip, found_port, was_cached};
 }
 
-bool MssqlClient::updateCanvasUncached(int canvasId) {
+bool MssqlClient::updateCanvasUncached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
 
     PooledConnection dbproc;
     if (!dbproc.get()) return false;
 
+    const std::string safe_ip = sqlLiteral(cppServerIp);
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "UPDATE canvas_info SET is_cached = 0, redis_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() WHERE canvas_id = " + std::to_string(canvasId) + "; "
+        "DECLARE @server_id INT, @affected INT = 0, @is_cached BIT, @assigned_server_id INT, @has_active_session BIT = 0; "
+        "SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + safe_ip + "' AND server_port = '" + std::to_string(cppServerPort) + "'; "
+        "SELECT @is_cached = is_cached, @assigned_server_id = cpp_server_id "
+        "FROM canvas_info WITH (UPDLOCK, HOLDLOCK, ROWLOCK) WHERE canvas_id = " + std::to_string(canvasId) + "; "
+        "IF @is_cached = 1 AND @assigned_server_id = @server_id "
+        "BEGIN "
+        "  SELECT TOP 1 @has_active_session = 1 FROM user_sessions WITH (UPDLOCK, ROWLOCK) "
+        "  WHERE canvas_id = " + std::to_string(canvasId) + " AND is_accessed = 1; "
+        "  IF @has_active_session = 0 "
+        "  BEGIN "
+        "    UPDATE canvas_info SET is_cached = 0, redis_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() "
+        "    WHERE canvas_id = " + std::to_string(canvasId) + " AND is_cached = 1 AND cpp_server_id = @server_id; "
+        "    SET @affected = @@ROWCOUNT; "
+        "  END "
+        "END "
         "COMMIT TRAN; "
+        "SELECT @affected AS affected; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
@@ -360,19 +384,30 @@ bool MssqlClient::updateCanvasUncached(int canvasId) {
             return false;
     }
 
+    int affected = 0;
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
         if (ret == FAIL) break;
-        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-            if (ret == FAIL) break;
+        if (DBROWS(dbproc)) {
+            dbbind(dbproc, 1, INTBIND, 0, reinterpret_cast<BYTE*>(&affected));
+            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+                if (ret == FAIL) break;
+            }
         }
+    }
+
+    if (affected != 1) {
+        std::cerr << "[MssqlClient] Canvas #" << canvasId
+                  << " was not uncached because its assignment changed or an active session exists\n";
+        return false;
     }
 
     std::cout << "[MssqlClient] Canvas #" << canvasId << " in MS SQL updated: is_cached=false, redis/server ip&port=none(NULL)\n";
     return true;
 }
 
-bool MssqlClient::updateUserSessionDisconnected(int userId) {
+bool MssqlClient::updateUserSessionDisconnected(int userId, int canvasId,
+                                                const std::string& cppServerIp, int cppServerPort) {
 
     PooledConnection dbproc;
     if (!dbproc.get()) return false;
@@ -380,7 +415,11 @@ bool MssqlClient::updateUserSessionDisconnected(int userId) {
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
-        "UPDATE user_sessions SET is_accessed = 0, cpp_server_id = NULL, canvas_id = NULL, updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
+        "DECLARE @server_id INT; "
+        "SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + sqlLiteral(cppServerIp) + "' AND server_port = '" + std::to_string(cppServerPort) + "'; "
+        "UPDATE user_sessions SET is_accessed = 0, cpp_server_id = NULL, canvas_id = NULL, updated_at = SYSUTCDATETIME() "
+        "WHERE user_id = " + std::to_string(userId) + " AND canvas_id = " + std::to_string(canvasId)
+        + " AND is_accessed = 1 AND cpp_server_id = @server_id; "
         "COMMIT TRAN; "
         "END TRY "
         "BEGIN CATCH "
@@ -413,19 +452,24 @@ bool MssqlClient::updateUserSessionConnected(int userId, int canvasId, const std
     std::string sql = 
         "BEGIN TRAN; "
         "BEGIN TRY "
+        "  DECLARE @canvas_exists INT, @canvas_cached BIT, @canvas_cpp_id INT; "
+        "  SELECT @canvas_exists = 1, @canvas_cached = is_cached, @canvas_cpp_id = cpp_server_id "
+        "    FROM canvas_info WITH (UPDLOCK, HOLDLOCK, ROWLOCK) WHERE canvas_id = " + std::to_string(canvasId) + "; "
+        "  IF @canvas_exists IS NULL THROW 50004, 'Canvas does not exist', 1; "
+        "  DECLARE @server_id INT; "
+        "  SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + sqlLiteral(cppServerIp) + "' AND server_port = '" + std::to_string(cppServerPort) + "' AND is_activated = 1; "
+        "  IF @server_id IS NULL THROW 50003, 'C++ server session target is unavailable', 1; "
+        "  IF @canvas_cached <> 1 OR @canvas_cpp_id IS NULL OR @canvas_cpp_id <> @server_id THROW 50005, 'Canvas is assigned to another C++ server', 1; "
         "  DECLARE @current_accessed BIT, @current_canvas INT; "
         "  SELECT @current_accessed = is_accessed, @current_canvas = canvas_id "
-        "    FROM user_sessions WITH (UPDLOCK, ROWLOCK) "
+        "    FROM user_sessions WITH (UPDLOCK, HOLDLOCK, ROWLOCK) "
         "    WHERE user_id = " + std::to_string(userId) + "; "
-        "  IF @current_accessed = 1 AND @current_canvas != " + std::to_string(canvasId) + " "
+        "  IF @current_accessed = 1 AND (@current_canvas IS NULL OR @current_canvas <> " + std::to_string(canvasId) + ") "
         "  BEGIN "
         "    ROLLBACK TRAN; "
         "    SELECT 0 AS success; "
         "    RETURN; "
         "  END "
-        "  DECLARE @server_id INT; "
-        "  SELECT @server_id = server_id FROM cpp_server WHERE server_ip = '" + sqlLiteral(cppServerIp) + "' AND server_port = '" + std::to_string(cppServerPort) + "' AND is_activated = 1; "
-        "  IF @server_id IS NULL THROW 50003, 'C++ server session target is unavailable', 1; "
         "  UPDATE user_sessions SET is_accessed = 1, cpp_server_id = @server_id, canvas_id = " + std::to_string(canvasId) + ", updated_at = SYSUTCDATETIME() WHERE user_id = " + std::to_string(userId) + "; "
         "  IF @@ROWCOUNT = 0 "
         "  BEGIN "
@@ -613,4 +657,59 @@ bool MssqlClient::isCanvasAssignedToServer(int canvasId, const std::string& serv
         while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) if (ret == FAIL) return false;
     }
     return count == 1;
+}
+
+std::optional<CanvasStorageAssignment> MssqlClient::getCanvasStorageAssignment(int canvasId) {
+    if (canvasId <= 0) return std::nullopt;
+    PooledConnection pconn;
+    DBPROCESS* dbproc = pconn.get();
+    if (!dbproc) return std::nullopt;
+
+    const std::string sql =
+        "SELECT CONVERT(VARCHAR(5), c.is_cached), "
+        "COALESCE(s.server_ip, ''), COALESCE(CONVERT(VARCHAR(16), s.server_port), ''), "
+        "COALESCE(r.redis_ip, ''), COALESCE(CONVERT(VARCHAR(16), r.redis_port), '') "
+        "FROM canvas_info c "
+        "LEFT JOIN cpp_server s ON s.server_id = c.cpp_server_id "
+        "LEFT JOIN redis_server r ON r.redis_id = c.redis_id AND r.is_activated = 1 "
+        "WHERE c.canvas_id = " + std::to_string(canvasId) + ";";
+    if (dbcmd(dbproc, sql.c_str()) != SUCCEED || dbsqlexec(dbproc) != SUCCEED) return std::nullopt;
+
+    std::optional<CanvasStorageAssignment> assignment;
+    RETCODE ret;
+    while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (ret == FAIL) return std::nullopt;
+        if (!DBROWS(dbproc)) continue;
+
+        char cached[16] = {0};
+        char server_ip[128] = {0};
+        char server_port[32] = {0};
+        char redis_ip[128] = {0};
+        char redis_port[32] = {0};
+        if (dbbind(dbproc, 1, NTBSTRINGBIND, sizeof(cached), reinterpret_cast<BYTE*>(cached)) != SUCCEED
+            || dbbind(dbproc, 2, NTBSTRINGBIND, sizeof(server_ip), reinterpret_cast<BYTE*>(server_ip)) != SUCCEED
+            || dbbind(dbproc, 3, NTBSTRINGBIND, sizeof(server_port), reinterpret_cast<BYTE*>(server_port)) != SUCCEED
+            || dbbind(dbproc, 4, NTBSTRINGBIND, sizeof(redis_ip), reinterpret_cast<BYTE*>(redis_ip)) != SUCCEED
+            || dbbind(dbproc, 5, NTBSTRINGBIND, sizeof(redis_port), reinterpret_cast<BYTE*>(redis_port)) != SUCCEED) {
+            return std::nullopt;
+        }
+
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) return std::nullopt;
+            CanvasStorageAssignment value;
+            value.is_cached = std::string(cached) == "1";
+            value.cpp_server_ip = server_ip;
+            value.cpp_server_port = server_port;
+            value.redis_ip = redis_ip;
+            if (redis_port[0] != '\0') {
+                try {
+                    value.redis_port = std::stoi(redis_port);
+                } catch (...) {
+                    return std::nullopt;
+                }
+            }
+            assignment = std::move(value);
+        }
+    }
+    return assignment;
 }

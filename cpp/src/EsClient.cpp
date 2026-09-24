@@ -103,3 +103,33 @@ bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
               << (res ? std::to_string(res->status) : "connection error") << "\n";
     return false;
 }
+
+bool EsClient::patchCanvasFields(int canvasId, const std::map<std::string, nlohmann::json>& fields) {
+    if (fields.empty() || user_.empty() || pass_.empty() || index_.empty()) {
+        std::cerr << "[EsClient] Cannot patch canvas settings: fields or Elasticsearch credentials are missing\n";
+        return false;
+    }
+    httplib::Client cli(host_, port_);
+    cli.set_connection_timeout(3, 0);
+    cli.set_read_timeout(3, 0);
+    cli.set_basic_auth(user_, pass_);
+
+    nlohmann::json normalized = nlohmann::json::object();
+    for (const auto& [field, value] : fields) {
+        if (field == "canvas-password-hash" && value.is_string()) {
+            auto password = normalizeCanvasPassword(value.get<std::string>());
+            if (!password) return false;
+            normalized[field] = *password;
+        } else {
+            normalized[field] = value;
+        }
+    }
+    const std::string path = "/" + index_ + "/_update/" + std::to_string(canvasId)
+        + "?retry_on_conflict=3&refresh=true";
+    const nlohmann::json body = {{"doc", normalized}};
+    auto res = cli.Post(path, body.dump(), "application/json");
+    if (res && res->status >= 200 && res->status < 300) return true;
+    std::cerr << "[EsClient] Failed to patch canvas #" << canvasId << " in Elasticsearch: "
+              << (res ? std::to_string(res->status) : "connection error") << "\n";
+    return false;
+}

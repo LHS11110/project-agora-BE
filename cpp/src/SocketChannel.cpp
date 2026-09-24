@@ -126,7 +126,7 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
 
             if (is_admin) {
                 accessible = true;
-            } else if (item_obj.contains("permission")) {
+            } else if (item_obj.is_object() && item_obj.contains("permission")) {
                 auto& perm = item_obj["permission"];
                 if (perm.is_string()) {
                     accessible = (user_groups.count(perm.get<std::string>()) > 0);
@@ -139,11 +139,12 @@ void UserSockets::sendFilteredItems(const nlohmann::json& canvasDoc) {
                     }
                 } else if (perm.is_object()) {
                     for (auto& [grp_name, val] : perm.items()) {
-                        if (user_groups.count(grp_name) > 0) {
-                            if (val.is_number() && val.get<int>() > 0) {
-                                accessible = true;
-                                break;
-                            }
+                        const bool enabled = val.is_number_unsigned()
+                            ? val.get<unsigned long long>() > 0
+                            : val.is_number_integer() && val.get<long long>() > 0;
+                        if (user_groups.count(grp_name) > 0 && enabled) {
+                            accessible = true;
+                            break;
                         }
                     }
                 }

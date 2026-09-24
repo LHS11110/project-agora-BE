@@ -20,7 +20,8 @@ public:
     std::optional<std::string> get(const std::string& key);
     bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
     CompareSetResult compareAndSetJsonPaths(const std::string& key, long long expected_revision,
-                            const std::vector<std::pair<std::string, nlohmann::json>>& values);
+                            const std::vector<std::pair<std::string, nlohmann::json>>& values,
+                            const std::vector<std::string>& deletes = {});
     bool deleteJsonPath(const std::string& key, const std::string& path);
     bool del(const std::string& key);
     bool deletePattern(const std::string& pattern);
