@@ -13,7 +13,6 @@ let state = {
     wsPort: '',
     items: Object.create(null),
     itemGroups: [],
-    selfUserId: null,
     chatSeen: new Set(),
     pendingItemChange: null,
     settingsRevision: null,
@@ -512,7 +511,6 @@ async function connectActiveCanvas() {
                     return;
                 }
                 if (data.type === 'init_items') {
-                    state.selfUserId = Number.isInteger(data.self_user_id) ? data.self_user_id : null;
                     state.items = data.items && typeof data.items === 'object' && !Array.isArray(data.items)
                         ? Object.assign(Object.create(null), data.items) : Object.create(null);
                     state.pendingItemChange = null;
@@ -640,7 +638,6 @@ function resetConnectionUI() {
     state.ws = null;
     state.items = Object.create(null);
     state.itemGroups = [];
-    state.selfUserId = null;
     state.chatSeen.clear();
     state.pendingItemChange = null;
     state.settingsPending = null;
@@ -699,9 +696,8 @@ function renderChatRecord(roomId, message) {
         state.chatSeen.add(key);
     }
     const myTag = state.user?.tag_number ?? state.user?.tagNumber;
-    const isMe = Number.isInteger(message.sender_user_id) && Number.isInteger(state.selfUserId)
-        ? message.sender_user_id === state.selfUserId
-        : message.sender === state.user?.nickname && Number(message.tag_number) === Number(myTag);
+    const isMe = message.sender === state.user?.nickname
+        && Number(message.tag_number) === Number(myTag);
     addChatMessage(formatUserHandle({
         nickname: message.sender,
         tag_number: message.tag_number

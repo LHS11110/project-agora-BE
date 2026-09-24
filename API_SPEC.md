@@ -237,7 +237,6 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {
   "type":"init_items",
   "canvas_id":1,
-  "self_user_id":123,
   "server_protocol":"uWebSockets",
   "status":"connected",
   "items":{},
@@ -246,7 +245,7 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 }
 ```
 
-`items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담으며, `self_user_id`는 자신의 ID입니다. 다른 사용자의 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
+`items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담습니다. 내부 사용자 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
 
 ### 일반 이벤트
 
@@ -270,7 +269,7 @@ Elasticsearch의 기존 `items.*` 필드 매핑과 임의 형식의 아이템이
 {"type":"chat","room_id":"general","text":"안녕하세요","request_id":"chat-17"}
 ```
 
-서버는 인증된 `sender`, `tag_number`, `sender_user_id`, `canvas_id`와 방별 1부터 시작하는 `sequence`, `created_at`을 붙여 같은 ACL을 가진 접속자에게 보냅니다. `sender_user_id`는 초기 이벤트의 `self_user_id`와 비교해 내 메시지를 구분할 수 있습니다. 클라이언트가 보낸 사용자 식별 값은 사용하지 않습니다. 서버는 메시지를 Canvas별 FIFO 저장 큐에 넣고 Redis 저장 완료를 기다리지 않은 채 브로드캐스트를 진행합니다. background worker가 RedisJSON의 해당 아이템 `data`에 저장하며 배열 추가와 다음 순번 갱신은 한 Lua 스크립트 안에서 원자적으로 처리됩니다.
+서버는 인증된 `sender`, `tag_number`, `canvas_id`와 방별 1부터 시작하는 `sequence`, `created_at`을 붙여 같은 ACL을 가진 접속자에게 보냅니다. 클라이언트는 `sender`와 `tag_number`를 자신의 공개 식별자와 비교해 내 메시지를 구분합니다. 내부 `sender_user_id`는 저장 처리에만 사용하고 WebSocket 채팅 이벤트와 내역 조회 응답에서 제외합니다. 기존 저장 내역의 `sender_user_id`도 응답 전에 제거합니다. 클라이언트가 보낸 사용자 식별 값은 사용하지 않습니다. 서버는 메시지를 Canvas별 FIFO 저장 큐에 넣고 Redis 저장 완료를 기다리지 않은 채 브로드캐스트를 진행합니다. background worker가 RedisJSON의 해당 아이템 `data`에 저장하며 배열 추가와 다음 순번 갱신은 한 Lua 스크립트 안에서 원자적으로 처리됩니다.
 
 최근 메시지 N개 조회 (기본 50개, 최대 200개, 응답은 오래된 순서부터):
 
@@ -286,7 +285,7 @@ Elasticsearch의 기존 `items.*` 필드 매핑과 임의 형식의 아이템이
 
 성공 응답은 `messages`, 실제 반환 범위인 `from_sequence`/`to_sequence`, 전체 메시지 수인 `total`, 커서 방향으로 더 읽을 내역이 있는지를 나타내는 `has_more`를 포함합니다. 최근 N개 조회에서 `has_more`가 참이면 `next_to_sequence`로 더 오래된 메시지를 요청할 수 있습니다. `from_sequence`만 지정하면 `next_from_sequence`, `to_sequence`만 지정하면 `next_to_sequence`가 반환됩니다. 오류는 `error` 이벤트와 `CHAT_ROOM_NOT_FOUND`, `ITEM_ACCESS_DENIED`, `CHAT_INVALID_RANGE` 등의 코드로 전달됩니다.
 
-저장되는 방 아이템은 다음 구조를 가집니다. `sequence`는 방별로 1부터 증가하며, `data` 배열도 그 순서로 append됩니다.
+저장되는 방 아이템은 다음 구조를 가집니다. `sequence`는 방별로 1부터 증가하며, `data` 배열도 그 순서로 append됩니다. 예시의 내부 `sender_user_id`는 클라이언트 응답에서 제외됩니다.
 
 ```json
 {

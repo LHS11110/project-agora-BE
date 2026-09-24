@@ -331,7 +331,6 @@ async function connectActiveCanvas() {
         try {
             const data = JSON.parse(e.data);
             if (data.type === 'init_items') {
-                state.selfUserId = Number.isInteger(data.self_user_id) ? data.self_user_id : null;
                 logToConsole('WS', 'Initial Items', data);
                 addSystemMessage(`초기 아이템 ${Object.keys(data.items || {}).length}개를 받았습니다.`);
                 return;
@@ -341,11 +340,9 @@ async function connectActiveCanvas() {
             logToConsole('WS', 'Message Received', e.data);
             const sender = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.sender_id || data.user_id) || '알 수 없음';
             const myTag = state.user?.tag_number ?? state.user?.tagNumber;
-            const isMe = data.type === 'chat' && (
-                Number.isInteger(data.sender_user_id) && Number.isInteger(state.selfUserId)
-                    ? data.sender_user_id === state.selfUserId
-                    : data.sender === state.user?.nickname && Number(data.tag_number) === Number(myTag)
-            );
+            const isMe = data.type === 'chat'
+                && data.sender === state.user?.nickname
+                && Number(data.tag_number) === Number(myTag);
             addChatMessage(sender, data.text || JSON.stringify(data), isMe);
         } catch {
             addChatMessage('Unknown', e.data, false);
@@ -353,7 +350,6 @@ async function connectActiveCanvas() {
     };
     
     state.ws.onclose = (e) => {
-        state.selfUserId = null;
         logToConsole('WS', 'Disconnected', `Code: ${e.code}`);
         document.getElementById('wsStatusDot').style.background = 'var(--text-muted)';
         document.getElementById('chatInput').disabled = true;
@@ -367,7 +363,6 @@ function disconnectWebSocket() {
         state.ws.close();
         state.ws = null;
     }
-    state.selfUserId = null;
 }
 
 // --- Chat UI Helpers ---

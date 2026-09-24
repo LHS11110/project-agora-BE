@@ -1314,6 +1314,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     // The persistence queue stores room_permission for the atomic first-write;
     // it is internal metadata and is not part of the public chat event.
     event.erase("room_permission");
+    event.erase("sender_user_id");
     const std::string payload = event.dump();
     bool sender_received_message = false;
     for (Socket* target : recipients) {
@@ -1420,6 +1421,11 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
                             if (!messages.is_array()) {
                                 response_payload = errorPayload("CHAT_HISTORY_UNAVAILABLE");
                             } else {
+                                // Redis may contain messages written before this field stopped
+                                // being public. Keep it in storage, but never return it.
+                                for (auto& message : messages) {
+                                    if (message.is_object()) message.erase("sender_user_id");
+                                }
                                 const bool has_more = page.value("has_more", false);
                                 const std::uint64_t total = page.contains("total")
                                     ? positiveSequence(page["total"]) : 0;
@@ -1707,7 +1713,6 @@ void WebSocketServer::runServer() {
                                         prepared_is_admin = user_membership.second;
                                         nlohmann::json init_msg = {
                                             {"type", "init_items"}, {"canvas_id", canvas_id},
-                                            {"self_user_id", user_id},
                                             {"server_protocol", "uWebSockets"}, {"status", "connected"},
                                             {"items", filterItemsForUser(doc, user_id)}
                                         };
@@ -1925,6 +1930,8 @@ void WebSocketServer::runServer() {
                         event.erase("userId");
                         event.erase("sender_id");
                         event.erase("senderId");
+                        event.erase("sender_user_id");
+                        event.erase("self_user_id");
                         if (event.value("type", "") == "chat") {
                             // Public chat payloads use the nickname/tag pair,
                             // while internal authorization keeps the DB user ID.
