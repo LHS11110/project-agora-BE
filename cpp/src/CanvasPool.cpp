@@ -270,7 +270,11 @@ void CanvasPool::setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks) {
 bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
     if (!canvas) return false;
     std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
+    std::cout << "[CanvasPool] Waiting for Canvas #" << canvas_id
+              << " pending Redis writes before Elasticsearch snapshot\n";
     canvas->waitForPendingPersistence(settings_lock);
+    std::cout << "[CanvasPool] Canvas #" << canvas_id
+              << " Redis writes drained; starting Elasticsearch snapshot\n";
 
     // 1. Disconnect all connected users
     canvas->disconnectAll();

@@ -13,6 +13,7 @@ let state = {
     wsPort: '',
     items: Object.create(null),
     itemGroups: [],
+    selfUserId: null,
     chatSeen: new Set(),
     pendingItemChange: null,
     settingsRevision: null,
@@ -511,6 +512,7 @@ async function connectActiveCanvas() {
                     return;
                 }
                 if (data.type === 'init_items') {
+                    state.selfUserId = Number.isInteger(data.self_user_id) ? data.self_user_id : null;
                     state.items = data.items && typeof data.items === 'object' && !Array.isArray(data.items)
                         ? Object.assign(Object.create(null), data.items) : Object.create(null);
                     state.pendingItemChange = null;
@@ -518,6 +520,7 @@ async function connectActiveCanvas() {
                     renderCanvasItems();
                     setItemEditorEnabled(true);
                     el.itemStatus.textContent = `아이템 ${Object.keys(state.items).length}개 로드됨`;
+                    addSystemMessage(`초기 아이템 ${Object.keys(state.items).length}개를 받았습니다.`);
                     socket.send(JSON.stringify({ type: 'canvas_settings_get' }));
                     if (state.items.general?.type === 'chat_room') {
                         socket.send(JSON.stringify({ type: 'chat_history', room_id: 'general', limit: 50 }));
@@ -637,6 +640,8 @@ function resetConnectionUI() {
     state.ws = null;
     state.items = Object.create(null);
     state.itemGroups = [];
+    state.selfUserId = null;
+    state.chatSeen.clear();
     state.pendingItemChange = null;
     state.settingsPending = null;
     state.settingsRevision = null;
@@ -693,10 +698,14 @@ function renderChatRecord(roomId, message) {
         if (state.chatSeen.has(key)) return;
         state.chatSeen.add(key);
     }
+    const myTag = state.user?.tag_number ?? state.user?.tagNumber;
+    const isMe = Number.isInteger(message.sender_user_id) && Number.isInteger(state.selfUserId)
+        ? message.sender_user_id === state.selfUserId
+        : message.sender === state.user?.nickname && Number(message.tag_number) === Number(myTag);
     addChatMessage(formatUserHandle({
         nickname: message.sender,
         tag_number: message.tag_number
-    }), message.text || '', false);
+    }), message.text || '', isMe);
 }
 
 // --- Canvas Settings Modal ---

@@ -7,6 +7,8 @@ import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -16,6 +18,9 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
+import java.io.ByteArrayOutputStream;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +30,7 @@ import java.util.Optional;
 public class CanvasElasticsearchService {
 
     private static final Logger log = LoggerFactory.getLogger(CanvasElasticsearchService.class);
+    private static final int ITEMS_CHUNK_BYTES = 8190;
 
     private final RestClient restClient;
     private final ElasticsearchProperties properties;
@@ -37,6 +43,39 @@ public class CanvasElasticsearchService {
         this.restClient = restClient;
         this.properties = properties;
         this.objectMapper = objectMapper;
+    }
+
+    private String encodeCanvasDocument(CanvasDocument document) throws Exception {
+        ObjectNode source = objectMapper.valueToTree(document);
+        JsonNode items = source.remove("items");
+        byte[] raw = objectMapper.writeValueAsBytes(items == null ? objectMapper.createObjectNode() : items);
+        ArrayNode chunks = source.putArray("items-b64");
+        for (int offset = 0; offset < raw.length; offset += ITEMS_CHUNK_BYTES) {
+            int end = Math.min(offset + ITEMS_CHUNK_BYTES, raw.length);
+            chunks.add(Base64.getEncoder().encodeToString(Arrays.copyOfRange(raw, offset, end)));
+        }
+        return objectMapper.writeValueAsString(source);
+    }
+
+    private CanvasDocument decodeCanvasDocument(JsonNode source) throws Exception {
+        if (source == null || !source.isObject()) throw new IllegalArgumentException("Invalid canvas source");
+        ObjectNode restored = ((ObjectNode) source).deepCopy();
+        JsonNode chunks = restored.remove("items-b64");
+        if (chunks != null) {
+            if (!chunks.isArray() || chunks.isEmpty()) throw new IllegalArgumentException("Invalid encoded canvas items");
+            ByteArrayOutputStream raw = new ByteArrayOutputStream();
+            for (JsonNode chunk : chunks) {
+                if (!chunk.isTextual() || chunk.textValue().length() > 4 * ((ITEMS_CHUNK_BYTES + 2) / 3)) {
+                    throw new IllegalArgumentException("Invalid encoded canvas items chunk");
+                }
+                byte[] decoded = Base64.getDecoder().decode(chunk.textValue());
+                raw.write(decoded, 0, decoded.length);
+            }
+            JsonNode items = objectMapper.readTree(raw.toByteArray());
+            if (!items.isObject()) throw new IllegalArgumentException("Invalid canvas items");
+            restored.set("items", items);
+        }
+        return objectMapper.treeToValue(restored, CanvasDocument.class);
     }
 
     public boolean isAvailable() {
@@ -97,7 +136,7 @@ public class CanvasElasticsearchService {
         try {
             document.setCanvasPasswordHash(CanvasPasswords.normalizeStoredHash(document.getCanvasPasswordHash()));
             String docId = String.valueOf(document.getCanvasId());
-            String docJson = objectMapper.writeValueAsString(document);
+            String docJson = encodeCanvasDocument(document);
             restClient.put()
                     .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), docId)
                     .contentType(MediaType.APPLICATION_JSON)
@@ -162,7 +201,7 @@ public class CanvasElasticsearchService {
                     JsonNode hits = resp.get("hits").get("hits");
                     if (hits.isArray() && !hits.isEmpty()) {
                         JsonNode source = hits.get(0).get("_source");
-                        return Optional.of(objectMapper.treeToValue(source, CanvasDocument.class));
+                        return Optional.of(decodeCanvasDocument(source));
                     }
                 }
             }
@@ -175,7 +214,7 @@ public class CanvasElasticsearchService {
             if (directJson != null) {
                 JsonNode resp = objectMapper.readTree(directJson);
                 if (resp != null && resp.has("_source")) {
-                    return Optional.of(objectMapper.treeToValue(resp.get("_source"), CanvasDocument.class));
+                    return Optional.of(decodeCanvasDocument(resp.get("_source")));
                 }
             }
             return Optional.empty();
@@ -217,7 +256,7 @@ public class CanvasElasticsearchService {
                     List<CanvasDocument> docs = new java.util.ArrayList<>();
                     for (JsonNode hit : hits) {
                         if (hit.has("_source")) {
-                            docs.add(objectMapper.treeToValue(hit.get("_source"), CanvasDocument.class));
+                            docs.add(decodeCanvasDocument(hit.get("_source")));
                         }
                     }
                     return docs;
@@ -244,7 +283,7 @@ public class CanvasElasticsearchService {
             if (rawJson != null) {
                 JsonNode resp = objectMapper.readTree(rawJson);
                 if (resp != null && resp.has("_source")) {
-                    return Optional.of(objectMapper.treeToValue(resp.get("_source"), CanvasDocument.class));
+                    return Optional.of(decodeCanvasDocument(resp.get("_source")));
                 }
             }
         } catch (Exception ignored) {
@@ -271,7 +310,7 @@ public class CanvasElasticsearchService {
                     JsonNode hits = resp.get("hits").get("hits");
                     if (hits.isArray() && !hits.isEmpty()) {
                         JsonNode source = hits.get(0).get("_source");
-                        return Optional.of(objectMapper.treeToValue(source, CanvasDocument.class));
+                        return Optional.of(decodeCanvasDocument(source));
                     }
                 }
             }

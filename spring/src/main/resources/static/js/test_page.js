@@ -36,10 +36,20 @@ function logToConsole(type, title, data) {
     
     const logEntry = document.createElement('div');
     logEntry.style.marginBottom = '12px';
-    logEntry.innerHTML = `
-<span style="color: #6272a4;">[${time}]</span> <span class="${colorClass}">[${type}] ${title}</span>
-${formattedData ? `\n<span style="color: #a6accd;">${formattedData}</span>` : ''}
-    `;
+    const timestamp = document.createElement('span');
+    timestamp.style.color = '#6272a4';
+    timestamp.textContent = `[${time}] `;
+    const heading = document.createElement('span');
+    heading.className = colorClass;
+    heading.textContent = `[${type}] ${title}`;
+    logEntry.append(timestamp, heading);
+    if (formattedData) {
+        const details = document.createElement('div');
+        details.style.color = '#a6accd';
+        details.style.whiteSpace = 'pre-wrap';
+        details.textContent = formattedData;
+        logEntry.appendChild(details);
+    }
     
     consoleBody.appendChild(logEntry);
     consoleBody.scrollTop = consoleBody.scrollHeight;
@@ -320,17 +330,30 @@ async function connectActiveCanvas() {
     state.ws.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-            if (data.type === 'ping' || data.type === 'init' || data.type === 'init_items'
+            if (data.type === 'init_items') {
+                state.selfUserId = Number.isInteger(data.self_user_id) ? data.self_user_id : null;
+                logToConsole('WS', 'Initial Items', data);
+                addSystemMessage(`초기 아이템 ${Object.keys(data.items || {}).length}개를 받았습니다.`);
+                return;
+            }
+            if (data.type === 'ping' || data.type === 'init'
                 || data.type === 'item_update' || data.type === 'chat_history') return;
             logToConsole('WS', 'Message Received', e.data);
             const sender = data.sender || (data.tag_number != null ? `#${data.tag_number}` : data.sender_id || data.user_id) || '알 수 없음';
-            addChatMessage(sender, data.text || JSON.stringify(data), false);
+            const myTag = state.user?.tag_number ?? state.user?.tagNumber;
+            const isMe = data.type === 'chat' && (
+                Number.isInteger(data.sender_user_id) && Number.isInteger(state.selfUserId)
+                    ? data.sender_user_id === state.selfUserId
+                    : data.sender === state.user?.nickname && Number(data.tag_number) === Number(myTag)
+            );
+            addChatMessage(sender, data.text || JSON.stringify(data), isMe);
         } catch {
             addChatMessage('Unknown', e.data, false);
         }
     };
     
     state.ws.onclose = (e) => {
+        state.selfUserId = null;
         logToConsole('WS', 'Disconnected', `Code: ${e.code}`);
         document.getElementById('wsStatusDot').style.background = 'var(--text-muted)';
         document.getElementById('chatInput').disabled = true;
@@ -344,6 +367,7 @@ function disconnectWebSocket() {
         state.ws.close();
         state.ws = null;
     }
+    state.selfUserId = null;
 }
 
 // --- Chat UI Helpers ---

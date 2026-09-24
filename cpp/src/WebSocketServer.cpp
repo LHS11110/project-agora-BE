@@ -68,6 +68,7 @@ static nlohmann::json storedChatMessage(const nlohmann::json& event) {
         {"sequence", event.value("sequence", 0ULL)},
         {"text", event.value("text", "")},
         {"sender", event.value("sender", "")},
+        {"sender_user_id", event.value("sender_user_id", 0)},
         {"tag_number", event.value("tag_number", 0)},
         {"created_at", event.value("created_at", 0LL)}
     };
@@ -1243,6 +1244,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     event = {
         {"type", "chat"}, {"room_id", room_id}, {"text", text},
         {"sender", identity->nickname}, {"tag_number", identity->tag_number},
+        {"sender_user_id", identity->user_id},
         {"canvas_id", identity->canvas_id}, {"sequence", sequence}, {"created_at", timestamp}
     };
     if (!request_id.empty()) event["request_id"] = request_id;
@@ -1587,6 +1589,10 @@ void WebSocketServer::runServer() {
                                     endBlockingWorker();
                                     return;
                                 }
+                                // Authentication paused the HTTP socket. Upgrade keeps its
+                                // poll mask, so restore reads before it becomes a WebSocket;
+                                // otherwise close frames and TCP FIN are never observed.
+                                response->resume();
                                 if (!authenticated_user || authenticated_user->user_id <= 0
                                     || authenticated_user->tag_number < 0) {
                                     std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid, missing, or unauthorized JWT token for canvas #"
@@ -1626,6 +1632,7 @@ void WebSocketServer::runServer() {
             } catch (...) {
                 endBlockingWorker();
                 request_active->store(false);
+                response->resume();
                 response->writeStatus("503 Service Unavailable")
                     ->end("Authentication worker could not be started");
             }
@@ -1700,6 +1707,7 @@ void WebSocketServer::runServer() {
                                         prepared_is_admin = user_membership.second;
                                         nlohmann::json init_msg = {
                                             {"type", "init_items"}, {"canvas_id", canvas_id},
+                                            {"self_user_id", user_id},
                                             {"server_protocol", "uWebSockets"}, {"status", "connected"},
                                             {"items", filterItemsForUser(doc, user_id)}
                                         };
@@ -1814,7 +1822,14 @@ void WebSocketServer::runServer() {
                     ws->getUserData()->session_generation = session_generation;
                     refreshUserSessionGeneration(canvas_id, user_id, session_generation);
                     ws->subscribe("canvas/" + std::to_string(canvas_id));
-                    ws->send(init_payload, uWS::OpCode::TEXT);
+                    const auto init_send_status = ws->send(init_payload, uWS::OpCode::TEXT);
+                    if (init_send_status == Socket::DROPPED) {
+                        std::cerr << "[uWebSockets] Dropped init_items for User #" << user_id
+                                  << " on Canvas #" << canvas_id << " (bytes=" << init_payload.size() << ")\n";
+                        closeSocketSession(ws, 1013, "Initial canvas state could not be delivered");
+                        endBlockingWorker();
+                        return;
+                    }
                     auto* joined_data = ws->getUserData();
                     joined_data->rtc_peer_id = createRtcPeerId();
                     sockets_by_canvas_peer_[canvas_id][joined_data->rtc_peer_id] = ws;
@@ -1839,8 +1854,9 @@ void WebSocketServer::runServer() {
                         {"self_peer_id", joined_data->rtc_peer_id},
                         {"peers", std::move(rtc_peers)}
                     }.dump(), uWS::OpCode::TEXT);
-                    std::cout << "[uWebSockets] Sent init_items to User #" << user_id
-                              << " on Canvas #" << canvas_id << std::endl;
+                    std::cout << "[uWebSockets] Queued init_items for User #" << user_id
+                              << " on Canvas #" << canvas_id << " (bytes=" << init_payload.size()
+                              << ", buffered=" << (init_send_status == Socket::BACKPRESSURE) << ")\n";
                     endBlockingWorker();
                 });
                 }).detach();
@@ -2312,14 +2328,19 @@ void WebSocketServer::runServer() {
             PerSocketData* data = ws->getUserData();
             int canvas_id = data->canvas_id;
             int user_id = data->user_id;
+            const std::string peer_id = data->rtc_peer_id;
             const bool access_authorized = data->access_authorized;
             const std::uint64_t session_generation = data->session_generation;
             if (access_authorized) detachRtcPeer(ws);
             unregisterSocket(ws);
+            const auto peers = sockets_by_canvas_peer_.find(canvas_id);
+            const std::size_t remaining_peers = peers == sockets_by_canvas_peer_.end()
+                ? 0 : peers->second.size();
 
             const auto* socket_context = us_socket_context(0, reinterpret_cast<us_socket_t*>(ws));
             std::cout << "[uWebSockets] WebSocket client disconnected: User #" << user_id
                       << " from Canvas #" << canvas_id << " (close code: " << code
+                      << ", peer_id=" << peer_id << ", remaining_peers=" << remaining_peers
                       << ", socket=" << static_cast<void*>(ws)
                       << ", context=" << static_cast<const void*>(socket_context) << ")" << std::endl;
 

@@ -237,6 +237,7 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {
   "type":"init_items",
   "canvas_id":1,
+  "self_user_id":123,
   "server_protocol":"uWebSockets",
   "status":"connected",
   "items":{},
@@ -245,13 +246,15 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 }
 ```
 
-`items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담으며, 내부 사용자 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
+`items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담으며, `self_user_id`는 자신의 ID입니다. 다른 사용자의 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
 
 ### 일반 이벤트
 
 #### 채팅방과 내역
 
 각 채팅방은 `items[room_id]`의 `chat_room` 아이템이며, 실제 메시지 내역은 그 아이템의 `data` 배열에 순번과 함께 저장됩니다. 여러 방은 서로 다른 `room_id`를 사용합니다. 아이템 조회 초기 이벤트에는 방 메타데이터만 포함되고 `data`는 제외되므로, 필요한 내역을 별도로 요청합니다.
+
+Elasticsearch의 기존 `items.*` 필드 매핑과 임의 형식의 아이템이 충돌하지 않도록, 영속 문서에는 `items` 객체 대신 JSON을 분할 인코딩한 `items-b64` 배열을 저장합니다. C++과 Spring은 Elasticsearch 문서를 읽을 때 이를 다시 `items` 객체로 복원합니다. 기존 `items` 객체로 저장된 문서도 계속 읽을 수 있습니다. Redis와 WebSocket/API의 `items` 형식은 그대로입니다.
 
 방은 일반 아이템처럼 미리 만들 수 있습니다.
 
@@ -267,7 +270,7 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {"type":"chat","room_id":"general","text":"안녕하세요","request_id":"chat-17"}
 ```
 
-서버는 인증된 `sender`, `tag_number`, `canvas_id`와 방별 1부터 시작하는 `sequence`, `created_at`을 붙여 같은 ACL을 가진 접속자에게 보냅니다. 클라이언트가 보낸 사용자 식별 값은 사용하지 않습니다. 서버는 메시지를 Canvas별 FIFO 저장 큐에 넣고 Redis 저장 완료를 기다리지 않은 채 브로드캐스트를 진행합니다. background worker가 RedisJSON의 해당 아이템 `data`에 저장하며 배열 추가와 다음 순번 갱신은 한 Lua 스크립트 안에서 원자적으로 처리됩니다.
+서버는 인증된 `sender`, `tag_number`, `sender_user_id`, `canvas_id`와 방별 1부터 시작하는 `sequence`, `created_at`을 붙여 같은 ACL을 가진 접속자에게 보냅니다. `sender_user_id`는 초기 이벤트의 `self_user_id`와 비교해 내 메시지를 구분할 수 있습니다. 클라이언트가 보낸 사용자 식별 값은 사용하지 않습니다. 서버는 메시지를 Canvas별 FIFO 저장 큐에 넣고 Redis 저장 완료를 기다리지 않은 채 브로드캐스트를 진행합니다. background worker가 RedisJSON의 해당 아이템 `data`에 저장하며 배열 추가와 다음 순번 갱신은 한 Lua 스크립트 안에서 원자적으로 처리됩니다.
 
 최근 메시지 N개 조회 (기본 50개, 최대 200개, 응답은 오래된 순서부터):
 
@@ -291,8 +294,8 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
   "permission":["default"],
   "next_sequence":3,
   "data":[
-    {"sequence":1,"text":"안녕하세요","sender":"아고라관리자","tag_number":1,"created_at":1700000000000},
-    {"sequence":2,"text":"반가워요","sender":"사용자","tag_number":2,"created_at":1700000001000}
+    {"sequence":1,"text":"안녕하세요","sender":"아고라관리자","tag_number":1,"sender_user_id":123,"created_at":1700000000000},
+    {"sequence":2,"text":"반가워요","sender":"사용자","tag_number":2,"sender_user_id":456,"created_at":1700000001000}
   ]
 }
 ```
