@@ -71,12 +71,6 @@ std::shared_ptr<std::mutex> CanvasPool::lifecycleMutexForCanvas(int canvas_id) {
     return lifecycle_mtx;
 }
 
-std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvas(int canvas_id) {
-    auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
-    std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
-    return getOrCreateCanvasWithLifecycleLock(canvas_id);
-}
-
 std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canvas_id) {
     // Double check if another thread initialized it while we were waiting
     {
@@ -222,7 +216,12 @@ std::shared_ptr<Canvas> CanvasPool::getCanvas(int canvas_id) {
 }
 
 bool CanvasPool::isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision) {
-    if (canvas_id <= 0 || user_id <= 0) return false;
+    return getAuthorizedCanvasDocument(canvas_id, user_id, settings_revision).has_value();
+}
+
+std::optional<nlohmann::json> CanvasPool::getAuthorizedCanvasDocument(
+        int canvas_id, int user_id, long long settings_revision) {
+    if (canvas_id <= 0 || user_id <= 0) return std::nullopt;
 
     // Serialize the authorization source selection with unload. Otherwise a
     // request can read the old cached assignment, wait for unload to finish,
@@ -232,49 +231,54 @@ bool CanvasPool::isCanvasAccessAuthorized(int canvas_id, int user_id, long long 
 
     MssqlClient mssql(db_host_, db_port_);
     const auto assignment = mssql.getCanvasStorageAssignment(canvas_id);
-    if (!assignment) return false;
+    if (!assignment) return std::nullopt;
 
     if (assignment->is_cached && !assignment->cpp_server_ip.empty()
         && (assignment->cpp_server_ip != cpp_server_ip_
             || assignment->cpp_server_port != std::to_string(cpp_server_port_))) {
         std::cerr << "[CanvasPool] Access preflight rejected Canvas #" << canvas_id
                   << " because it is assigned to another C++ server\n";
-        return false;
+        return std::nullopt;
     }
 
     if (auto canvas = getCanvas(canvas_id)) {
         std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
-        if (canvas->unloading) return false;
+        if (canvas->unloading) return std::nullopt;
         RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
         const auto raw = redis.get("canvas:" + std::to_string(canvas_id));
-        if (!raw || raw->empty()) return false;
+        if (!raw || raw->empty()) return std::nullopt;
         try {
-            return documentAuthorizesCanvasAccess(nlohmann::json::parse(*raw), user_id, settings_revision);
+            auto doc = nlohmann::json::parse(*raw);
+            if (documentAuthorizesCanvasAccess(doc, user_id, settings_revision)) return doc;
+            return std::nullopt;
         } catch (const std::exception& e) {
             std::cerr << "[CanvasPool] Participant preflight could not parse active Canvas #"
                       << canvas_id << ": " << e.what() << "\n";
-            return false;
+            return std::nullopt;
         }
     }
 
     if (assignment->is_cached) {
-        if (assignment->redis_ip.empty() || assignment->redis_port <= 0) return false;
+        if (assignment->redis_ip.empty() || assignment->redis_port <= 0) return std::nullopt;
         RedisClient redis(assignment->redis_ip, assignment->redis_port);
         const auto raw = redis.get("canvas:" + std::to_string(canvas_id));
-        if (!raw || raw->empty()) return false;
+        if (!raw || raw->empty()) return std::nullopt;
         try {
-            return documentAuthorizesCanvasAccess(nlohmann::json::parse(*raw), user_id, settings_revision);
+            auto doc = nlohmann::json::parse(*raw);
+            if (documentAuthorizesCanvasAccess(doc, user_id, settings_revision)) return doc;
+            return std::nullopt;
         } catch (const std::exception& e) {
             std::cerr << "[CanvasPool] Access preflight could not parse Redis Canvas #"
                       << canvas_id << ": " << e.what() << "\n";
-            return false;
+            return std::nullopt;
         }
     }
 
     // Uncached canvases use the durable document as their authorization source.
     EsClient es(es_host_, es_port_);
     const auto doc = es.getCanvasDocument(canvas_id);
-    return doc && documentAuthorizesCanvasAccess(*doc, user_id, settings_revision);
+    if (doc && documentAuthorizesCanvasAccess(*doc, user_id, settings_revision)) return doc;
+    return std::nullopt;
 }
 
 void CanvasPool::setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks) {
@@ -300,10 +304,11 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
     std::cout << "[CanvasPool] Canvas #" << canvas_id
               << " Redis writes drained; starting Elasticsearch snapshot\n";
 
-    // 1. Disconnect all connected users
-    canvas->disconnectAll();
+    // Active users and SQL reservations were checked under the lifecycle lock.
+    // Do not queue a disconnect-all callback here: it could run after a new
+    // Canvas instance is loaded for this ID and close its fresh sockets.
 
-    // 2. Fetch canvas document from Redis and reflect to Elasticsearch.
+    // 1. Fetch canvas document from Redis and reflect to Elasticsearch.
     // Keep the Redis root until MSSQL says uncached: Spring holds the SQL
     // canvas row lock while choosing Redis or Elasticsearch.
     nlohmann::json final_doc;
@@ -337,7 +342,7 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
         return false;
     }
 
-    // 3. Update MS SQL first. A new owner may load this canvas immediately
+    // 2. Update MS SQL first. A new owner may load this canvas immediately
     // afterwards, so the eventual Redis deletion must compare generations.
     try {
         MssqlClient mssql(db_host_, db_port_);
@@ -354,7 +359,7 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
         return false;
     }
 
-    // 4. Remove only the snapshot owned by this unload. If another load has
+    // 3. Remove only the snapshot owned by this unload. If another load has
     // already replaced it, leave the new cache untouched.
     RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
     const auto cleanup = redis.deleteIfCacheGenerationMatches(
@@ -371,10 +376,10 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
 }
 
 bool CanvasPool::removeCanvas(int canvas_id) {
-    return removeCanvasImpl(canvas_id, false);
+    return removeCanvasImpl(canvas_id);
 }
 
-bool CanvasPool::removeCanvasImpl(int canvas_id, bool only_if_inactive) {
+bool CanvasPool::removeCanvasImpl(int canvas_id) {
     auto lifecycle_mtx = lifecycleMutexForCanvas(canvas_id);
     std::lock_guard<std::mutex> lifecycle_lock(*lifecycle_mtx);
 
@@ -389,12 +394,13 @@ bool CanvasPool::removeCanvasImpl(int canvas_id, bool only_if_inactive) {
 
     if (!canvas) return false;
 
-    // The cleanup scan can race a new WebSocket reservation. Recheck while
-    // holding the same per-canvas lifecycle lock used by connectUserSession.
-    if (only_if_inactive) {
-        MssqlClient mssql(db_host_, db_port_);
-        if (mssql.isCanvasActiveInDb(canvas_id)) return false;
-    }
+    // Both scheduled and explicit unloads must preserve live canvas WebSocket
+    // sessions. RTC signaling sockets do not own a Canvas or SQL session.
+    // The lifecycle lock excludes new reservations; the SQL check also covers
+    // reservations whose canvas socket is still pending.
+    if (!canvas->getActiveUsers().empty()) return false;
+    MssqlClient mssql(db_host_, db_port_);
+    if (mssql.isCanvasActiveInDb(canvas_id)) return false;
 
     // Keep the shared instance discoverable while unload marks it as closing
     // and drains persistence. Removing it first lets concurrent close/auth
@@ -454,7 +460,7 @@ std::vector<int> CanvasPool::getActiveCanvasIds() {
 void CanvasPool::cleanupInactiveCanvases() {
     std::vector<int> active_ids = getActiveCanvasIds();
     for (int canvas_id : active_ids) {
-        if (removeCanvasImpl(canvas_id, true)) {
+        if (removeCanvasImpl(canvas_id)) {
             std::cout << "[CanvasPool] Cleanup task found no active users for Canvas #" << canvas_id << ". Unloading.\n";
         }
     }

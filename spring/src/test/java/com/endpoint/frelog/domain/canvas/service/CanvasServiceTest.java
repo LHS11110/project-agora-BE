@@ -280,7 +280,7 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 접속 중단 시 C++ 서버 연결 해제 및 사용자 접속 상태(isAccessed=false)를 롤백한다")
+    @DisplayName("캔버스 접속 중단 요청은 C++에 전달하고 세션 상태는 WebSocket 종료까지 유지한다")
     void disconnectCanvasAccess_Success() {
         // given
         // testUser.setIsAccessed(true);
@@ -288,16 +288,14 @@ class CanvasServiceTest {
         com.endpoint.frelog.domain.user.entity.UserSession mockSession = new com.endpoint.frelog.domain.user.entity.UserSession(testUser);
         mockSession.setIsAccessed(true);
         mockSession.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1"));
-        given(userSessionRepository.findById(1L)).willReturn(Optional.of(mockSession));
+        given(userSessionRepository.findByIdWithPessimisticLock(1L)).willReturn(Optional.of(mockSession));
 
         // when
         canvasService.disconnectCanvasAccess(300, userDetails);
 
         // then
         verify(cppServerClient).disconnectUserFromCanvas("127.0.0.1", "8000", 300, 1L);
-        // assertThat(testUser.getIsAccessed()).isFalse();
-        // assertThat(testUser.getServerIp()).isNull();
-        // assertThat(testUser.getServerPort()).isNull();
+        assertThat(mockSession.getIsAccessed()).isTrue();
     }
 
 }

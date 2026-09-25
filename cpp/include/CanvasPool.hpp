@@ -25,13 +25,13 @@ public:
                const std::string& cpp_server_ip = "127.0.0.1", int cpp_server_port = 8000);
     ~CanvasPool();
 
-    // Select or create canvas in pool
-    std::shared_ptr<Canvas> getOrCreateCanvas(int canvas_id);
     std::shared_ptr<Canvas> getCanvas(int canvas_id);
 
     // Check participant and settings-revision access before any cache allocation
     // or user-session update.
     bool isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision);
+    std::optional<nlohmann::json> getAuthorizedCanvasDocument(
+        int canvas_id, int user_id, long long settings_revision);
     
     // Load the canvas and reserve the user's DB session atomically with respect
     // to canvas unload for this ID.
@@ -74,7 +74,7 @@ public:
 private:
     std::shared_ptr<std::mutex> lifecycleMutexForCanvas(int canvas_id);
     std::shared_ptr<Canvas> getOrCreateCanvasWithLifecycleLock(int canvas_id);
-    bool removeCanvasImpl(int canvas_id, bool only_if_inactive);
+    bool removeCanvasImpl(int canvas_id);
     bool unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;

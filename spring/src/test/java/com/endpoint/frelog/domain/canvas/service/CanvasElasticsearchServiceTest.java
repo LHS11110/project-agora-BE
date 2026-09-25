@@ -101,6 +101,7 @@ class CanvasElasticsearchServiceTest {
         var deleteSpec = mock(RestClient.RequestHeadersUriSpec.class);
         var deleteResponseSpec = mock(RestClient.ResponseSpec.class);
         given(restClient.delete()).willReturn(deleteSpec);
+        given(deleteSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("100"))).willReturn(deleteSpec);
         given(deleteSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("Delete Me"))).willReturn(deleteSpec);
         given(deleteSpec.retrieve()).willReturn(deleteResponseSpec);
 
@@ -113,9 +114,8 @@ class CanvasElasticsearchServiceTest {
     void deleteCanvas_NotFound() {
         // delete request throws 404
         var deleteSpec = mock(RestClient.RequestHeadersUriSpec.class);
-        var deleteResponseSpec = mock(RestClient.ResponseSpec.class);
         given(restClient.delete()).willReturn(deleteSpec);
-        given(deleteSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("Not Found"))).willReturn(deleteSpec);
+        given(deleteSpec.uri(eq("/{index}/_doc/{id}?refresh=true"), eq("canvas"), eq("100"))).willReturn(deleteSpec);
         given(deleteSpec.retrieve()).willThrow(HttpClientErrorException.create(HttpStatusCode.valueOf(404), "Not Found", HttpHeaders.EMPTY, new byte[0], StandardCharsets.UTF_8));
 
         boolean result = service.deleteCanvas(100, "Not Found");

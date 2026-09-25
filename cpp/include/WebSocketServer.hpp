@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <tuple>
+#include <vector>
 #include <nlohmann/json.hpp>
 #include "App.h"
 #include "AuthenticatedUser.hpp"
@@ -34,7 +35,9 @@ struct PerSocketData {
     unsigned int permission_update_pending_count{0};
     bool permission_update_pending{false};
     std::string rtc_peer_id;
+    std::uint64_t rtc_canvas_connection_id{0};
     bool closing{false};
+    bool rtc_signaling_only{false};
 };
 
 class WebSocketServer {
@@ -64,6 +67,10 @@ private:
     void unregisterSocket(Socket* ws);
     Socket* findSocketByConnectionId(std::uint64_t connection_id) const;
     void detachRtcPeer(Socket* ws);
+    void detachRtcPeersForCanvasSocket(std::uint64_t canvas_connection_id);
+    void announceRtcPeer(Socket* ws, const nlohmann::json& event);
+    bool sendRtcPeerList(Socket* ws);
+    void handleRtcSignal(Socket* ws, const nlohmann::json& event);
     void closeSocketSession(Socket* ws, int code, const std::string& reason);
     void indexSocket(Socket* ws);
     void unindexSocket(Socket* ws);
@@ -73,6 +80,8 @@ private:
     void endBlockingWorker();
     void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
     void refreshUserSessionGeneration(int canvas_id, int user_id, std::uint64_t session_generation);
+    Socket* findAuthorizedCanvasSocket(int canvas_id, int user_id) const;
+    Socket* findBoundCanvasSocket(const PerSocketData* rtc_data) const;
     void handleCanvasSettings(Socket* ws, const nlohmann::json& event);
     void handleChatEvent(Socket* ws, nlohmann::json event);
     void handleChatHistoryRequest(Socket* ws, const nlohmann::json& event);
@@ -92,6 +101,7 @@ private:
     std::condition_variable worker_cv_;
     int active_workers_{0};
     int active_blocking_workers_{0};
+    std::vector<std::tuple<int, int, std::uint64_t>> shutdown_session_reservations_;
     std::thread session_cleanup_thread_;
     std::mutex session_cleanup_mutex_;
     std::condition_variable session_cleanup_cv_;
@@ -100,6 +110,9 @@ private:
     std::unordered_map<int, std::pair<int, std::uint64_t>> session_cleanup_pending_;
     std::unordered_set<Socket*> registered_sockets_;
     std::unordered_map<int, std::unordered_set<Socket*>> sockets_by_canvas_;
+    std::unordered_map<int, std::unordered_map<int, std::unordered_set<Socket*>>> sockets_by_canvas_user_;
+    std::unordered_map<int, std::unordered_set<Socket*>> rtc_signaling_sockets_by_canvas_;
+    std::unordered_map<std::uint64_t, std::unordered_set<Socket*>> rtc_sockets_by_canvas_connection_;
     std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<Socket*>>> sockets_by_canvas_group_;
     std::unordered_map<int, std::unordered_set<Socket*>> admin_sockets_by_canvas_;

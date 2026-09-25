@@ -193,12 +193,6 @@ public class AuthService {
 
         userRepository.save(user);
 
-        if (session != null) {
-            session.setIsAccessed(false);
-            session.setCppServer(null);
-            userSessionRepository.save(session);
-        }
-
         log.info("회원 #{} 소프트 딜리트 완료: nickname='{}', status=WITHDRAWN", userId, user.getNickname());
     }
 

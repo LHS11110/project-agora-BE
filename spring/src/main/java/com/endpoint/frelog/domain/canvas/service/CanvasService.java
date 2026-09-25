@@ -2,15 +2,12 @@ package com.endpoint.frelog.domain.canvas.service;
 
 import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
-import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
-import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
@@ -299,7 +296,7 @@ public class CanvasService {
     /**
      * 4.5 캔버스 삭제:
      * - 캔버스 소유 사용자(admin-user-id) 또는 관리자만 가능
-     * - C++ 서버의 API를 통해 모든 사용자의 접속을 중단하고 MS SQL, Elasticsearch, Redis에서 해당 캔버스를 삭제, 단 is_cached가 true인 경우에만
+     * - 활성 캐시 또는 사용자 세션이 있으면 삭제를 거부한다. 비활성 캔버스의 SQL·Elasticsearch·리소스를 삭제한다.
      * - ~/project-agora/canvas-resource/{canvas-id} 디렉터리 정리
      */
     @Transactional
@@ -316,13 +313,14 @@ public class CanvasService {
         if (userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
             throw new CustomException(ErrorCode.BAD_REQUEST, "접속 중인 사용자가 있어 캔버스를 삭제할 수 없습니다.");
         }
-        userSessionRepository.clearInactiveCanvasReferences(canvasId);
-
         // MS SQL 삭제
         canvasInfoRepository.delete(canvasInfo);
 
         // Elasticsearch 삭제
-        canvasElasticsearchService.deleteCanvas(canvasId, doc.getCanvasName());
+        if (!canvasElasticsearchService.deleteCanvas(canvasId, doc.getCanvasName())) {
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                    "캔버스 저장 문서를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        }
 
         // 비정형 리소스 디렉터리 정리
         canvasResourceService.deleteCanvasResourceDirectory(canvasId);
@@ -467,50 +465,12 @@ public class CanvasService {
             }
         }
 
-        if (session != null) {
-            session.setIsAccessed(false);
-            session.setCppServer(null);
-            session.setCanvas(null);
-            userSessionRepository.save(session);
-        }
-        log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 완료", userId, canvasId);
+        // The C++ WebSocket close callback is the sole writer of the live
+        // user-session state. The disconnect request above is asynchronous.
+        log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 요청 완료", userId, canvasId);
     }
 
 
-
-    /**
-     * 캔버스 캐시 상태 및 할당 정보 업데이트 (PATCH /api/canvases/{canvasId}/cache)
-     */
-    @Transactional
-    public CanvasResponse updateCanvasCache(Integer canvasId, UpdateCanvasCacheRequest request, CustomUserDetails currentUser) {
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
-        validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
-
-        Boolean isCached = request != null ? request.isCached() : null;
-        String redisIp = request != null ? request.redisIp() : null;
-        String redisPort = request != null ? request.redisPort() : null;
-        String serverIp = request != null ? request.serverIp() : null;
-        String serverPort = request != null ? request.serverPort() : null;
-
-        if (Boolean.FALSE.equals(isCached) || "none".equalsIgnoreCase(redisIp) || "none".equalsIgnoreCase(serverIp)) {
-            canvasInfo.setIsCached(false);
-            canvasInfo.setRedisInfo(null);
-            canvasInfo.setCppServer(null);
-        } else {
-            RedisInfo rInfo = redisInfoRepository.findByRedisIpAndRedisPort(redisIp, redisPort).orElse(null);
-            ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverIp, serverPort).orElse(null);
-            canvasInfo.updateCacheState(isCached, rInfo, sInfo);
-        }
-
-        CanvasInfo saved = canvasInfoRepository.save(canvasInfo);
-        log.info("캔버스 #{} 캐시 상태 갱신 완료: isCached={}, Server={}, Redis={}",
-                canvasId, saved.getIsCached(), 
-                saved.getCppServer() != null ? saved.getCppServer().getServerIp() + ":" + saved.getCppServer().getServerPort() : "none", 
-                saved.getRedisInfo() != null ? saved.getRedisInfo().getRedisIp() + ":" + saved.getRedisInfo().getRedisPort() : "none");
-
-        return CanvasResponse.from(saved);
-    }
 
     // =========================================================================
     // 유틸리티 및 권한 검증 메서드

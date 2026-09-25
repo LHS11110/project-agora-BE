@@ -237,6 +237,7 @@ ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
 {
   "type":"init_items",
   "canvas_id":1,
+  "rtc_canvas_connection_id":"12345",
   "server_protocol":"uWebSockets",
   "status":"connected",
   "items":{},
@@ -327,30 +328,33 @@ ACL은 저장될 `item` 또는 `data` 객체의 `permission` 필드에서 읽습
 
 ### WebRTC P2P signaling
 
-인증된 WebSocket 접속 뒤 서버는 `init_items` 다음에 해당 소켓 전용 임의 `self_peer_id`와 같은 캔버스의 인증 피어 목록을 보냅니다. 클라이언트는 이 목록과 `rtc_peer_joined`를 받아 해당 피어에 대한 WebRTC 연결을 시작해야 합니다. 피어는 사용자 계정이 아니라 WebSocket 세션 하나를 나타내므로, 같은 계정이 여러 WebSocket을 열면 각각 별도 피어로 나타납니다.
+WebRTC 신호 교환은 캔버스 이벤트용 WebSocket과 별도의 연결을 사용합니다. 같은 캔버스 접속 토큰으로 `wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>` 또는 C++ 서버의 `ws://<cpp-host>:<wsPort>/ws/rtc/canvas/<canvasId>?token=<canvasAccessToken>`에 연결합니다. C++는 JWT를 확인하고 `rtc_ready`를 보냅니다. 이 연결은 캔버스를 로드하거나 SQL `user_sessions`를 변경하지 않습니다. 캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`는 그 WebSocket 연결을 가리키는 문자열입니다. RTC 신호 연결에서 `rtc_join`할 때 이 값을 전달하면 해당 캔버스 WebSocket에 피어가 묶입니다. 연결이 하나뿐이면 생략할 수 있지만, 같은 사용자·캔버스의 WebSocket이 여러 개면 `RTC_CANVAS_CONNECTION_REQUIRED`를 반환합니다. 권한이 확인된 해당 캔버스 WebSocket이 없으면 `RTC_CANVAS_SOCKET_REQUIRED`를 반환합니다.
+
+클라이언트가 `{"type":"rtc_join","canvas_connection_id":"<init_items.rtc_canvas_connection_id>"}`을 보내면 서버는 해당 RTC 신호 연결 전용 `self_peer_id`와 현재 피어 목록을 반환하고 다른 RTC 피어에게 `rtc_peer_joined`를 보냅니다. 피어는 사용자 계정이 아니라 RTC 신호 세션 하나를 나타내므로, 같은 계정이 여러 RTC 신호 연결을 열면 각각 별도 피어로 나타납니다. 이미 참여한 상태의 `rtc_join` 또는 `rtc_list`는 현재 목록을 다시 반환합니다.
 
 ```json
+{"type":"rtc_ready"}
 {"type":"rtc_peers","self_peer_id":"<ephemeral-peer-token>","peers":[{"peer_id":"<token>","nickname":"사용자","tag_number":12,"groups":["default"],"is_admin":false}]}
 {"type":"rtc_peer_joined","peer":{"peer_id":"<token>","nickname":"사용자","tag_number":12,"groups":["default"],"is_admin":false}}
 {"type":"rtc_peer_left","peer_id":"<token>"}
 ```
 
-WebSocket이 닫히거나 서버가 세션을 종료하면 그 소켓의 피어를 signaling 목록에서 즉시 제거하고 나머지 소켓에 `rtc_peer_left`를 보냅니다. 클라이언트는 해당 피어의 `RTCPeerConnection`을 닫아야 합니다. 해당 WebSocket이 관리하는 WebRTC 세션이 먼저 종료되면 다음 이벤트를 보내며, 서버는 발신 WebSocket을 닫고 피어를 제거합니다. 나머지 클라이언트는 `rtc_peer_left`를 받아 그 피어의 `RTCPeerConnection`을 닫고, 다른 피어를 위한 WebSocket 연결은 유지합니다.
+`rtc_disconnect`는 피어만 목록에서 제거하고 다른 RTC 신호 연결에 `rtc_peer_left`를 보냅니다. RTC 신호 연결과 캔버스 이벤트용 WebSocket은 계속 열려 있습니다. 이후 같은 신호 연결에서 `rtc_join`으로 새 피어 ID를 받아 다시 참여할 수 있습니다. RTC 신호 연결 자체를 닫으면 해당 피어가 제거됩니다. 캔버스 WebSocket이 닫히면 **그 연결에 묶인 RTC 피어만** 즉시 제거하고 해당 RTC 신호 연결에 `{"type":"rtc_disconnected","reason":"canvas_socket_closed"}`를 보냅니다. RTC 신호 WebSocket 자체는 열려 있으므로, 다른 캔버스 WebSocket 연결이 있다면 새 연결 ID로 다시 `rtc_join`할 수 있습니다. 다른 캔버스와 다른 캔버스 WebSocket에 묶인 피어는 유지됩니다. SQL `user_sessions`는 캔버스 WebSocket만 기준으로 갱신합니다. 피어 등록 해제나 `rtc_peer_left` 수신 후 실제 `RTCPeerConnection`과 데이터 채널을 닫는 일은 클라이언트의 책임입니다.
 
 ```json
 {"type":"rtc_disconnect","reason":"failed"}
 ```
 
-signaling 서버는 브라우저의 실제 ICE 연결 상태를 직접 관찰할 수 없으므로 클라이언트가 WebRTC 세션의 최종 `failed` 상태를 이 이벤트로 알려야 합니다. 정상적인 WebSocket 종료는 같은 세션의 WebRTC 연결도 종료하는 것으로 처리해야 합니다.
+signaling 서버는 브라우저의 실제 ICE 연결 상태를 직접 관찰할 수 없으므로 클라이언트가 WebRTC 세션의 최종 `failed` 상태를 이 이벤트로 알립니다. 응답은 `{"type":"rtc_disconnected"}`입니다. 캔버스 이벤트용 WebSocket에서는 `rtc_*` 요청을 `RTC_SEPARATE_CHANNEL_REQUIRED`로 거절합니다.
 
-WebRTC offer/answer와 ICE candidate만 `rtc_signal` WebSocket 이벤트로 교환합니다. 서버는 발신 소켓 ID를 덮어쓰고 같은 캔버스에서 접속·권한이 유효한 지정 피어 한 곳에만 전달하며 Redis에 기록하지 않습니다.
+WebRTC offer/answer와 ICE candidate만 `rtc_signal` 이벤트로 교환합니다. 피어 목록과 수신 대상은 캔버스 ID별로 분리되며, 다른 캔버스의 피어 ID를 대상으로 지정해도 `RTC_PEER_NOT_FOUND`로 거절합니다. 서버는 발신 피어 ID를 직접 붙이고 같은 캔버스에서 접속·권한이 유효한 지정 피어 한 곳에만 전달하며 Redis에 기록하지 않습니다. offer/answer는 `type`과 `sdp`, ICE candidate는 표준 candidate 필드만 전달합니다. `rtc_join` 전의 신호는 `RTC_NOT_JOINED`로 거절합니다.
 
 ```json
 {"type":"rtc_signal","peer_id":"<target-peer-token>","action":"offer","description":{"type":"offer","sdp":"..."}}
 {"type":"rtc_signal","peer_id":"<target-peer-token>","action":"candidate","candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0}}
 ```
 
-마우스 위치(`cursor`)와 Automerge 변경·스냅샷(`doc_change`, `doc_snapshot`)은 브라우저 간 `RTCDataChannel`에서 교환되며 WebSocket 서버를 통과하지 않습니다. cursor 데이터 채널은 최신 좌표 전달을 우선하고, CRDT 데이터 채널은 순서·재전달을 사용합니다. 기본 설정은 STUN을 이용한 직접 연결이며, 일부 NAT/방화벽에서는 연결이 성립하지 않을 수 있습니다. 운영 환경에서 TURN이 필요하면 프런트엔드 `VITE_WEBRTC_ICE_SERVERS`에 TURN URL과 임시 인증정보를 설정해야 합니다. TURN을 사용하면 해당 릴레이 인프라의 트래픽·부하가 발생합니다. 초당 100개를 초과하는 WebSocket 메시지는 버려집니다.
+실제 WebRTC 미디어와 데이터 채널 패킷은 C++ 서버를 경유하지 않습니다. C++ 서버는 SDP/ICE 신호만 전달하며 미디어·데이터 패킷을 전달·저장·해석하지 않습니다. 실제 경로는 클라이언트의 ICE 설정과 네트워크가 결정합니다. 클라이언트가 외부 TURN 서버를 설정하면 패킷이 해당 TURN 서버를 경유할 수 있습니다. 중계 없는 직접 연결만 허용하려면 클라이언트에서 TURN 릴레이를 사용하지 않아야 하며, 이 경우 일부 네트워크에서는 연결이 실패할 수 있습니다. RTC 신호 연결은 SDP/ICE를 위해 별도 WebSocket을 사용합니다. 이 신호 연결 자체의 수명은 캔버스 WebSocket과 독립적이지만 피어 등록과 신호 전달에는 활성 캔버스 WebSocket이 필요합니다. 신호 연결은 JSON 이벤트만 받으며 원문·바이너리 메시지를 캔버스 이벤트용 WebSocket에 방송하지 않습니다. 신호 연결의 메시지 제한은 초당 100개, payload 최대 256 KiB입니다.
 
 #### 연결 상태 확인
 
@@ -414,7 +418,7 @@ WebRTC offer/answer와 ICE candidate만 `rtc_signal` WebSocket 이벤트로 교�
 
 ### 종료·재접속
 
-WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. 캔버스 row나 캔버스 문서는 삭제하지 않습니다. 서버 종료 시에도 연결 종료와 세션 정리만 수행하며, 캔버스 삭제는 별도의 `DELETE /api/canvas/{canvasId}` 제어 API입니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
+WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spring의 연결 종료 요청과 회원 삭제는 `is_accessed`·캔버스·C++ 서버 연결 필드를 직접 변경하지 않고 C++ WebSocket 종료 경로에 맡깁니다. 캔버스 row나 캔버스 문서는 소켓 close로 삭제하지 않습니다. 서버 종료 시에도 연결 종료와 세션 정리만 수행하며, 캔버스 삭제는 별도의 `DELETE /api/canvas/{canvasId}` 제어 API입니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
 
 ## 6. 시간 복잡도·저장소 접근·동시성
 
@@ -428,7 +432,10 @@ WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. 캔
 | `B_doc` | Redis/ES Canvas JSON 문서의 바이트 수 |
 | `B_out` | 모든 수신 소켓에 직렬화·전송할 응답 바이트 총량 |
 | `C` | C++ 프로세스의 활성 Canvas 객체 수 |
-| `S` | 해당 캔버스에 연결된 WebSocket 수 (한 사용자에게 여러 소켓이 있을 수 있음) |
+| `S` | 해당 캔버스에 연결된 캔버스 이벤트용 WebSocket 수 (한 사용자에게 여러 소켓이 있을 수 있음) |
+| `S_sig` | 해당 캔버스에 열린 RTC 신호 WebSocket 수 (피어 등록 전·해제 후 연결도 포함) |
+| `S_rtc` | 해당 캔버스에 등록된 RTC 신호 피어 수 |
+| `K_rtc` | 캔버스 WebSocket 하나가 종료될 때 해제할 해당 사용자의 RTC 피어 수 |
 | `R` | 이벤트를 받을 권한이 있는 소켓 수 (`R ≤ S`) |
 | `U` | 해당 캔버스의 활성 사용자 수 |
 | `P` | 캔버스 `people` 참여자 수 |
@@ -474,9 +481,9 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 | `/health`, `/` | O(1). 외부 저장소 조회 없음. |
 | `GET /api/canvas/count` | 현재 구현은 C개 캔버스를 순회하고 매 캔버스의 활성 사용자 `set`을 복사하므로 O(C + ΣU). |
 | `GET /api/canvas/active` | 캔버스 ID와 사용자 목록을 순회/복사하므로 O(C + ΣU), 응답 크기만큼 직렬화합니다. |
-| `POST /api/users/{id}/disconnect` | C개 캔버스를 검색하고 일치하는 캔버스의 소켓을 닫습니다. O(C + 해당 캔버스들의 S 합). |
-| `POST /api/canvas/{id}/users/{id}/disconnect` | Canvas map 조회 평균 O(1), 그 캔버스의 WebSocket을 찾아 닫는 단계 O(S). |
-| `DELETE /api/canvas/{id}` | map/lifecycle lock 조회 평균 O(1), 활성 사용자·소켓 정리 O(U + S), 대기 저장 큐 처리 O(Q), Redis 문서 읽기/ES 저장/Redis 정리와 SQL 갱신. 문서 및 채팅 내역 바이트가 클수록 전송·직렬화 비용이 커집니다. |
+| `POST /api/users/{id}/disconnect` | C개 캔버스를 검색하고 일치하는 캔버스의 이벤트·RTC 신호 소켓을 닫습니다. O(C + 해당 캔버스들의 S + S_sig 합), 피어 퇴장 알림 전송 비용은 별도입니다. |
+| `POST /api/canvas/{id}/users/{id}/disconnect` | Canvas map 조회 평균 O(1), 그 캔버스의 이벤트·RTC 신호 소켓을 찾아 닫는 단계 O(S + S_sig), 피어 퇴장 알림 전송 비용은 별도입니다. |
+| `DELETE /api/canvas/{id}` | map/lifecycle lock 조회 평균 O(1), 활성 사용자 검사 O(U)와 SQL 세션 조회. 활성 세션이 있으면 `removed:false`를 반환합니다. 비활성 시 대기 저장 큐 처리 O(Q), Redis 문서 읽기/ES 저장/Redis 정리와 SQL 갱신. 문서 및 채팅 내역 바이트가 클수록 전송·직렬화 비용이 커집니다. |
 
 ### C++ 연결 및 상시 처리 경로
 
@@ -493,7 +500,9 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 | 일반 단건 아이템 변경/삭제 | 연결 때 준비한 사용자 그룹과 Canvas 메모리 ACL로 검사합니다. ACL 교집합 검사는 평균 O(min(A,G)); hash 조회는 평균 O(1)입니다. | ACL 그룹→소켓 색인에서 후보를 가져와 `O(A + K + R_acl·min(A,G))` 평균 비용입니다. 최악에는 한 그룹에 S개가 모두 있어 O(S·A)까지 커집니다. Redis 저장은 캔버스별 FIFO worker로 큐잉하며 broadcast 콜백 안에서는 저장소를 호출하지 않습니다. |
 | 일반 비아이템 broadcast | 연결 승인된 소켓 상태 확인 O(1). | O(S) 소켓 순회 + 수신자별 `B_out` 전송. |
 | `chat` | 메모리에서 방 존재/ACL을 확인합니다. sender ACL 교차 검사는 평균 O(min(A,G)); 방별 sequence/map 조회는 평균 O(1). | ACL 그룹 색인을 사용해 `O(A + K + R)` 평균 비용으로 후보를 모으고 전송합니다. 그룹 색인 조회에는 중복 제거용 메모리가 O(R) 필요합니다. 수신자에게 보내는 비용은 적어도 O(R)입니다. 메시지/sequence를 FIFO persistence queue에 넣은 뒤 Redis 저장 완료를 기다리지 않고 전송합니다. Redis Lua append는 background worker가 수행합니다. 이 hot path에서 SQL/Elasticsearch 호출은 없습니다. |
-| `rtc_signal` | peer ID 메모리 map 조회 평균 O(1). SDP/candidate 검증은 payload 바이트 B에 비례합니다. | 단일 대상 socket에 전달, 직렬화/전송은 O(B). 접속 시 peer 목록 전파는 O(S)이지만 신호마다 전체 소켓을 찾지 않습니다. 저장소 접근 없음. |
+| RTC 신호 연결 | JWT를 접속 시 확인합니다. Canvas 로드·SQL 세션 예약은 하지 않습니다. | `rtc_join`은 권한이 확인된 같은 사용자·캔버스의 WebSocket 색인을 평균 O(1)로 확인합니다. 신호 연결만으로 캔버스가 활성 상태가 되지는 않습니다. |
+| `rtc_join` / `rtc_disconnect` | 피어 map과 캔버스 WebSocket 연결 ID 색인의 추가·제거는 평균 O(1). | 다른 RTC 피어 `S_rtc`명에게 입장·퇴장 이벤트를 전달하고, 입장 시 목록을 구성하므로 O(`S_rtc`)입니다. 캔버스 WebSocket 하나가 종료될 때는 해당 연결에 묶인 `K_rtc`개 피어만 색인에서 찾아 해제하므로 O(`K_rtc`·`S_rtc`)입니다. |
+| `rtc_signal` | peer ID 메모리 map 조회 평균 O(1). SDP/candidate 검증은 payload 바이트 B에 비례합니다. | 단일 대상 RTC 신호 소켓에 전달, 직렬화/전송은 O(B). SQL·Redis·Elasticsearch 호출이나 미디어 중계는 없습니다. |
 | bulk `items` 교체 | 관리자 확인은 O(1). 새 아이템 ACL과 기존 ACL 색인을 순회하므로 O(N·A). | 새/기존 ACL 그룹 수신자 색인에서 후보를 모은 뒤 각 후보 소켓에 N개 아이템을 필터링하고 이전 권한 회수를 검사합니다. 평균 앱 비용은 `O(N·A + K + R_acl·N·A)` 이하이며, 그룹이 모든 소켓을 포함하면 O(S·N·A)까지 커집니다. 받는 소켓별 JSON 생성/전송 바이트 비용이 추가됩니다. 저장은 background Redis worker입니다. |
 | `chat_history` | 요청 시점에 메모리 방 ACL을 검사합니다(O(A)). 응답 worker 완료 시 ACL을 다시 훑지 않고 Canvas 권한 epoch가 바뀌지 않았는지 O(1) 평균 확인합니다. | 최대 W개 worker 중 하나에서 앞선 저장 큐를 기다리고 Redis를 조회합니다. Q개 pending write가 끝나야 하므로 대기 시간은 Q와 저장소 지연에 좌우됩니다. 같은 event loop의 다른 실시간 이벤트는 Redis 응답을 기다리지 않습니다. 응답 페이지는 최대 L개이며, RedisJSON range 연산 비용은 Redis 구현에 따릅니다. legacy/non-contiguous 내역 fallback은 H개 메시지를 읽고 정렬해 O(H log H), 응답 O(L)입니다. Elasticsearch/SQL은 사용하지 않습니다. |
 | `canvas_settings_get` / `canvas_settings_update` | worker에서 Redis 문서를 읽고 파싱 O(B_doc), 참여 여부 O(P), 관리자 그룹 확인 O(E_g)을 수행합니다. 설정 요청마다 MSSQL Canvas 할당과 활성 사용자 확인을 각각 수행합니다. | 저장소 작업은 최대 W개 worker에서 실행합니다. 응답 표시명은 현재 참여자마다 `getUserHandle` SQL을 요청하므로 O(P) round trip이며, `participant_remove`도 대상 ID 검색에 최대 P회 SQL을 호출합니다. 새 참여자 추가는 SQL 조회 1회입니다. 비밀번호 설정은 해시 비용이 추가됩니다. 업데이트는 Redis revision CAS 후 ES patch를 수행하고, 같은 Canvas의 설정 변경/최종 unload 저장은 `settings_mutex`로 직렬화합니다. participant-remove pending 표시 및 변경/퇴장 알림으로 event loop에 O(S) 순회가 남습니다. 제거 중 대상 소켓의 요청은 임시 거부하고, 실패 시 다시 허용합니다. |
@@ -516,6 +525,7 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 - C++ Canvas load/unload는 Canvas lifecycle mutex로 직렬화합니다. 설정 변경은 `settings_mutex`와 Redis revision compare-and-set으로 직렬화/충돌 감지를 하며, item/chat 저장은 Canvas별 FIFO queue와 chat append Lua로 순서를 보존합니다.
 - Redis 저장 실패는 해당 Canvas의 persistence 상태에 기록됩니다. 이후 item/chat 저장 요청을 거절하고 Redis→Elasticsearch 스냅샷 및 캐시 해제를 중단합니다. 캐시를 유지한 채 운영자가 원인을 확인해야 하며, 이미 실시간 전달된 이벤트가 영속 저장되었다고 간주해서는 안 됩니다.
 - 언로드는 Elasticsearch 저장 후 MSSQL의 `is_cached`를 먼저 해제하고, 이전 Canvas 로드에 부여한 `_cache_generation`이 일치할 때만 Redis 키를 삭제합니다. Spring의 canvas row 잠금과 이 순서로 활성 Redis 조회 중 키가 먼저 사라지는 문제를 피합니다. 새 로드는 비활성 할당에 남은 Redis 키를 무시하고 Elasticsearch 문서로 덮어씁니다.
+- 삭제 요청과 자동 언로드는 활성 캔버스 WebSocket 사용자와 SQL 세션이 모두 없을 때만 진행합니다. RTC 신호 연결만 남아 있어도 언로드할 수 있으며, 캔버스 WebSocket이 닫힐 때마다 그 사용자의 RTC 피어 등록은 해제됩니다. 언로드 과정에서 나중에 실행될 소켓 전체 종료 작업을 예약하지 않습니다.
 - 접속 해제 시 MSSQL 세션 갱신은 단일 전용 worker에 사용자별 최신 작업을 모아 처리합니다. 접속 해제 횟수에 비례해 스레드가 늘어나지 않습니다. 활성 세션 수 SQL 결과를 읽는 데 실패하면 캔버스를 활성 상태로 간주해 언로드를 미룹니다.
 - 명시적 캔버스 언로드가 모든 소켓을 닫으면서 Canvas의 활성 사용자 목록을 먼저 비운 경우에도, 각 소켓 종료 콜백이 MSSQL 세션 해제를 예약합니다.
 - Canvas persistence queue는 `settings_mutex`와 별도 mutex를 사용합니다. event loop의 enqueue는 짧은 queue lock만 얻으며, worker의 SQL/Redis/ES 작업이나 history/connect 대기와 경쟁하지 않습니다. 각 저장 이벤트에 증가하는 ticket을 붙여 history/connect는 요청 전에 접수된 write까지만 기다리고, unload는 종료를 표시한 뒤 마지막 ticket까지 기다립니다.

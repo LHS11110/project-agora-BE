@@ -4,7 +4,6 @@ import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
-import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasCacheRequest;
 import com.endpoint.frelog.domain.canvas.service.CanvasResourceService;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
 import com.endpoint.frelog.global.security.CustomUserDetails;

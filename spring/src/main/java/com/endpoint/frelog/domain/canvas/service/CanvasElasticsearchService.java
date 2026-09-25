@@ -378,30 +378,29 @@ public class CanvasElasticsearchService {
      * 캔버스 도큐먼트 삭제
      */
     public boolean deleteCanvas(Integer canvasId, String canvasName) {
-        boolean deleted = false;
-        if (canvasId != null) {
-            try {
-                restClient.delete()
-                        .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), String.valueOf(canvasId))
-                        .retrieve()
-                        .toBodilessEntity();
-                log.info("캔버스 #{} Elasticsearch 문서 삭제 완료", canvasId);
-                deleted = true;
-            } catch (Exception ignored) {
-            }
+        if (canvasId == null) return false;
+        try {
+            restClient.delete()
+                    .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), String.valueOf(canvasId))
+                    .retrieve()
+                    .toBodilessEntity();
+            log.info("캔버스 #{} Elasticsearch 문서 삭제 완료", canvasId);
+        } catch (Exception e) {
+            log.error("캔버스 #{} Elasticsearch 문서 삭제 실패", canvasId, e);
+            return false;
         }
 
-        if (canvasName != null) {
+        if (canvasName != null && !canvasName.equals(String.valueOf(canvasId))) {
             try {
                 restClient.delete()
                         .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), canvasName)
                         .retrieve()
                         .toBodilessEntity();
-                deleted = true;
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("캔버스 #{}의 이전 이름 기반 Elasticsearch 문서 삭제 실패: {}", canvasId, e.getMessage());
             }
         }
 
-        return deleted;
+        return true;
     }
 }

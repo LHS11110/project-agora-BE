@@ -10,6 +10,7 @@ Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring
 flowchart LR
     Browser[Browser] -->|HTTPS| Nginx
     Browser -->|WSS /wss/port/:wsPort/canvas/:canvasId| Nginx
+    Browser -->|WSS /wss/port/:wsPort/rtc/canvas/:canvasId| Nginx
     Nginx -->|:8080| Spring[Spring Boot]
     Nginx -->|:8002-8099| Cpp[C++ realtime]
     Spring --> MSSQL[(MS SQL Server)]
@@ -35,6 +36,8 @@ flowchart LR
 3. 클라이언트는 응답의 `ws_port`를 사용해 `wss://<host>/wss/port/{wsPort}/canvas/{canvasId}?token=...`에 연결합니다.
 4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
 5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
+
+WebRTC 신호 교환은 별도 `wss://<host>/wss/port/{wsPort}/rtc/canvas/{canvasId}?token=...` 연결에서 수행합니다. 캔버스 WebSocket에서 `init_items.rtc_canvas_connection_id`를 받은 뒤 RTC 신호 연결에서 `rtc_join`에 이 값을 담아 피어 목록에 참여합니다. 피어 목록과 신호 대상은 캔버스별로 분리됩니다. `rtc_disconnect`는 피어 등록만 해제합니다. 캔버스 WebSocket이 닫히면 그 연결에 묶인 RTC 피어만 즉시 해제하고 RTC 신호 연결은 유지됩니다. `user_sessions`와 캔버스 활성 상태는 캔버스 WebSocket만 기준으로 갱신됩니다. 피어 등록 해제 이후 실제 WebRTC 연결을 닫는 것은 클라이언트의 책임입니다. C++ 서버는 SDP와 ICE 정보만 지정 피어에게 전달하며 실제 WebRTC 미디어·데이터 패킷을 경유시키지 않습니다. 외부 TURN 사용 여부는 클라이언트의 ICE 설정에 달려 있습니다.
 
 C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 15초 이내 heartbeat와 `/health` 응답을 모두 만족한 서버만 재사용합니다.
 

@@ -193,7 +193,7 @@ void HttpServer::setupRoutes() {
 
     // POST /api/access/disconnect removed as per user request (봇용 API 제거)
 
-    // 캔버스 제거 API (Spring 캔버스 삭제 시 호출)
+    // 비활성 캔버스의 C++ 캐시 언로드 API (Spring 삭제 경로와 별개)
     server_.Delete(R"(/api/canvas/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
         int canvas_id = std::stoi(req.matches[1]);
         bool removed = canvas_pool_.removeCanvas(canvas_id);
