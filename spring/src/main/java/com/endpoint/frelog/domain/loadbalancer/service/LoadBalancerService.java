@@ -1,6 +1,5 @@
 package com.endpoint.frelog.domain.loadbalancer.service;
 
-import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
@@ -13,6 +12,7 @@ import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
+import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import com.endpoint.frelog.global.config.DatabaseProperties;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
@@ -41,19 +41,19 @@ public class LoadBalancerService {
     private final ServerInfoRepository serverInfoRepository;
     private final RedisInfoRepository redisInfoRepository;
     private final CanvasInfoRepository canvasInfoRepository;
-    private final CppServerClient cppServerClient;
+    private final UserSessionRepository userSessionRepository;
     private final DatabaseProperties databaseProperties;
 
     public LoadBalancerService(
             ServerInfoRepository serverInfoRepository,
             RedisInfoRepository redisInfoRepository,
             CanvasInfoRepository canvasInfoRepository,
-            CppServerClient cppServerClient,
+            UserSessionRepository userSessionRepository,
             DatabaseProperties databaseProperties) {
         this.serverInfoRepository = serverInfoRepository;
         this.redisInfoRepository = redisInfoRepository;
         this.canvasInfoRepository = canvasInfoRepository;
-        this.cppServerClient = cppServerClient;
+        this.userSessionRepository = userSessionRepository;
         this.databaseProperties = databaseProperties;
     }
 
@@ -64,10 +64,7 @@ public class LoadBalancerService {
     @Transactional(readOnly = true)
     public AllocateServerResponse allocateServer() {
         LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15);
-        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff)
-                .stream()
-                .filter(s -> cppServerClient.isHealthy(s.getServerIp(), s.getServerPort()))
-                .toList();
+        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff);
 
         if (servers.isEmpty()) {
             throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "활성화된 C++ 서버가 없습니다.");
@@ -90,8 +87,8 @@ public class LoadBalancerService {
         ServerInfo s1 = servers.get(idx1);
         ServerInfo s2 = servers.get(idx2);
 
-        int load1 = cppServerClient.getCanvasCountFromServer(s1.getServerIp(), s1.getServerPort());
-        int load2 = cppServerClient.getCanvasCountFromServer(s2.getServerIp(), s2.getServerPort());
+        int load1 = getActiveCanvasCount(s1);
+        int load2 = getActiveCanvasCount(s2);
 
         ServerInfo chosen = (load1 <= load2) ? s1 : s2;
         log.info("C++ Server 로드밸런싱 (P2C): [{}:{}] (부하 {}) vs [{}:{}] (부하 {}) -> 선택: [{}:{}]",
@@ -167,10 +164,7 @@ public class LoadBalancerService {
     @Transactional(readOnly = true)
     public List<ServerResponse> listServers() {
         return serverInfoRepository.findAll().stream()
-                .map(s -> {
-                    int load = cppServerClient.getCanvasCountFromServer(s.getServerIp(), s.getServerPort());
-                    return ServerResponse.from(s, load == Integer.MAX_VALUE ? 0 : load);
-                })
+                .map(s -> ServerResponse.from(s, getActiveCanvasCount(s)))
                 .toList();
     }
 
@@ -178,8 +172,11 @@ public class LoadBalancerService {
     public ServerResponse getServerById(Long serverId) {
         ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
-        int load = cppServerClient.getCanvasCountFromServer(server.getServerIp(), server.getServerPort());
-        return ServerResponse.from(server, load == Integer.MAX_VALUE ? 0 : load);
+        return ServerResponse.from(server, getActiveCanvasCount(server));
+    }
+
+    private int getActiveCanvasCount(ServerInfo server) {
+        return Math.toIntExact(userSessionRepository.countActiveCanvasesByCppServerId(server.getServerId()));
     }
 
     @Transactional

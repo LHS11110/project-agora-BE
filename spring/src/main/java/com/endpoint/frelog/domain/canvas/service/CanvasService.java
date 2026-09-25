@@ -1,12 +1,10 @@
 package com.endpoint.frelog.domain.canvas.service;
 
-import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
-import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
@@ -29,18 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.Set;
-
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 @Service
 public class CanvasService {
@@ -51,7 +42,6 @@ public class CanvasService {
     private final UserRepository userRepository;
     private final CanvasElasticsearchService canvasElasticsearchService;
     private final CanvasResourceService canvasResourceService;
-    private final CppServerClient cppServerClient;
     private final LoadBalancerService loadBalancerService;
     private final RedisInfoRepository redisInfoRepository;
     private final ServerInfoRepository serverInfoRepository;
@@ -64,7 +54,6 @@ public class CanvasService {
             UserRepository userRepository,
             CanvasElasticsearchService canvasElasticsearchService,
             CanvasResourceService canvasResourceService,
-            CppServerClient cppServerClient,
             LoadBalancerService loadBalancerService,
             RedisInfoRepository redisInfoRepository,
             ServerInfoRepository serverInfoRepository,
@@ -75,7 +64,6 @@ public class CanvasService {
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
         this.canvasResourceService = canvasResourceService;
-        this.cppServerClient = cppServerClient;
         this.loadBalancerService = loadBalancerService;
         this.redisInfoRepository = redisInfoRepository;
         this.serverInfoRepository = serverInfoRepository;
@@ -307,11 +295,13 @@ public class CanvasService {
 
         if (Boolean.TRUE.equals(canvasInfo.getIsCached())) {
             log.warn("캔버스 #{} 삭제 실패: 활성화(캐시) 상태인 캔버스는 삭제할 수 없습니다.", canvasId);
-            throw new CustomException(ErrorCode.BAD_REQUEST, "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
+            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
+                    "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
         if (userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
-            throw new CustomException(ErrorCode.BAD_REQUEST, "접속 중인 사용자가 있어 캔버스를 삭제할 수 없습니다.");
+            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
+                    "접속 중인 사용자가 있어 캔버스를 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
         // MS SQL 삭제
         canvasInfoRepository.delete(canvasInfo);
@@ -336,10 +326,10 @@ public class CanvasService {
      * 5. Access API:
      * - 특정 캔버스 아이디에 대한 접속 API
      * - 로그인한 사용자만 허용
-     * - 실제 참여 권한은 C++ WebSocket이 캐시/세션 예약 전에 확인
+     * - 실제 참여 권한은 C++ WebSocket이 캐시/세션 예약 전에 다시 확인
      * - is_cached가 true: 해당 테이블의 redis, server 정보 반환
      * - is_cached가 false: redis 및 server 정보 테이블에서 is_activated가 true인 행에 대해서만 로드 밸런싱 수행 후 canvas_info 업데이트 및 is_cached=true 설정
-     * - 해당 사용자의 JWT 토큰을 C++ 서버의 API를 통해 등록
+     * - C++ WebSocket이 사용할 JWT와 접속 대상 정보를 발급
      * - user 테이블의 is_accessed, server_ip, server_port 갱신
      * - 로드 밸런싱된 C++ 서버의 아이피와 포트만 반환
      */
@@ -358,6 +348,21 @@ public class CanvasService {
         // Lock the allocation row before choosing Elasticsearch or the live
         // Redis document. A settings change must not race a cache handoff.
         CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
+
+        // Match the C++ session reservation rule before returning connection
+        // details: the same user may open several sockets on one canvas, but
+        // cannot switch canvases while their DB session is active.
+        UserSession currentSession = userSessionRepository
+                .findByIdWithPessimisticLock(currentUser.getUserId()).orElse(null);
+        if (currentSession != null && Boolean.TRUE.equals(currentSession.getIsAccessed())) {
+            Integer activeCanvasId = currentSession.getCanvas() == null
+                    ? null : currentSession.getCanvas().getCanvasId();
+            if (!canvasId.equals(activeCanvasId)) {
+                throw new CustomException(ErrorCode.ALREADY_CONNECTED,
+                        "이미 다른 캔버스를 이용 중입니다. 현재 캔버스 연결을 종료한 뒤 다시 시도해 주세요.");
+            }
+        }
+
         boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
         CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
 
@@ -376,16 +381,22 @@ public class CanvasService {
         Integer serverId = null;
 
         ServerInfo assignedServer = canvasInfo.getCppServer();
-        boolean assignedServerHealthy = Boolean.TRUE.equals(canvasInfo.getIsCached())
+        boolean assignedServerAvailable = Boolean.TRUE.equals(canvasInfo.getIsCached())
                 && assignedServer != null
                 && Boolean.TRUE.equals(assignedServer.getIsActivated())
                 && assignedServer.getLastHeartbeatAt() != null
-                && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15))
-                && cppServerClient.isHealthy(assignedServer.getServerIp(), assignedServer.getServerPort());
+                && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15));
 
-        if (!assignedServerHealthy) {
+        if (cachedCanvas && !assignedServerAvailable
+                && userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
+            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
+                    "사용자가 이용 중인 캔버스의 C++ 서버 상태를 확인할 수 없습니다. 기존 연결이 종료된 뒤 다시 시도해 주세요.");
+        }
+
+        if (!assignedServerAvailable) {
             if (assignedServer != null) {
-                log.warn("캔버스 #{}의 기존 C++ 서버 #{}가 응답하지 않아 할당을 해제합니다.", canvasId, assignedServer.getServerId());
+                log.warn("캔버스 #{}의 기존 C++ 서버 #{} heartbeat가 만료되었거나 비활성 상태라 할당을 해제합니다.",
+                        canvasId, assignedServer.getServerId());
                 // Redis 캐시는 유지하여 새 C++ 서버가 최신 상태를 인계받게 한다.
                 canvasInfo.setCppServer(null);
                 canvasInfoRepository.save(canvasInfo);
@@ -406,8 +417,8 @@ public class CanvasService {
             serverId = assignedServer.getServerId();
         }
 
-        // C++ reserves the session in one transaction when the socket arrives.
-        // Keep that single cross-canvas check at the authoritative writer.
+        // The C++ WebSocket repeats the cross-canvas check when it reserves the
+        // session, so this API check gives callers an early, readable failure.
 
         // 3. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
         String serverHash = "none";
@@ -434,43 +445,6 @@ public class CanvasService {
         // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환
         return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken);
     }
-
-    /**
-     * 실시간 소켓/웹소켓 접속 중단 (POST /api/access/disconnect)
-     */
-    @Transactional
-    public void disconnectCanvasAccess(Integer canvasId, CustomUserDetails currentUser) {
-        if (currentUser == null || currentUser.getUserId() == null) {
-            throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
-        }
-        Long userId = currentUser.getUserId();
-
-        // Keep the lock order consistent with C++ session reservation: canvas row, then session row.
-        CanvasInfo fallbackCanvasInfo = canvasId == null ? null
-                : canvasInfoRepository.findByIdWithPessimisticLock(canvasId).orElse(null);
-        UserSession session = userSessionRepository.findByIdWithPessimisticLock(userId).orElse(null);
-        String serverIp = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerIp() : null;
-        String serverPort = (session != null && session.getCppServer() != null) ? session.getCppServer().getServerPort() : null;
-
-        if ((serverIp == null || serverPort == null) && canvasId != null) {
-            if (fallbackCanvasInfo != null && fallbackCanvasInfo.getCppServer() != null) {
-                cppServerClient.disconnectUserFromCanvas(fallbackCanvasInfo.getCppServer().getServerIp(),
-                        fallbackCanvasInfo.getCppServer().getServerPort(), canvasId, userId);
-            }
-        } else if (serverIp != null && serverPort != null) {
-            if (canvasId != null) {
-                cppServerClient.disconnectUserFromCanvas(serverIp, serverPort, canvasId, userId);
-            } else {
-                cppServerClient.disconnectUser(serverIp, serverPort, userId);
-            }
-        }
-
-        // The C++ WebSocket close callback is the sole writer of the live
-        // user-session state. The disconnect request above is asynchronous.
-        log.info("사용자 #{} 캔버스 #{} 실시간 접속 해제 요청 완료", userId, canvasId);
-    }
-
-
 
     // =========================================================================
     // 유틸리티 및 권한 검증 메서드

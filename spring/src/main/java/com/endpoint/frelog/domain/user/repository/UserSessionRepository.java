@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import jakarta.persistence.LockModeType;
 import java.util.Optional;
+import java.util.List;
 
 @Repository
 public interface UserSessionRepository extends JpaRepository<UserSession, Long> {
@@ -15,7 +16,13 @@ public interface UserSessionRepository extends JpaRepository<UserSession, Long> 
     @Query("SELECT s FROM UserSession s WHERE s.userId = :userId")
     Optional<UserSession> findByIdWithPessimisticLock(@Param("userId") Long userId);
 
+    @Query("SELECT COUNT(DISTINCT s.canvas.canvasId) FROM UserSession s " +
+            "WHERE s.isAccessed = true AND s.cppServer.serverId = :serverId")
+    long countActiveCanvasesByCppServerId(@Param("serverId") Integer serverId);
+
     boolean existsByCanvas_CanvasIdAndIsAccessedTrue(Integer canvasId);
+
+    List<UserSession> findByIsAccessedTrue();
 
     boolean existsByCppServer_ServerId(Integer serverId);
 

@@ -271,7 +271,7 @@ async function loadCanvases() {
 
         // Fetch C++ active canvases via Spring Boot proxy. 
         // Always use 127.0.0.1 for server-to-server internal calls to avoid Hairpin NAT timeout.
-        const activeRes = await apiCall(`/api/test/cpp-active-canvases?host=127.0.0.1&port=8000`);
+        const activeRes = await apiCall('/api/test/cpp-active-canvases');
         const activeIds = new Set(activeRes.ok && activeRes.data.canvases ? activeRes.data.canvases.map(c => c.canvas_id) : []);
 
         res.data.forEach(c => {

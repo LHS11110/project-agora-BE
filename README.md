@@ -41,7 +41,7 @@ WebRTC를 사용할 때 클라이언트는 별도의 RTC 신호 WebSocket도 엽
 
 캔버스 이벤트는 하나의 양방향 WebSocket으로 송수신합니다. 과거 RX/TX TCP 소켓 구현은 제거되었습니다.
 
-C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 15초 이내 heartbeat와 `/health` 응답을 모두 만족한 서버만 재사용합니다.
+C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 DB의 최근 15초 heartbeat와 활성화 상태로 서버를 선택하고, 할당 부하는 `user_sessions`에 기록된 활성 캔버스 수로 계산합니다. Spring에서 C++ HTTP API를 호출하지 않습니다.
 
 ## 사전 요구 사항
 
@@ -202,6 +202,18 @@ sudo systemctl enable --now agora-spring agora-cpp
 
 [nginx/agora.conf.example](nginx/agora.conf.example) 파일에는 Spring Boot API 프록시와 C++ 포트별 WSS 라우팅이 통합된 전체 Nginx 설정 예시가 포함되어 있습니다.
 
+같은 Nginx 가상 호스트에서 React/Vite 빌드 파일도 제공합니다. 프론트엔드 저장소에서 빌드한 `dist/` 내용을 `/var/www/agora-frontend/`로 배포하세요. `/`, `/login`, `/profile`, `/search`, `/canvases/...`는 SPA `index.html`로 처리되고, 정적 자산은 파일로 제공합니다.
+
+```bash
+cd /path/to/project-agora-FE
+npm run build
+sudo install -d -o root -g root -m 755 /var/www/agora-frontend
+sudo cp -a dist/. /var/www/agora-frontend/
+sudo chown -R root:root /var/www/agora-frontend
+sudo find /var/www/agora-frontend -type d -exec chmod 755 {} +
+sudo find /var/www/agora-frontend -type f -exec chmod 644 {} +
+```
+
 Nginx 설정을 적용하기 전 `server_name`과 인증서 경로를 배포 도메인에 맞게 바꾸세요. 자체 서명 인증서는 로컬 테스트에만 사용합니다.
 
 ```bash
@@ -266,7 +278,7 @@ wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>
 
 비밀번호가 설정된 캔버스의 접속 요청 본문에는 `{"password":"<캔버스 비밀번호>"}`를 포함합니다. 비밀번호가 없으면 본문을 생략할 수 있습니다.
 
-`/api/test/cpp-active-canvases`와 관련 테스트 프록시는 등록되어 있고 heartbeat가 최신인 C++ 서버만 조회합니다.
+Spring은 C++ 서버의 HTTP 제어 API를 호출하지 않습니다. 서버 heartbeat와 할당 부하는 DB에서 읽고, `/api/test/cpp-active-canvases`는 DB의 `user_sessions`를 읽습니다. 활성 세션이 있는 사용자의 탈퇴나 활성 캔버스 삭제 요청은 `409` 오류로 거부되며, 기존 WebSocket 종료는 클라이언트가 처리합니다.
 
 ## 테스트와 점검
 

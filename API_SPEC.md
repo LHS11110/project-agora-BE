@@ -1,6 +1,6 @@
 # Project Agora API·WebSocket 명세
 
-이 문서는 현재 소스 코드의 Spring Boot API, C++ 제어 API, 테스트 프록시와 캔버스 WebSocket 프로토콜을 기준으로 작성되었습니다.
+이 문서는 현재 소스 코드의 Spring Boot API, C++ 제어 API, DB 기반 테스트 페이지 상태 조회와 캔버스 WebSocket 프로토콜을 기준으로 작성되었습니다.
 
 ## 공통 규칙
 
@@ -71,7 +71,7 @@ Spring 오류는 다음 형태입니다.
 | `PUT`, `PATCH` | `/api/users/{nickname}/{tagNumber}` | 필요 | `{ "nickname":"새 이름", "password":"새 비밀번호" }` (각 필드 선택) |
 | `DELETE` | `/api/users/{nickname}/{tagNumber}` | 필요 | 성공 시 `204` |
 
-사용자 수정·삭제는 서비스의 현재 권한 정책(본인 또는 관리자)을 따릅니다.
+사용자 수정·삭제는 서비스의 현재 권한 정책(본인 또는 관리자)을 따릅니다. 탈퇴 대상 사용자가 캔버스를 이용 중(`user_sessions.is_accessed=true`)이면 Spring은 C++ 연결을 강제로 끊지 않고 `409 USER_003`으로 탈퇴를 거부합니다. WebSocket을 종료한 뒤 다시 요청해야 합니다.
 
 ### 사용자 응답
 
@@ -153,7 +153,7 @@ Spring 오류는 다음 형태입니다.
 | `DELETE /api/canvases/{canvasId}/people` | 위와 동일 | `204` |
 | `DELETE /api/canvases/{canvasId}` | 없음 | `204` |
 
-비밀번호는 저장 시 해시화되며 API 응답에 평문·해시를 포함하지 않습니다. 참여자 관리는 닉네임과 태그 번호로 수행합니다. Spring의 `/access`는 로그인·캔버스 비밀번호를 확인하고 접속 토큰을 발급합니다. 참여 권한은 C++ WebSocket에서 캐시·세션 예약 전에 한 번 확인하며, 로드 후에는 revision만 비교해 그 사이의 설정 변경 경합을 차단합니다.
+비밀번호는 저장 시 해시화되며 API 응답에 평문·해시를 포함하지 않습니다. 참여자 관리는 닉네임과 태그 번호로 수행합니다. Spring의 `/access`는 로그인·캔버스 비밀번호를 확인하고 접속 토큰을 발급합니다. 사용자의 SQL 세션이 다른 캔버스에서 활성 상태면 `409 CANVAS_003`을 반환합니다. 같은 캔버스의 추가 WebSocket 연결은 허용합니다. 참여 권한은 C++ WebSocket에서 캐시·세션 예약 전에 다시 확인하며, 로드 후에는 revision만 비교해 그 사이의 설정 변경 경합을 차단합니다.
 
 ### 캔버스 접속 정보 발급
 
@@ -171,7 +171,7 @@ Spring 오류는 다음 형태입니다.
 {"server_id":5,"ws_port":"8002","canvas_access_token":"<canvas-jwt>"}
 ```
 
-응답의 `ws_port`와 토큰으로 WebSocket을 연결합니다. 서버 선택은 활성화 상태, 최근 15초 heartbeat, `/health` 확인을 만족하는 C++ 서버만 대상으로 합니다.
+응답의 `ws_port`와 토큰으로 WebSocket을 연결합니다. Spring은 C++ HTTP API를 호출하지 않습니다. 서버 선택은 DB의 활성화 상태와 최근 15초 heartbeat를 사용하고, P2C 부하는 `user_sessions`에서 집계한 서버별 활성 캔버스 수로 계산합니다. 활성 세션이 있는 캔버스의 할당 서버 heartbeat가 만료되면 다른 서버로 임의 재할당하지 않고 `409 CANVAS_006`을 반환합니다.
 
 ## 3. 로드 밸런서·내부 API
 
@@ -185,18 +185,16 @@ Spring 오류는 다음 형태입니다.
 | `POST /api/load-balancer/allocate/database` | 위와 동일 |
 | `GET /api/database/address` | 위와 동일(별칭) |
 
-### 테스트 페이지 프록시 API
+### 테스트 페이지 상태 조회 API
 
-`GET /api/test/cpp-active-canvases`는 로그인한 사용자가 테스트베드에서 활성 상태를 확인할 수 있도록 인증된 사용자에게 허용됩니다. 그 밖의 `/api/test/**` 프록시 API는 관리자 전용입니다.
+`GET /api/test/cpp-active-canvases`는 테스트베드가 SQL `user_sessions`를 기준으로 활성 캔버스를 확인하는 호환 경로이며 인증된 사용자에게 허용됩니다. C++ HTTP API를 호출하지 않습니다. `GET /api/test/cpp-canvas-count`도 DB 세션 기준 활성 캔버스 수를 반환하며 관리자 전용입니다.
 
-| 메서드·경로 | 요청 |
+| 메서드·경로 | 응답 |
 |---|---|
-| `POST /api/test/cpp-access` | `{ "server_ip":"127.0.0.1", "server_port":8000, "canvas_id":1 }`; `Authorization`을 C++로 전달 |
-| `POST /api/test/cpp-disconnect` | 위 필드 + `user_id`; C++ 연결 종료 프록시 |
-| `GET /api/test/cpp-canvas-count?host=127.0.0.1&port=8000` | 활성 캔버스 수 |
-| `GET /api/test/cpp-active-canvases?host=127.0.0.1&port=8000` | 활성 캔버스 상세 |
+| `GET /api/test/cpp-active-canvases` | `{ "status":"success", "count":1, "canvases":[{"canvas_id":1,"active_user_count":2}] }` |
+| `GET /api/test/cpp-canvas-count` | `{ "status":"success", "count":1 }` |
 
-이 프록시는 DB에 등록되어 있고 최근 heartbeat가 있는 C++ 서버만 대상으로 합니다.
+기존 `/api/test/cpp-access`와 `/api/test/cpp-disconnect` C++ 프록시는 제거했습니다. 일반 접속은 `/api/canvases/{canvasId}/access`를 사용하고, 현재 연결 종료는 클라이언트에서 WebSocket을 닫습니다.
 
 ## 4. C++ HTTP 제어 API
 
@@ -429,7 +427,7 @@ RTC 신호 WebSocket은 `rtc_join`, `rtc_list`, `rtc_disconnect`, `rtc_signal` �
 
 ### 종료·재접속
 
-WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spring의 연결 종료 요청과 회원 삭제는 `is_accessed`·캔버스·C++ 서버 연결 필드를 직접 변경하지 않고 C++ WebSocket 종료 경로에 맡깁니다. 캔버스 row나 캔버스 문서는 소켓 close로 삭제하지 않습니다. 서버 종료 시에도 연결 종료와 세션 정리만 수행하며, 캔버스 삭제는 별도의 `DELETE /api/canvas/{canvasId}` 제어 API입니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
+WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spring은 C++ 연결 종료 API를 호출하지 않으며, 활성 세션이 있는 회원 탈퇴와 캔버스 삭제는 `409` 오류로 거부합니다. 캔버스 row나 문서는 소켓 close로 삭제하지 않습니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
 
 ## 6. 시간 복잡도·저장소 접근·동시성
 
@@ -478,10 +476,10 @@ WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spr
 | 이름/설명/비밀번호 변경 | 비활성 여부를 위한 canvas row 잠금, Elasticsearch 문서 읽기(직접 ID 조회 실패 시 search fallback)와 patch. 참여자 배열 복사는 없으며 일반 필드는 O(1) 앱 연산입니다. 비밀번호는 해시 비용이 추가됩니다. 활성 캔버스면 Elasticsearch 접근 전에 `409 CANVAS_006`으로 끝납니다. |
 | 참여자 추가/제거 | 비활성 확인 및 문서 읽기 후 사람·그룹 배열을 복사/탐색하므로 O(P + E_g), 사용자 식별 SQL 조회와 Elasticsearch patch가 있습니다. 활성 캔버스면 ES 문서 읽기 전에 409로 거부합니다. |
 | 캔버스 삭제 | SQL 잠금·접속 세션 확인·삭제, ES 문서 읽기/삭제, 파일 정리 O(F). 활성 또는 접속 세션이 있으면 삭제하지 않습니다. |
-| `/access` | canvas row 잠금 + 활성 Redis 문서 또는 비활성 ES 문서 읽기/parse O(B_doc) + 보호된 캔버스의 비밀번호 해시 검사. Spring은 `people` 참여 검사를 하지 않습니다. 새 서버 배정이면 활성 서버 `V`개를 순회해 health check하고, 2개 서버를 고른 뒤 C++ 부하 조회를 최대 2회 수행합니다. 네트워크 지연이 앱 연산보다 지배적입니다. |
-| `GET/POST /api/load-balancer/allocate/server`, `GET/POST /api/load-balancer/allocate/redis` | 등록 후보 `V`개를 순회해 health check 또는 DB 부하를 확인합니다. 서버 배정은 최대 V번의 health check와 선택 후 C++ 부하 조회 2회, Redis 배정은 후보 조회와 선택 후 SQL 부하 집계 2회입니다. |
+| `/access` | canvas row 및 사용자 session row 잠금 + 활성 Redis 문서 또는 비활성 ES 문서 읽기/parse O(B_doc) + 보호된 캔버스의 비밀번호 해시 검사. Spring은 `people` 참여 검사를 하지 않습니다. 새 서버 배정이면 DB heartbeat로 활성 후보를 조회하고, 선택 후 `user_sessions`에서 활성 캔버스 수를 집계합니다. C++ HTTP 요청은 하지 않습니다. |
+| `GET/POST /api/load-balancer/allocate/server`, `GET/POST /api/load-balancer/allocate/redis` | 서버 후보는 DB에서 최근 heartbeat 기준으로 조회하고, P2C 후보 2개의 활성 캔버스 수를 `user_sessions`에서 집계합니다. Redis 배정은 후보 조회와 선택 후 SQL 부하 집계 2회입니다. C++ HTTP health/load 요청은 하지 않습니다. |
 | `/api/auth/health`, `/api/load-balancer/database`, `/api/database/address` | 설정값/상태 응답 생성 O(1), DB/ES 조회 없음. |
-| 테스트 프록시 | 서버/DB 조회 결과 수에 비례하며 C++ 제어/health/socket API 호출의 네트워크 시간이 추가됩니다. |
+| 테스트 페이지 상태 조회 | 활성 `user_sessions` 행 수에 비례합니다. C++ 서버 네트워크 호출은 하지 않습니다. |
 
 JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인덱스와 DB 실행 계획에 달려 있어 코드만으로 보장할 수 없습니다. 목록·검색 응답은 결과가 커지는 만큼 선형으로 증가합니다.
 
@@ -540,12 +538,12 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 - 접속 해제 시 MSSQL 세션 갱신은 단일 전용 worker에 사용자별 최신 작업을 모아 처리합니다. 접속 해제 횟수에 비례해 스레드가 늘어나지 않습니다. 활성 세션 수 SQL 결과를 읽는 데 실패하면 캔버스를 활성 상태로 간주해 언로드를 미룹니다.
 - 명시적 캔버스 언로드가 모든 소켓을 닫으면서 Canvas의 활성 사용자 목록을 먼저 비운 경우에도, 각 소켓 종료 콜백이 MSSQL 세션 해제를 예약합니다.
 - Canvas persistence queue는 `settings_mutex`와 별도 mutex를 사용합니다. event loop의 enqueue는 짧은 queue lock만 얻으며, worker의 SQL/Redis/ES 작업이나 history/connect 대기와 경쟁하지 않습니다. 각 저장 이벤트에 증가하는 ticket을 붙여 history/connect는 요청 전에 접수된 write까지만 기다리고, unload는 종료를 표시한 뒤 마지막 ticket까지 기다립니다.
-- 이 잠금들은 선형 작업량을 O(1)로 바꾸지 않으며, 대기 시간은 lock hold 및 저장소 round trip에 좌우됩니다. Spring `/access`는 canvas row 잠금을 네트워크 health check 동안 유지합니다. C++ upgrade 인증, 접속 snapshot, `chat_history`, `canvas_settings_*`의 저장소 호출은 worker로 분리했습니다. 설정 worker는 동일 Canvas의 설정/unload와 직렬화되며, 최대 W개 worker가 모두 사용 중이면 새 작업을 거절합니다. 실시간 broadcast fan-out과 socket send는 event loop에 남아 있어 S/R/N이 커질수록 지연이 증가할 수 있습니다.
+- 이 잠금들은 선형 작업량을 O(1)로 바꾸지 않으며, 대기 시간은 lock hold 및 저장소 round trip에 좌우됩니다. Spring `/access`는 canvas row와 사용자 session row 잠금 아래 DB heartbeat 및 세션 상태를 확인하지만 C++ 네트워크 health check는 하지 않습니다. C++ upgrade 인증, 접속 snapshot, `chat_history`, `canvas_settings_*`의 저장소 호출은 worker로 분리했습니다. 설정 worker는 동일 Canvas의 설정/unload와 직렬화되며, 최대 W개 worker가 모두 사용 중이면 새 작업을 거절합니다. 실시간 broadcast fan-out과 socket send는 event loop에 남아 있어 S/R/N이 커질수록 지연이 증가할 수 있습니다.
 - item/chat 이벤트는 Redis 저장 완료를 기다리지 않고 queue 후 전송을 진행합니다. 따라서 delivery latency는 낮지만, broadcast 시점은 Redis durable write 완료를 뜻하지 않습니다. 연결/초기 snapshot과 history는 필요한 경우 queue barrier를 기다립니다.
 
 ## 7. 상태·운영 참고
 
 - C++는 시작 시 `cpp_server`를 등록/활성화하고 5초마다 `last_heartbeat_at`을 갱신합니다. 정상 종료 시 row를 삭제하지 않고 비활성화합니다.
-- Spring은 서버 선택 시 15초 이내 heartbeat와 C++ `/health` 응답을 모두 확인합니다.
+- Spring은 서버 선택 시 DB의 활성화 상태와 최근 15초 이내 heartbeat를 확인하고, 서버 부하는 `user_sessions`의 활성 캔버스 수로 계산합니다. C++ `/health` HTTP 요청은 보내지 않습니다.
 - WebSocket 캔버스 세션은 Redis의 최신 문서를 기준으로 초기화하고, 마지막 접속자가 나가면 캐시를 해제하고 영속 저장 흐름을 수행합니다.
 - `people`는 참여·접속 권한의 내부 목록입니다. Spring은 로그인 및 비밀번호를 확인한 뒤 설정 revision을 포함한 토큰을 발급합니다. C++는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch에서 참여자와 revision을 한 번 확인하고, 로드 후에는 동시 설정 변경 여부를 revision으로만 확인합니다. 활성 캐시의 Redis 문서를 읽을 수 없으면 Elasticsearch의 오래된 사본으로 대체하지 않고 접속을 거부합니다.
