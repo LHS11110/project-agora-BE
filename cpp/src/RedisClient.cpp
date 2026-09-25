@@ -11,6 +11,9 @@
 #include <poll.h>
 #include <algorithm>
 #include <cctype>
+#include <netdb.h>
+#include <thread>
+#include <chrono>
 
 namespace {
 std::string envOr(const char* name, const std::string& value) {
@@ -26,11 +29,49 @@ bool isWrongTypeResponse(const std::string& response) {
     return normalized.find("wrongtype") != std::string::npos
         || normalized.find("wrong redis type") != std::string::npos;
 }
+
+std::vector<std::pair<std::string, int>> parseSentinelSeeds(const char* configured) {
+    std::vector<std::pair<std::string, int>> seeds;
+    if (!configured || !*configured) return seeds;
+
+    std::istringstream input(configured);
+    std::string entry;
+    while (std::getline(input, entry, ',')) {
+        const auto first = entry.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) continue;
+        const auto last = entry.find_last_not_of(" \t\r\n");
+        entry = entry.substr(first, last - first + 1);
+
+        std::string host;
+        std::string port_text;
+        if (!entry.empty() && entry.front() == '[') {
+            const auto close = entry.find(']');
+            if (close == std::string::npos || close + 1 >= entry.size() || entry[close + 1] != ':') continue;
+            host = entry.substr(1, close - 1);
+            port_text = entry.substr(close + 2);
+        } else {
+            const auto separator = entry.rfind(':');
+            if (separator == std::string::npos) continue;
+            host = entry.substr(0, separator);
+            port_text = entry.substr(separator + 1);
+        }
+
+        try {
+            const int port = std::stoi(port_text);
+            if (!host.empty() && port > 0 && port <= 65535) seeds.emplace_back(host, port);
+        } catch (...) {
+            continue;
+        }
+    }
+    return seeds;
+}
 }
 
 RedisClient::RedisClient(const std::string& host, int port, const std::string& user, const std::string& password)
     : host_(host), port_(port), user_(envOr("REDIS_USER", user)),
-      password_(envOr("REDIS_USER_PASSWORD", password)), socket_fd_(-1) {
+      password_(envOr("REDIS_USER_PASSWORD", password)),
+      sentinel_master_name_(envOr("REDIS_SENTINEL_MASTER_NAME", "agora-master")),
+      sentinel_seeds_(parseSentinelSeeds(std::getenv("REDIS_SENTINELS"))), socket_fd_(-1) {
 }
 
 RedisClient::~RedisClient() {
@@ -42,70 +83,117 @@ bool RedisClient::connect() {
         return true;
     }
 
-    socket_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd_ < 0) {
-        std::cerr << "[RedisClient] Failed to create socket\n";
+    if (password_.empty()) {
+        std::cerr << "[RedisClient] REDIS_USER_PASSWORD is not configured\n";
         return false;
     }
 
-    struct timeval tv;
-    tv.tv_sec = 3;
-    tv.tv_usec = 0;
-    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv);
-    setsockopt(socket_fd_, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof tv);
-
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port_);
-    if (inet_pton(AF_INET, host_.c_str(), &server_addr.sin_addr) <= 0) {
-        std::cerr << "[RedisClient] Invalid address: " << host_ << "\n";
-        close(socket_fd_);
-        socket_fd_ = -1;
-        return false;
-    }
-
-    int original_flags = fcntl(socket_fd_, F_GETFL, 0);
-    fcntl(socket_fd_, F_SETFL, original_flags | O_NONBLOCK);
-    int connect_result = ::connect(socket_fd_, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (connect_result < 0 && errno == EINPROGRESS) {
-        pollfd pfd{socket_fd_, POLLOUT, 0};
-        connect_result = poll(&pfd, 1, 3000);
-        if (connect_result > 0) {
-            int socket_error = 0;
-            socklen_t socket_error_len = sizeof(socket_error);
-            getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR, &socket_error, &socket_error_len);
-            connect_result = socket_error == 0 ? 0 : -1;
-        } else {
-            connect_result = -1;
+    const auto authenticate = [this]() {
+        if (user_.empty()) {
+            if (!sendCommand({"AUTH", password_})) return false;
+        } else if (!sendCommand({"AUTH", user_, password_})) {
+            return false;
         }
-    }
-    fcntl(socket_fd_, F_SETFL, original_flags);
-    if (connect_result < 0) {
-        std::cerr << "[RedisClient] Connect failed to " << host_ << ":" << port_ << "\n";
-        close(socket_fd_);
-        socket_fd_ = -1;
-        return false;
-    }
-
-    if (!password_.empty()) {
-        if (!user_.empty()) {
-            sendCommand({"AUTH", user_, password_});
-        } else {
-            sendCommand({"AUTH", password_});
-        }
-        std::string auth_res = readResponse();
-        if (auth_res != "OK") {
-            std::cerr << "[RedisClient] Authentication failed: " << auth_res << "\n";
+        const std::string response = readResponse();
+        if (response != "OK") {
+            std::cerr << "[RedisClient] Redis authentication failed\n";
             disconnect();
             return false;
         }
-    } else {
-        std::cerr << "[RedisClient] REDIS_USER_PASSWORD is not configured\n";
-        disconnect();
-        return false;
+        return true;
+    };
+
+    // Standalone deployments retain the configured Redis endpoint. With
+    // Sentinel configured, the database row endpoint is intentionally ignored.
+    if (sentinel_seeds_.empty()) {
+        if (!connectTo(host_, port_, 3000)) return false;
+        return authenticate();
     }
 
-    return true;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        for (const auto& seed : sentinel_seeds_) {
+            disconnect();
+            if (!connectTo(seed.first, seed.second, 700)) continue;
+            if (!sendCommand({"SENTINEL", "get-master-addr-by-name", sentinel_master_name_})) {
+                disconnect();
+                continue;
+            }
+            const std::string master_reply = readResponse();
+            disconnect();
+
+            std::istringstream master_parts(master_reply);
+            std::string master_host;
+            int master_port = 0;
+            if (!(master_parts >> master_host >> master_port) || master_host.empty() || master_port <= 0 || master_port > 65535) {
+                continue;
+            }
+            if (!connectTo(master_host, master_port, 1200) || !authenticate()) continue;
+
+            if (!sendCommand({"ROLE"})) continue;
+            std::istringstream role_parts(readResponse());
+            std::string role;
+            role_parts >> role;
+            if (role == "master") return true;
+
+            // Sentinel can briefly return its previous view during promotion.
+            // Verify the role on the data node before accepting the connection.
+            disconnect();
+        }
+        if (attempt < 2) std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
+    }
+    std::cerr << "[RedisClient] Could not discover a writable Redis primary from Sentinel\n";
+    disconnect();
+    return false;
+}
+
+bool RedisClient::connectTo(const std::string& host, int port, int timeout_ms) {
+    if (socket_fd_ >= 0) disconnect();
+
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* addresses = nullptr;
+    const std::string service = std::to_string(port);
+    if (getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses) != 0) return false;
+
+    bool connected = false;
+    for (addrinfo* address = addresses; address && !connected; address = address->ai_next) {
+        int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (fd < 0) continue;
+
+        struct timeval tv{};
+        tv.tv_sec = 2;
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+        const int original_flags = fcntl(fd, F_GETFL, 0);
+        if (original_flags >= 0) fcntl(fd, F_SETFL, original_flags | O_NONBLOCK);
+        int result = ::connect(fd, address->ai_addr, address->ai_addrlen);
+        if (result < 0 && errno == EINPROGRESS) {
+            pollfd pfd{fd, POLLOUT, 0};
+            result = poll(&pfd, 1, timeout_ms);
+            if (result > 0) {
+                int socket_error = 0;
+                socklen_t error_length = sizeof(socket_error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) == 0 && socket_error == 0) {
+                    result = 0;
+                } else {
+                    result = -1;
+                }
+            } else {
+                result = -1;
+            }
+        }
+        if (original_flags >= 0) fcntl(fd, F_SETFL, original_flags);
+        if (result == 0) {
+            socket_fd_ = fd;
+            connected = true;
+        } else {
+            close(fd);
+        }
+    }
+    freeaddrinfo(addresses);
+    return connected;
 }
 
 void RedisClient::disconnect() {
@@ -142,12 +230,19 @@ bool RedisClient::sendCommand(const std::vector<std::string>& args) {
 std::string RedisClient::readLine() {
     std::string line;
     char c;
-    while (read(socket_fd_, &c, 1) == 1) {
+    while (socket_fd_ >= 0) {
+        const ssize_t received = read(socket_fd_, &c, 1);
+        if (received != 1) {
+            disconnect();
+            return "";
+        }
         if (c == '\r') {
             char next_c;
             if (read(socket_fd_, &next_c, 1) == 1 && next_c == '\n') {
                 break;
             }
+            disconnect();
+            return "";
         } else {
             line += c;
         }
@@ -161,7 +256,17 @@ std::string RedisClient::readResponse() {
     if (prefix.empty()) return "";
 
     char type = prefix[0];
-    if (type == '+' || type == '-' || type == ':') {
+    if (type == '-') {
+        const std::string error = prefix.substr(1);
+        // A promoted former primary returns READONLY while its socket can still
+        // look healthy. Drop it so the next request re-queries Sentinel. The
+        // current command is deliberately not replayed because its result may
+        // be uncertain after failover.
+        if (error.rfind("READONLY", 0) == 0 || error.rfind("MASTERDOWN", 0) == 0) {
+            disconnect();
+        }
+        return error;
+    } else if (type == '+' || type == ':') {
         return prefix.substr(1);
     } else if (type == '$') {
         int len = std::stoi(prefix.substr(1));

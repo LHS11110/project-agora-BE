@@ -32,20 +32,10 @@ public class DataSourceConfig {
         String host = dbProperties.getHost();
         int port = dbProperties.getPort();
 
-        boolean reachable = isHostPortReachable(host, port, 1200);
-
-        if (reachable) {
-            log.info("MSSQL 데이터베이스({}:{}) 연결을 설정합니다. DB: {}", host, port, dbProperties.getName());
-            HikariDataSource ds = new HikariDataSource();
-            ds.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
-            ds.setJdbcUrl(String.format("jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=%s;trustServerCertificate=%s;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8",
-                    host, port, dbProperties.getName(), dbProperties.isEncrypt(), dbProperties.isTrustServerCertificate()));
-            ds.setUsername(dbProperties.getUsername());
-            ds.setPassword(dbProperties.getPassword());
-            return ds;
-        }
-
-        if (autoFallback) {
+        // Production must connect through the SQL AG listener and let the JDBC
+        // driver/pool establish or replace connections. A one-time TCP probe can
+        // race with listener failover and incorrectly prevent application startup.
+        if (autoFallback && !isHostPortReachable(host, port, 1200)) {
             log.warn("===============================================================================");
             log.warn("MSSQL 서버({}:{})에 연결할 수 없습니다. 로컬 테스트 및 웹 실험을 위해 H2 인메모리 DB로 자동 전환합니다.", host, port);
             log.warn("실제 MSSQL 서버가 실행되면 별도 설정 변경 없이 해당 호스트({}:{})로 연결됩니다.", host, port);
@@ -58,7 +48,19 @@ public class DataSourceConfig {
             return h2Ds;
         }
 
-        throw new IllegalStateException(String.format("MSSQL 서버(%s:%d)에 연결할 수 없습니다.", host, port));
+        log.info("MSSQL 데이터베이스 listener ({}:{}) 연결을 설정합니다. DB: {}", host, port, dbProperties.getName());
+        HikariDataSource ds = new HikariDataSource();
+        ds.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        ds.setJdbcUrl(String.format("jdbc:sqlserver://%s:%d;databaseName=%s;encrypt=%s;trustServerCertificate=%s;multiSubnetFailover=%s;applicationIntent=ReadWrite;sendStringParametersAsUnicode=true;useUnicode=true;characterEncoding=UTF-8",
+                host, port, dbProperties.getName(), dbProperties.isEncrypt(), dbProperties.isTrustServerCertificate(),
+                dbProperties.isMultiSubnetFailover()));
+        ds.setUsername(dbProperties.getUsername());
+        ds.setPassword(dbProperties.getPassword());
+        // Bound initial connection retries during an AG transition. Hikari evicts
+        // connections that fail validation and obtains replacements from listener.
+        ds.setConnectionTimeout(30_000);
+        ds.setInitializationFailTimeout(30_000);
+        return ds;
     }
 
     private boolean isHostPortReachable(String host, int port, int timeoutMs) {

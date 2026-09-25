@@ -14,6 +14,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.MediaTypeFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -97,6 +99,25 @@ public class CanvasController {
             @PathVariable Integer canvasId,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         return ResponseEntity.ok(canvasService.getCanvasSummary(canvasId, currentUser));
+    }
+
+    @GetMapping("/{canvasId}/image")
+    public ResponseEntity<Resource> getCanvasImage(
+            @PathVariable Integer canvasId,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        canvasService.getCanvasSummary(canvasId, currentUser);
+        Path imagePath = canvasResourceService.getRepresentativeImageFile(canvasId);
+        if (imagePath == null || !Files.isRegularFile(imagePath)) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Resource image = new FileSystemResource(imagePath);
+        MediaType contentType = MediaTypeFactory.getMediaType(image)
+                .orElse(MediaType.APPLICATION_OCTET_STREAM);
+        return ResponseEntity.ok()
+                .contentType(contentType)
+                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
+                .body(image);
     }
 
     @GetMapping("/{canvasId}/settings")

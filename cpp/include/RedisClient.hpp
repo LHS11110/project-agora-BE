@@ -4,6 +4,7 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include <utility>
 #include <nlohmann/json.hpp>
 
 class RedisClient {
@@ -45,8 +46,11 @@ private:
     int port_;
     std::string user_;
     std::string password_;
+    std::string sentinel_master_name_;
+    std::vector<std::pair<std::string, int>> sentinel_seeds_;
     int socket_fd_;
 
+    bool connectTo(const std::string& host, int port, int timeout_ms);
     bool sendCommand(const std::vector<std::string>& args);
     std::string readResponse();
     std::string readLine();

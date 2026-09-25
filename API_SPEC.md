@@ -124,8 +124,10 @@ Spring 오류는 다음 형태입니다.
 | `GET /api/canvases` | 전체 캔버스. 선택 쿼리 `name` |
 | `GET /api/canvases/search?name=이름` | 이름 검색. `name` 생략 가능 |
 | `GET /api/canvases/{canvasId}` | 단건 요약 |
+| `GET /api/canvases/{canvasId}/image` | 대표 이미지 바이너리 (`image/*`) |
 
 목록 응답은 `CanvasSummaryResponse` 배열입니다.
+캔버스 요약의 `image` URL은 대표 이미지 경로를 가리킵니다. 이미지 요청도 Bearer 인증이 필요합니다.
 
 ### 캔버스 설정 조회·변경
 

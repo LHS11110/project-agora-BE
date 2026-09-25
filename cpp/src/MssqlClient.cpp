@@ -8,6 +8,8 @@
 #include <vector>
 #include <condition_variable>
 #include <cstdlib>
+#include <thread>
+#include <chrono>
 
 namespace {
 std::string envOr(const char* name, const std::string& value) {
@@ -58,7 +60,7 @@ public:
             // Authentication runs on the uWebSockets event-loop thread.  Bound
             // DB waits prevent a database/network fault from stalling every
             // WebSocket handshake indefinitely.
-            dbsetlogintime(5);
+            dbsetlogintime(3);
             dbsettime(5);
         }
     }
@@ -67,53 +69,23 @@ public:
         std::unique_lock<std::mutex> lock(mtx_);
         cv_.wait(lock, [this]() { return !pool_.empty() || active_connections_ < max_connections_; });
 
-        if (!pool_.empty()) {
+        while (!pool_.empty()) {
             DBPROCESS* conn = pool_.back();
             pool_.pop_back();
-            return conn;
+            if (!DBDEAD(conn)) return conn;
+            dbclose(conn);
+            --active_connections_;
         }
 
         active_connections_++;
         lock.unlock();
 
-        LOGINREC* login = dblogin();
-        if (!login) {
-            std::cerr << "[MssqlClient] dblogin failed." << std::endl;
-            lock.lock();
-            active_connections_--;
-            lock.unlock();
-            cv_.notify_one();
-            return nullptr;
-        }
-        DBSETLUSER(login, user_.c_str());
-        DBSETLPWD(login, pass_.c_str());
-        DBSETLAPP(login, "AgoraCppServer");
-        // Token nicknames and SQL text are UTF-8. FreeTDS otherwise depends on
-        // freetds.conf/LANG and may interpret Korean bytes as ISO-8859-1.
-        if (DBSETLCHARSET(login, "UTF-8") != SUCCEED) {
-            std::cerr << "[MssqlClient] Failed to configure UTF-8 client charset." << std::endl;
-            dbloginfree(login);
-            lock.lock();
-            active_connections_--;
-            lock.unlock();
-            cv_.notify_one();
-            return nullptr;
-        }
-
-        std::string server_str = host_ + ":" + std::to_string(port_);
-        DBPROCESS* dbproc = dbopen(login, server_str.c_str());
-        dbloginfree(login);
-
-        if (dbproc && dbuse(dbproc, db_.c_str()) != SUCCEED) {
-            std::cerr << "[MssqlClient] Failed to select database '" << db_ << "'." << std::endl;
-            dbclose(dbproc);
-            dbproc = nullptr;
-        }
+        DBPROCESS* dbproc = openConnectionWithRetry();
         if (!dbproc) {
             lock.lock();
             active_connections_--;
             lock.unlock();
-            cv_.notify_one();
+            cv_.notify_all();
         }
         return dbproc;
     }
@@ -121,8 +93,54 @@ public:
     void release(DBPROCESS* conn) {
         if (!conn) return;
         std::lock_guard<std::mutex> lock(mtx_);
+        if (DBDEAD(conn)) {
+            // A failover breaks pooled TCP sessions. Never hand a dead session
+            // to the next request; the next acquisition opens through DB_HOST,
+            // which is configured as the AG listener.
+            dbclose(conn);
+            --active_connections_;
+            cv_.notify_all();
+            return;
+        }
         pool_.push_back(conn);
         cv_.notify_one();
+    }
+
+private:
+    DBPROCESS* openConnectionWithRetry() {
+        const std::string server_str = host_ + ":" + std::to_string(port_);
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            LOGINREC* login = dblogin();
+            if (!login) {
+                std::cerr << "[MssqlClient] dblogin failed." << std::endl;
+                return nullptr;
+            }
+            DBSETLUSER(login, user_.c_str());
+            DBSETLPWD(login, pass_.c_str());
+            DBSETLAPP(login, "AgoraCppServer");
+            // Token nicknames and SQL text are UTF-8. FreeTDS otherwise depends on
+            // freetds.conf/LANG and may interpret Korean bytes as ISO-8859-1.
+            if (DBSETLCHARSET(login, "UTF-8") != SUCCEED) {
+                std::cerr << "[MssqlClient] Failed to configure UTF-8 client charset." << std::endl;
+                dbloginfree(login);
+                return nullptr;
+            }
+
+            DBPROCESS* dbproc = dbopen(login, server_str.c_str());
+            dbloginfree(login);
+            if (dbproc && dbuse(dbproc, db_.c_str()) != SUCCEED) {
+                std::cerr << "[MssqlClient] Failed to select database '" << db_ << "'." << std::endl;
+                dbclose(dbproc);
+                dbproc = nullptr;
+            }
+            if (dbproc) return dbproc;
+
+            if (attempt < 2) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200 * (1 << attempt)));
+            }
+        }
+        std::cerr << "[MssqlClient] Could not connect to the SQL Server listener after bounded retries." << std::endl;
+        return nullptr;
     }
 };
 

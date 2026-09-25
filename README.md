@@ -13,10 +13,12 @@ flowchart LR
     Browser -->|Optional RTC signaling WSS /wss/port/:wsPort/rtc/canvas/:canvasId| Nginx
     Nginx -->|:8080| Spring[Spring Boot]
     Nginx -->|:8002-8099| Cpp[C++ realtime]
-    Spring --> MSSQL[(MS SQL Server)]
+    Spring --> MSSQL[(MS SQL Server AG listener)]
     Spring --> ES[(Elasticsearch)]
+    Spring --> Sentinel[Redis Sentinel]
     Cpp --> MSSQL
-    Cpp --> Redis[(Redis Stack / RedisJSON)]
+    Cpp --> Sentinel
+    Sentinel --> Redis[(Redis Stack primary / RedisJSON)]
     Cpp --> ES
 ```
 
@@ -25,8 +27,8 @@ flowchart LR
 | `spring/` | REST API, JWT, 사용자·캔버스 관리, 서버 할당 | `127.0.0.1:8080` |
 | `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | 기본 `HOST=0.0.0.0`, REST `8000`, WS `8002`; 아래 운영 예시는 loopback 바인드 |
 | `nginx/` | HTTPS/WSS 역방향 프록시 | `:443` |
-| MS SQL Server | 계정, 세션, 캔버스 배정, 서버 메타데이터 | `127.0.0.1:1433` |
-| Redis Stack | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | `127.0.0.1:6379` |
+| MS SQL Server AG listener | 계정, 세션, 캔버스 배정, 서버 메타데이터 | 로컬 `127.0.0.1:1433`; 운영에서는 listener DNS/VIP |
+| Redis Stack HA | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | standalone `127.0.0.1:6379`; HA에서는 Sentinel이 primary 탐색 |
 | Elasticsearch | 캔버스 문서 영구 저장소 | `127.0.0.1:9200` |
 
 ## 캔버스 접속 흐름
@@ -75,6 +77,8 @@ DB_PORT=1433
 DB_NAME=agora_db
 DB_USER=agora_user
 DB_PASSWORD=<mssql-application-password>
+# 로컬 단일 노드는 false, 운영 AG listener는 true를 사용합니다.
+DB_MULTI_SUBNET_FAILOVER=false
 
 JWT_SECRET=<32바이트-이상의-무작위-공유-키>
 ADMIN_PASSWORD=<초기-관리자-비밀번호>
@@ -87,6 +91,10 @@ ES_USER_PASSWORD=<elasticsearch-application-password>
 
 REDIS_USER=agora_user
 REDIS_USER_PASSWORD=<redis-application-password>
+# Sentinel HA 환경에서는 모든 seed를 쉼표로 구분해 지정합니다.
+# 단일 Redis 개발 환경은 비워 두고 DB에 등록된 endpoint를 사용합니다.
+REDIS_SENTINELS=
+REDIS_SENTINEL_MASTER_NAME=agora-master
 
 # 브라우저에서 별도 프론트엔드 도메인으로 API를 호출할 때만 지정합니다.
 # 여러 도메인은 쉼표로 구분합니다. 같은 도메인에서 제공하면 비워 둡니다.
@@ -96,6 +104,12 @@ chmod 600 .env
 ```
 
 `JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다.
+
+운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
+
+Redis Sentinel HA를 사용할 때는 `REDIS_SENTINELS`에 세 Sentinel 주소(운영 구성 기준, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring과 C++은 Sentinel에 현재 primary를 질의하고 Redis 노드의 `ROLE` 응답이 `master`인지 확인한 뒤 ACL 계정으로 접속합니다. 설정된 경우 DB의 `redis_server.redis_ip`/`redis_port`는 연결 대상으로 사용하지 않으므로 이 값이 failover 후 오래되어도 기존 논리 `redis_id` 배정은 유지됩니다. standalone 개발 환경에서만 Sentinel 목록을 비워 DB endpoint에 직접 연결합니다. 모든 앱 호스트에서 Sentinel 포트 `26379`와 Redis 포트 `6379`로 통신할 수 있어야 합니다.
+
+Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 문서를 읽을 때까지 제한된 재탐색을 수행하고, 읽지 못하면 fail-closed로 재시도를 요청합니다. C++도 기본적으로 실패한 Redis 쓰기를 자동 재전송하지 않아 중복 저장을 방지합니다. Redis 복제는 비동기이므로 failover 직전의 확인된 쓰기가 새 primary에 없을 수 있습니다. 캔버스 캐시 키가 사라졌거나 DB의 캐시 상태와 맞지 않으면 Elasticsearch 내용을 자동으로 복구해 진행하지 않고 요청을 실패시킵니다.
 
 MSSQL은 기본적으로 TLS 인증서 검증을 사용합니다. 개발 환경에서 검증 가능한 인증서를 구성할 수 없는 경우에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 일시적으로 지정하고, 운영에서는 설정하지 마세요.
 

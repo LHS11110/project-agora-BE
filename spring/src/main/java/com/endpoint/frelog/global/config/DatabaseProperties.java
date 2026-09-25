@@ -18,6 +18,7 @@ public class DatabaseProperties {
     private String password;
     private boolean encrypt = true;
     private boolean trustServerCertificate;
+    private boolean multiSubnetFailover;
 
     public String getAddress() {
         if (address != null && !address.isBlank()) {
@@ -97,5 +98,13 @@ public class DatabaseProperties {
 
     public void setTrustServerCertificate(boolean trustServerCertificate) {
         this.trustServerCertificate = trustServerCertificate;
+    }
+
+    public boolean isMultiSubnetFailover() {
+        return multiSubnetFailover;
+    }
+
+    public void setMultiSubnetFailover(boolean multiSubnetFailover) {
+        this.multiSubnetFailover = multiSubnetFailover;
     }
 }
