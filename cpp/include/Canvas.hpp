@@ -3,14 +3,15 @@
 #include <string>
 #include <map>
 #include <set>
-#include <memory>
 #include <mutex>
 #include <condition_variable>
 #include <functional>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <utility>
 #include <nlohmann/json.hpp>
-#include "SocketChannel.hpp"
 
 class Canvas {
 public:
@@ -64,13 +65,13 @@ public:
         redis_port = port;
     }
 
-    // Connect user: allocates sockets, adds to active_users set, maps to user_sockets map
-    std::pair<int, int> connectUser(int user_id, int rx_port, int tx_port);
+    // Record one authorized canvas WebSocket connection for this user.
+    void connectUser(int user_id);
 
     // Disconnect one connection for a user. Returns true when the user became inactive.
     bool disconnectUser(int user_id);
 
-    // Disconnect every transport connection for a user.
+    // Disconnect every canvas WebSocket connection for a user.
     void disconnectUserCompletely(int user_id);
 
     // Disconnect all users
@@ -79,16 +80,15 @@ public:
     // WebSocket transport callbacks are supplied by WebSocketServer through CanvasPool.
     void setWebSocketCallbacks(WebSocketCallbacks callbacks);
 
-    // Broadcast message to all active users on their RX sockets and WebSocket sessions.
+    // Broadcast to active canvas WebSocket sessions.
     void broadcast(const nlohmann::json& data, int exclude_user_id = -1);
 
-    // Send message to specific user on every active transport.
+    // Send to the user's active canvas WebSocket sessions.
     void sendToUser(int user_id, const nlohmann::json& data);
 
     bool isUserActive(int user_id);
     std::set<int> getActiveUsers();
 
-    // Data structures explicitly required:
     int canvas_id;
     std::string canvas_name;
     int admin_user_id{0};
@@ -96,7 +96,6 @@ public:
     int redis_port;
     std::set<int> active_users;
     std::map<int, int> user_conn_counts;
-    std::map<int, std::shared_ptr<UserSockets>> user_sockets;
 
     // Serializes settings mutations with the final Redis -> Elasticsearch flush.
     std::mutex settings_mutex;

@@ -9,8 +9,8 @@ Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring
 ```mermaid
 flowchart LR
     Browser[Browser] -->|HTTPS| Nginx
-    Browser -->|WSS /wss/port/:wsPort/canvas/:canvasId| Nginx
-    Browser -->|WSS /wss/port/:wsPort/rtc/canvas/:canvasId| Nginx
+    Browser -->|Canvas WSS /wss/port/:wsPort/canvas/:canvasId| Nginx
+    Browser -->|Optional RTC signaling WSS /wss/port/:wsPort/rtc/canvas/:canvasId| Nginx
     Nginx -->|:8080| Spring[Spring Boot]
     Nginx -->|:8002-8099| Cpp[C++ realtime]
     Spring --> MSSQL[(MS SQL Server)]
@@ -20,10 +20,10 @@ flowchart LR
     Cpp --> ES
 ```
 
-| 구성 요소 | 역할 | 기본 바인딩 |
+| 구성 요소 | 역할 | 기본값·예시 |
 | --- | --- | --- |
 | `spring/` | REST API, JWT, 사용자·캔버스 관리, 서버 할당 | `127.0.0.1:8080` |
-| `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | `127.0.0.1:8000`, `127.0.0.1:8002` |
+| `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | 기본 `HOST=0.0.0.0`, REST `8000`, WS `8002`; 아래 운영 예시는 loopback 바인드 |
 | `nginx/` | HTTPS/WSS 역방향 프록시 | `:443` |
 | MS SQL Server | 계정, 세션, 캔버스 배정, 서버 메타데이터 | `127.0.0.1:1433` |
 | Redis Stack | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | `127.0.0.1:6379` |
@@ -33,11 +33,13 @@ flowchart LR
 
 1. 사용자는 `POST /api/auth/login`으로 일반 JWT를 받습니다.
 2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 heartbeat 및 REST health check를 통과한 C++ 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
-3. 클라이언트는 응답의 `ws_port`를 사용해 `wss://<host>/wss/port/{wsPort}/canvas/{canvasId}?token=...`에 연결합니다.
+3. 클라이언트는 응답의 `ws_port`를 사용해 캔버스 WebSocket에 연결합니다. 이 연결 하나가 캔버스 이벤트의 송신과 수신을 모두 처리합니다.
 4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
 5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
 
-WebRTC 신호 교환은 별도 `wss://<host>/wss/port/{wsPort}/rtc/canvas/{canvasId}?token=...` 연결에서 수행합니다. 캔버스 WebSocket에서 `init_items.rtc_canvas_connection_id`를 받은 뒤 RTC 신호 연결에서 `rtc_join`에 이 값을 담아 피어 목록에 참여합니다. 피어 목록과 신호 대상은 캔버스별로 분리됩니다. `rtc_disconnect`는 피어 등록만 해제합니다. 캔버스 WebSocket이 닫히면 그 연결에 묶인 RTC 피어만 즉시 해제하고 RTC 신호 연결은 유지됩니다. `user_sessions`와 캔버스 활성 상태는 캔버스 WebSocket만 기준으로 갱신됩니다. 피어 등록 해제 이후 실제 WebRTC 연결을 닫는 것은 클라이언트의 책임입니다. C++ 서버는 SDP와 ICE 정보만 지정 피어에게 전달하며 실제 WebRTC 미디어·데이터 패킷을 경유시키지 않습니다. 외부 TURN 사용 여부는 클라이언트의 ICE 설정에 달려 있습니다.
+WebRTC를 사용할 때 클라이언트는 별도의 RTC 신호 WebSocket도 엽니다. 캔버스와 RTC 신호 연결은 같은 `ws_port`를 쓰지만 서로 다른 URL 경로와 독립된 WebSocket 연결입니다. 캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`를 RTC 신호 연결의 `rtc_join` 이벤트에 담아 보내면 해당 캔버스 WebSocket과 RTC 피어가 연결됩니다. 피어 목록과 신호 대상은 캔버스별로 분리됩니다. 캔버스 WebSocket이 닫히면 그 연결에 묶인 RTC 피어만 즉시 해제하며 RTC 신호 WebSocket은 열린 상태로 남습니다. `rtc_disconnect`도 피어 등록만 해제하고 RTC 신호 WebSocket을 닫지 않습니다. 두 경우 모두 실제 WebRTC 연결을 닫는 것은 클라이언트의 책임입니다. `user_sessions`와 캔버스 활성 상태는 캔버스 WebSocket만 기준으로 갱신됩니다. C++ 서버는 SDP와 ICE 정보만 지정 피어에게 전달하며 실제 WebRTC 미디어·데이터 패킷을 경유시키지 않습니다. 외부 TURN 사용 여부는 클라이언트의 ICE 설정에 달려 있습니다.
+
+캔버스 이벤트는 하나의 양방향 WebSocket으로 송수신합니다. 과거 RX/TX TCP 소켓 구현은 제거되었습니다.
 
 C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 15초 이내 heartbeat와 `/health` 응답을 모두 만족한 서버만 재사용합니다.
 
@@ -148,7 +150,7 @@ set +a
 ./cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
 ```
 
-명령 인자는 `BIND_IP ADVERTISE_IP REST_PORT WS_PORT` 순서입니다. 위 구성은 C++ 포트를 로컬에만 열고 Nginx가 외부 HTTPS/WSS 트래픽을 전달합니다. 다중 C++ 인스턴스는 포트를 겹치지 않게 지정합니다. Nginx 예시 설정은 `8002`부터 `8099`의 WS 포트만 전달합니다.
+명령 인자는 `BIND_IP ADVERTISE_IP REST_PORT WS_PORT` 순서입니다. 위 구성은 C++ 포트를 로컬에만 열고 Nginx가 외부 HTTPS/WSS 트래픽을 전달합니다. 바이너리는 `HOST`를 지정하지 않으면 `0.0.0.0`에 바인드하므로, 이 운영 예시처럼 loopback만 허용하려면 인자 또는 `HOST=127.0.0.1`로 지정합니다. 다중 C++ 인스턴스는 포트를 겹치지 않게 지정합니다. Nginx 예시 설정은 `8002`부터 `8099`의 WS 포트만 전달합니다.
 
 채팅은 `items[room_id]`의 `chat_room` 아이템으로 관리됩니다. 메시지는 해당 아이템의 `data` 배열에 방별 순번과 함께 저장되며, `{"type":"chat","room_id":"general","text":"test"}` 이벤트로 보냅니다. `chat_history` 이벤트의 `limit` 또는 `from_sequence`/`to_sequence`로 최근 내역이나 순번 구간을 조회할 수 있습니다. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
 
@@ -222,13 +224,14 @@ sudo systemctl reload nginx
 
 운영에서는 위의 자체 서명 인증서 대신 CA가 발급한 `fullchain.pem`과 `privkey.pem`을 `/etc/nginx/ssl/agora/`에 같은 권한으로 설치하세요. 기본 Nginx 사이트를 해제해야 한다면, 해당 사이트가 사용 중이지 않은지 확인한 뒤 별도로 처리합니다.
 
-WSS 주소는 다음 형식을 사용합니다.
+WSS 주소는 두 용도로 나뉘며, 둘 다 `/access` 응답의 같은 `ws_port`와 `canvas_access_token`을 사용합니다.
 
 ```text
 wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
+wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>
 ```
 
-이전 `/wss/server/...` 형식은 사용하지 않습니다. WSS 포트 범위를 제한해 역방향 프록시가 임의 내부 포트 프록시가 되지 않도록 합니다.
+첫 번째는 캔버스 이벤트 송수신용이고, 두 번째는 WebRTC 피어 등록과 SDP/ICE 신호 교환용입니다. Nginx가 URL 경로에 따라 같은 포트의 C++ WebSocket 핸들러로 전달합니다. 직접 접속할 때는 각각 `/ws/canvas/<canvasId>`와 `/ws/rtc/canvas/<canvasId>` 경로를 사용합니다. 이전 `/wss/server/...` 형식은 사용하지 않습니다. WSS 포트 범위를 제한해 역방향 프록시가 임의 내부 포트 프록시가 되지 않도록 합니다.
 
 ## 주요 API
 

@@ -193,7 +193,6 @@ Spring 오류는 다음 형태입니다.
 | `POST /api/test/cpp-disconnect` | 위 필드 + `user_id`; C++ 연결 종료 프록시 |
 | `GET /api/test/cpp-canvas-count?host=127.0.0.1&port=8000` | 활성 캔버스 수 |
 | `GET /api/test/cpp-active-canvases?host=127.0.0.1&port=8000` | 활성 캔버스 상세 |
-| `GET /api/test/socket-ping?host=127.0.0.1&port=8002&timeoutMs=3000` | TCP 연결·지연시간 점검 |
 
 이 프록시는 DB에 등록되어 있고 최근 heartbeat가 있는 C++ 서버만 대상으로 합니다.
 
@@ -217,19 +216,18 @@ Spring 오류는 다음 형태입니다.
 
 ### 연결
 
-Nginx 경유:
+캔버스 기능은 캔버스 WebSocket 하나가 송신과 수신을 모두 처리합니다. WebRTC 기능을 사용할 때는 RTC 신호 WebSocket을 별도로 추가 연결합니다. 둘은 같은 C++ WebSocket 포트를 사용하지만 URL 경로에 따라 핸들러가 나뉘며, 독립된 두 연결입니다.
 
-```text
-wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
-```
+| 목적 | Nginx 경유 | C++ 직접 연결 |
+|---|---|---|
+| 캔버스 이벤트 송수신 | `wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>` | `ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>` |
+| RTC 신호 교환 | `wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>` | `ws://<cpp-host>:<wsPort>/ws/rtc/canvas/<canvasId>?token=<canvasAccessToken>` |
 
-직접 연결:
+Nginx는 외부 `/wss/port/...` 요청을 같은 `<wsPort>`의 C++ 서버로 전달하면서 경로를 `/ws/...`로 바꿉니다. 두 연결 모두 `/api/canvases/{canvasId}/access`에서 받은 캔버스 접속 토큰을 사용합니다. C++ 직접 연결은 경로의 `<canvasId>`를 씁니다. 경로 ID가 없는 C++ 별칭 `/ws/canvas`와 `/ws/rtc/canvas`는 `?canvas_id=` 또는 `?canvasId=`도 받을 수 있지만, Nginx 경로는 캔버스 ID를 경로에 넣어야 합니다.
 
-```text
-ws://<cpp-host>:<wsPort>/ws/canvas/<canvasId>?token=<canvasAccessToken>
-```
+캔버스 이벤트는 캔버스 WebSocket 하나로 양방향 송수신합니다. 예전 RX/TX TCP 소켓 구현은 제거되었습니다.
 
-`canvas_id`는 경로 또는 쿼리(`canvas_id`/`canvasId`)로 전달할 수 있습니다. 토큰 검증에는 HS256 서명, `canvasId`, `clientIp`, `serverHash`, `nickname`, `tagNumber`, `settingsRevision`이 사용됩니다. 실패 시 handshake가 `400` 또는 `401`로 거부됩니다.
+토큰 검증에는 HS256 서명, `canvasId`, `clientIp`, `serverHash`, `nickname`, `tagNumber`, `settingsRevision`이 사용됩니다. 캔버스 ID가 없거나 잘못되면 `400`, 토큰이 누락되거나 유효하지 않으면 `401`로 upgrade를 거부합니다. 캔버스 WebSocket은 참여 권한 검사와 로드가 성공한 뒤 `init_items`를 보내며, RTC 신호 WebSocket은 연결 직후 `rtc_ready`를 보냅니다. RTC 연결 자체는 Canvas 로드나 SQL `user_sessions` 변경을 하지 않습니다.
 
 연결 성공 후 서버는 다음 초기 이벤트를 보냅니다.
 
@@ -328,9 +326,11 @@ ACL은 저장될 `item` 또는 `data` 객체의 `permission` 필드에서 읽습
 
 ### WebRTC P2P signaling
 
-WebRTC 신호 교환은 캔버스 이벤트용 WebSocket과 별도의 연결을 사용합니다. 같은 캔버스 접속 토큰으로 `wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>` 또는 C++ 서버의 `ws://<cpp-host>:<wsPort>/ws/rtc/canvas/<canvasId>?token=<canvasAccessToken>`에 연결합니다. C++는 JWT를 확인하고 `rtc_ready`를 보냅니다. 이 연결은 캔버스를 로드하거나 SQL `user_sessions`를 변경하지 않습니다. 캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`는 그 WebSocket 연결을 가리키는 문자열입니다. RTC 신호 연결에서 `rtc_join`할 때 이 값을 전달하면 해당 캔버스 WebSocket에 피어가 묶입니다. 연결이 하나뿐이면 생략할 수 있지만, 같은 사용자·캔버스의 WebSocket이 여러 개면 `RTC_CANVAS_CONNECTION_REQUIRED`를 반환합니다. 권한이 확인된 해당 캔버스 WebSocket이 없으면 `RTC_CANVAS_SOCKET_REQUIRED`를 반환합니다.
+RTC 신호 WebSocket은 연결 표의 `/rtc/canvas/<canvasId>` 경로로 엽니다. C++는 JWT를 확인한 뒤 `rtc_ready`를 보냅니다. 이 연결은 캔버스를 로드하거나 SQL `user_sessions`를 변경하지 않으며, 연결만 연다고 피어가 등록되지는 않습니다.
 
-클라이언트가 `{"type":"rtc_join","canvas_connection_id":"<init_items.rtc_canvas_connection_id>"}`을 보내면 서버는 해당 RTC 신호 연결 전용 `self_peer_id`와 현재 피어 목록을 반환하고 다른 RTC 피어에게 `rtc_peer_joined`를 보냅니다. 피어는 사용자 계정이 아니라 RTC 신호 세션 하나를 나타내므로, 같은 계정이 여러 RTC 신호 연결을 열면 각각 별도 피어로 나타납니다. 이미 참여한 상태의 `rtc_join` 또는 `rtc_list`는 현재 목록을 다시 반환합니다.
+캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`는 해당 WebSocket 연결을 가리키는 문자열입니다. 클라이언트는 이를 RTC 신호 WebSocket의 `rtc_join`에 전달해 피어를 특정 캔버스 WebSocket에 묶습니다. 같은 사용자·캔버스의 캔버스 WebSocket 연결이 하나뿐이면 생략할 수 있습니다. 연결이 여러 개인데 생략하면 `RTC_CANVAS_CONNECTION_REQUIRED`, 유효한 연결이 없으면 `RTC_CANVAS_SOCKET_REQUIRED`를 반환합니다.
+
+클라이언트가 `{"type":"rtc_join","canvas_connection_id":"<init_items.rtc_canvas_connection_id>"}`을 보내면 서버는 이 RTC 신호 연결 전용 `self_peer_id`와 같은 캔버스의 현재 피어 목록을 반환하고, 다른 같은 캔버스 피어에게 `rtc_peer_joined`를 보냅니다. 각 피어는 RTC 신호 연결 한 개를 나타냅니다. 이미 참여한 연결에서 `rtc_join` 또는 `rtc_list`를 보내면 현재 목록을 다시 받습니다.
 
 ```json
 {"type":"rtc_ready"}
@@ -339,22 +339,22 @@ WebRTC 신호 교환은 캔버스 이벤트용 WebSocket과 별도의 연결을 
 {"type":"rtc_peer_left","peer_id":"<token>"}
 ```
 
-`rtc_disconnect`는 피어만 목록에서 제거하고 다른 RTC 신호 연결에 `rtc_peer_left`를 보냅니다. RTC 신호 연결과 캔버스 이벤트용 WebSocket은 계속 열려 있습니다. 이후 같은 신호 연결에서 `rtc_join`으로 새 피어 ID를 받아 다시 참여할 수 있습니다. RTC 신호 연결 자체를 닫으면 해당 피어가 제거됩니다. 캔버스 WebSocket이 닫히면 **그 연결에 묶인 RTC 피어만** 즉시 제거하고 해당 RTC 신호 연결에 `{"type":"rtc_disconnected","reason":"canvas_socket_closed"}`를 보냅니다. RTC 신호 WebSocket 자체는 열려 있으므로, 다른 캔버스 WebSocket 연결이 있다면 새 연결 ID로 다시 `rtc_join`할 수 있습니다. 다른 캔버스와 다른 캔버스 WebSocket에 묶인 피어는 유지됩니다. SQL `user_sessions`는 캔버스 WebSocket만 기준으로 갱신합니다. 피어 등록 해제나 `rtc_peer_left` 수신 후 실제 `RTCPeerConnection`과 데이터 채널을 닫는 일은 클라이언트의 책임입니다.
+`rtc_disconnect`는 피어 등록만 해제합니다. RTC 신호 WebSocket은 열린 상태라 같은 연결에서 다시 `rtc_join`할 수 있습니다. 다른 피어는 `rtc_peer_left`를 받으며, 요청한 연결은 `rtc_disconnected`를 받습니다. RTC 신호 WebSocket 자체가 닫히면 그 연결의 피어가 제거됩니다. 캔버스 WebSocket이 닫히면 **그 캔버스 WebSocket에 묶인 피어만** 즉시 제거하고 해당 RTC 신호 WebSocket에 `{"type":"rtc_disconnected","reason":"canvas_socket_closed"}`를 보냅니다. RTC 신호 WebSocket 자체는 닫지 않습니다. 다른 캔버스 WebSocket에 묶인 피어는 유지됩니다. 캔버스 활성 상태와 SQL `user_sessions`는 캔버스 WebSocket만 기준으로 갱신합니다. 피어 해제 알림을 받은 뒤 실제 `RTCPeerConnection`과 데이터 채널을 닫는 것은 클라이언트의 책임입니다.
 
 ```json
 {"type":"rtc_disconnect","reason":"failed"}
 ```
 
-signaling 서버는 브라우저의 실제 ICE 연결 상태를 직접 관찰할 수 없으므로 클라이언트가 WebRTC 세션의 최종 `failed` 상태를 이 이벤트로 알립니다. 응답은 `{"type":"rtc_disconnected"}`입니다. 캔버스 이벤트용 WebSocket에서는 `rtc_*` 요청을 `RTC_SEPARATE_CHANNEL_REQUIRED`로 거절합니다.
+signaling 서버는 브라우저의 실제 ICE 연결 상태를 직접 관찰하지 않습니다. 클라이언트가 연결 종료를 알릴 때 이 이벤트를 사용합니다. 응답은 `{"type":"rtc_disconnected"}`입니다. 캔버스 이벤트용 WebSocket에서는 `rtc_*` 요청을 `RTC_SEPARATE_CHANNEL_REQUIRED`로 거절합니다.
 
-WebRTC offer/answer와 ICE candidate만 `rtc_signal` 이벤트로 교환합니다. 피어 목록과 수신 대상은 캔버스 ID별로 분리되며, 다른 캔버스의 피어 ID를 대상으로 지정해도 `RTC_PEER_NOT_FOUND`로 거절합니다. 서버는 발신 피어 ID를 직접 붙이고 같은 캔버스에서 접속·권한이 유효한 지정 피어 한 곳에만 전달하며 Redis에 기록하지 않습니다. offer/answer는 `type`과 `sdp`, ICE candidate는 표준 candidate 필드만 전달합니다. `rtc_join` 전의 신호는 `RTC_NOT_JOINED`로 거절합니다.
+RTC 신호 WebSocket은 `rtc_join`, `rtc_list`, `rtc_disconnect`, `rtc_signal` 이벤트를 처리합니다. `rtc_signal`은 WebRTC offer/answer와 ICE candidate를 전달합니다. 피어 목록과 대상은 캔버스 ID별로 분리되며, 다른 캔버스의 피어를 지정하면 `RTC_PEER_NOT_FOUND`를 반환합니다. 서버는 발신 피어 정보를 붙여 같은 캔버스의 활성 피어 한 곳에만 전달하며 Redis나 Elasticsearch에 저장하지 않습니다. offer/answer는 `type`과 `sdp`, candidate는 허용된 표준 필드만 전달합니다. `rtc_join` 전의 신호는 `RTC_NOT_JOINED`로 거절합니다.
 
 ```json
 {"type":"rtc_signal","peer_id":"<target-peer-token>","action":"offer","description":{"type":"offer","sdp":"..."}}
 {"type":"rtc_signal","peer_id":"<target-peer-token>","action":"candidate","candidate":{"candidate":"...","sdpMid":"0","sdpMLineIndex":0}}
 ```
 
-실제 WebRTC 미디어와 데이터 채널 패킷은 C++ 서버를 경유하지 않습니다. C++ 서버는 SDP/ICE 신호만 전달하며 미디어·데이터 패킷을 전달·저장·해석하지 않습니다. 실제 경로는 클라이언트의 ICE 설정과 네트워크가 결정합니다. 클라이언트가 외부 TURN 서버를 설정하면 패킷이 해당 TURN 서버를 경유할 수 있습니다. 중계 없는 직접 연결만 허용하려면 클라이언트에서 TURN 릴레이를 사용하지 않아야 하며, 이 경우 일부 네트워크에서는 연결이 실패할 수 있습니다. RTC 신호 연결은 SDP/ICE를 위해 별도 WebSocket을 사용합니다. 이 신호 연결 자체의 수명은 캔버스 WebSocket과 독립적이지만 피어 등록과 신호 전달에는 활성 캔버스 WebSocket이 필요합니다. 신호 연결은 JSON 이벤트만 받으며 원문·바이너리 메시지를 캔버스 이벤트용 WebSocket에 방송하지 않습니다. 신호 연결의 메시지 제한은 초당 100개, payload 최대 256 KiB입니다.
+실제 WebRTC 미디어와 데이터 채널 패킷은 C++ 서버를 경유하지 않습니다. C++는 SDP/ICE 신호만 전달하고 실제 패킷을 중계·저장·해석하지 않습니다. 실제 경로는 클라이언트 ICE 설정과 네트워크에 달려 있습니다. 클라이언트에서 TURN을 설정하면 별도 TURN 서버를 경유할 수 있습니다. 중계 없는 직접 연결만 허용하려면 TURN을 설정하지 않아야 하며, 일부 네트워크에서는 연결이 실패할 수 있습니다. RTC 신호 WebSocket은 JSON 이벤트만 받으며, 최대 메시지 크기는 256 KiB입니다. 연결당 초당 100개를 초과하는 메시지는 처리되지 않습니다.
 
 #### 연결 상태 확인
 
@@ -435,7 +435,7 @@ WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spr
 | `S` | 해당 캔버스에 연결된 캔버스 이벤트용 WebSocket 수 (한 사용자에게 여러 소켓이 있을 수 있음) |
 | `S_sig` | 해당 캔버스에 열린 RTC 신호 WebSocket 수 (피어 등록 전·해제 후 연결도 포함) |
 | `S_rtc` | 해당 캔버스에 등록된 RTC 신호 피어 수 |
-| `K_rtc` | 캔버스 WebSocket 하나가 종료될 때 해제할 해당 사용자의 RTC 피어 수 |
+| `K_rtc` | 캔버스 WebSocket 하나에 묶여 있어 그 연결 종료 시 해제할 RTC 피어 수 |
 | `R` | 이벤트를 받을 권한이 있는 소켓 수 (`R ≤ S`) |
 | `U` | 해당 캔버스의 활성 사용자 수 |
 | `P` | 캔버스 `people` 참여자 수 |

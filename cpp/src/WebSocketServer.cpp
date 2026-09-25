@@ -2127,7 +2127,7 @@ void WebSocketServer::runServer() {
                     settings_unchanged = settings_unchanged && !canvas->unloading
                         && canvas->getSettingsRevision() == token_revision;
                     if (settings_unchanged) {
-                        canvas->connectUser(user_id, 0, 0);
+                        canvas->connectUser(user_id);
                         ws->getUserData()->groups = std::move(prepared_groups);
                         ws->getUserData()->is_admin = prepared_is_admin;
                         bool has_existing_authorized_socket = false;

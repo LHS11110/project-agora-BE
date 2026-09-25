@@ -7,10 +7,6 @@ import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -46,16 +42,6 @@ public class TestPageController {
     private Optional<ServerInfo> resolveRestServer(String host, int port) {
         return serverInfoRepository.findByServerIpAndServerPort(host, Integer.toString(port))
                 .filter(this::isFresh);
-    }
-
-    private Optional<ServerInfo> resolveSocketServer(String host, int port) {
-        String requestedPort = Integer.toString(port);
-        return serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(
-                        LocalDateTime.now(ZoneOffset.UTC).minus(SERVER_HEARTBEAT_MAX_AGE))
-                .stream()
-                .filter(server -> server.getServerIp().equals(host)
-                        && (server.getServerPort().equals(requestedPort) || server.getWsPort().equals(requestedPort)))
-                .findFirst();
     }
 
     private ResponseEntity<?> invalidTarget() {
@@ -214,47 +200,4 @@ public class TestPageController {
         }
     }
 
-    /**
-     * Helper endpoint for JSP browser to test raw TCP connection to C++ allocated RX/TX sockets.
-     */
-    @GetMapping("/api/test/socket-ping")
-    @ResponseBody
-    public ResponseEntity<?> testSocketConnection(
-            @RequestParam(defaultValue = "127.0.0.1") String host,
-            @RequestParam int port,
-            @RequestParam(defaultValue = "3000") int timeoutMs
-    ) {
-        ServerInfo target = resolveSocketServer(host, port).orElse(null);
-        if (target == null) return invalidTarget();
-        host = target.getServerIp();
-        timeoutMs = Math.max(100, Math.min(timeoutMs, 5000));
-        Map<String, Object> result = new HashMap<>();
-        result.put("host", host);
-        result.put("port", port);
-
-        long start = System.currentTimeMillis();
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress(host, port), timeoutMs);
-            socket.setSoTimeout(timeoutMs);
-
-            result.put("connected", true);
-            result.put("latencyMs", System.currentTimeMillis() - start);
-
-            // Read initial message if available (e.g. RX port sends init_items JSON)
-            try {
-                BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                String line = reader.readLine();
-                result.put("receivedMessage", line != null ? line : "(no initial message, socket ready)");
-            } catch (Exception e) {
-                result.put("receivedMessage", "(socket open, ready for communication)");
-            }
-
-            return ResponseEntity.ok(result);
-        } catch (Exception e) {
-            result.put("connected", false);
-            result.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
-            result.put("latencyMs", System.currentTimeMillis() - start);
-            return ResponseEntity.badRequest().body(result);
-        }
-    }
 }
