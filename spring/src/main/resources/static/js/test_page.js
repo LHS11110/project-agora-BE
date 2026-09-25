@@ -212,7 +212,7 @@ async function listCppServers() {
                 <tr>
                     <td>${s.serverId}</td>
                     <td>${s.serverIp}:${s.wsPort}</td>
-                    <td>${s.currentLoad}</td>
+                    <td>${s.currentLoad ?? '조회 실패'}</td>
                     <td><button class="btn btn-outline" style="padding:4px 8px; font-size:0.75rem;" onclick="apiCall('/api/servers/${s.serverId}', 'DELETE').then(listCppServers)">삭제</button></td>
                 </tr>
             `;

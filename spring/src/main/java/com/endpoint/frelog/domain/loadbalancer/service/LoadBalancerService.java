@@ -1,5 +1,6 @@
 package com.endpoint.frelog.domain.loadbalancer.service;
 
+import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
@@ -12,7 +13,6 @@ import com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
-import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import com.endpoint.frelog.global.config.DatabaseProperties;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
@@ -41,19 +41,19 @@ public class LoadBalancerService {
     private final ServerInfoRepository serverInfoRepository;
     private final RedisInfoRepository redisInfoRepository;
     private final CanvasInfoRepository canvasInfoRepository;
-    private final UserSessionRepository userSessionRepository;
+    private final CppServerClient cppServerClient;
     private final DatabaseProperties databaseProperties;
 
     public LoadBalancerService(
             ServerInfoRepository serverInfoRepository,
             RedisInfoRepository redisInfoRepository,
             CanvasInfoRepository canvasInfoRepository,
-            UserSessionRepository userSessionRepository,
+            CppServerClient cppServerClient,
             DatabaseProperties databaseProperties) {
         this.serverInfoRepository = serverInfoRepository;
         this.redisInfoRepository = redisInfoRepository;
         this.canvasInfoRepository = canvasInfoRepository;
-        this.userSessionRepository = userSessionRepository;
+        this.cppServerClient = cppServerClient;
         this.databaseProperties = databaseProperties;
     }
 
@@ -64,7 +64,10 @@ public class LoadBalancerService {
     @Transactional(readOnly = true)
     public AllocateServerResponse allocateServer() {
         LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15);
-        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff);
+        List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff)
+                .stream()
+                .filter(s -> cppServerClient.isHealthy(s.getServerIp(), s.getServerPort()))
+                .toList();
 
         if (servers.isEmpty()) {
             throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "활성화된 C++ 서버가 없습니다.");
@@ -89,6 +92,16 @@ public class LoadBalancerService {
 
         int load1 = getActiveCanvasCount(s1);
         int load2 = getActiveCanvasCount(s2);
+
+        if (load1 == Integer.MAX_VALUE && load2 == Integer.MAX_VALUE) {
+            throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "C++ 서버의 실시간 부하를 확인할 수 없습니다.");
+        }
+        if (load1 == Integer.MAX_VALUE) {
+            return AllocateServerResponse.of(s2.getServerIp(), s2.getServerPort(), s2.getWsPort());
+        }
+        if (load2 == Integer.MAX_VALUE) {
+            return AllocateServerResponse.of(s1.getServerIp(), s1.getServerPort(), s1.getWsPort());
+        }
 
         ServerInfo chosen = (load1 <= load2) ? s1 : s2;
         log.info("C++ Server 로드밸런싱 (P2C): [{}:{}] (부하 {}) vs [{}:{}] (부하 {}) -> 선택: [{}:{}]",
@@ -164,7 +177,10 @@ public class LoadBalancerService {
     @Transactional(readOnly = true)
     public List<ServerResponse> listServers() {
         return serverInfoRepository.findAll().stream()
-                .map(s -> ServerResponse.from(s, getActiveCanvasCount(s)))
+                .map(s -> {
+                    int load = getActiveCanvasCount(s);
+                    return ServerResponse.from(s, load == Integer.MAX_VALUE ? null : load);
+                })
                 .toList();
     }
 
@@ -172,11 +188,12 @@ public class LoadBalancerService {
     public ServerResponse getServerById(Long serverId) {
         ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
-        return ServerResponse.from(server, getActiveCanvasCount(server));
+        int load = getActiveCanvasCount(server);
+        return ServerResponse.from(server, load == Integer.MAX_VALUE ? null : load);
     }
 
     private int getActiveCanvasCount(ServerInfo server) {
-        return Math.toIntExact(userSessionRepository.countActiveCanvasesByCppServerId(server.getServerId()));
+        return cppServerClient.getCanvasCountFromServer(server.getServerIp(), server.getServerPort());
     }
 
     @Transactional

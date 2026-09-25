@@ -32,7 +32,7 @@ flowchart LR
 ## 캔버스 접속 흐름
 
 1. 사용자는 `POST /api/auth/login`으로 일반 JWT를 받습니다.
-2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 heartbeat 및 REST health check를 통과한 C++ 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
+2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 DB heartbeat 및 C++ `GET /api/canvas/count` 확인을 통과한 서버 중 실시간 활성 캔버스 수가 적은 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
 3. 클라이언트는 응답의 `ws_port`를 사용해 캔버스 WebSocket에 연결합니다. 이 연결 하나가 캔버스 이벤트의 송신과 수신을 모두 처리합니다.
 4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
 5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
@@ -41,7 +41,7 @@ WebRTC를 사용할 때 클라이언트는 별도의 RTC 신호 WebSocket도 엽
 
 캔버스 이벤트는 하나의 양방향 WebSocket으로 송수신합니다. 과거 RX/TX TCP 소켓 구현은 제거되었습니다.
 
-C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 DB의 최근 15초 heartbeat와 활성화 상태로 서버를 선택하고, 할당 부하는 `user_sessions`에 기록된 활성 캔버스 수로 계산합니다. Spring에서 C++ HTTP API를 호출하지 않습니다.
+C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 최근 15초 heartbeat를 후보 필터로 사용하고, 서버의 실시간 활성 캔버스 수는 C++ `GET /api/canvas/count`에서 조회해 할당 부하로 사용합니다. 다른 C++ 제어 API는 Spring에서 호출하지 않습니다.
 
 ## 사전 요구 사항
 
@@ -278,7 +278,7 @@ wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>
 
 비밀번호가 설정된 캔버스의 접속 요청 본문에는 `{"password":"<캔버스 비밀번호>"}`를 포함합니다. 비밀번호가 없으면 본문을 생략할 수 있습니다.
 
-Spring은 C++ 서버의 HTTP 제어 API를 호출하지 않습니다. 서버 heartbeat와 할당 부하는 DB에서 읽고, `/api/test/cpp-active-canvases`는 DB의 `user_sessions`를 읽습니다. 활성 세션이 있는 사용자의 탈퇴나 활성 캔버스 삭제 요청은 `409` 오류로 거부되며, 기존 WebSocket 종료는 클라이언트가 처리합니다.
+Spring은 실시간 서버 부하 확인을 위해 C++ `GET /api/canvas/count`를 호출합니다. `/api/test/cpp-active-canvases`는 DB의 `user_sessions`를 읽습니다. 활성 세션이 있는 사용자의 탈퇴나 활성 캔버스 삭제 요청은 `409` 오류로 거부되며, 기존 WebSocket 종료는 클라이언트가 처리합니다.
 
 ## 테스트와 점검
 
