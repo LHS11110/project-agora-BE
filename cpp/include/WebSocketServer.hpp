@@ -36,6 +36,7 @@ struct PerSocketData {
     bool permission_update_pending{false};
     std::string rtc_peer_id;
     std::uint64_t rtc_canvas_connection_id{0};
+    std::string rtc_canvas_connection_hash;
     bool closing{false};
     bool rtc_signaling_only{false};
 };
@@ -80,7 +81,6 @@ private:
     void endBlockingWorker();
     void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
     void refreshUserSessionGeneration(int canvas_id, int user_id, std::uint64_t session_generation);
-    Socket* findAuthorizedCanvasSocket(int canvas_id, int user_id) const;
     Socket* findBoundCanvasSocket(const PerSocketData* rtc_data) const;
     void handleCanvasSettings(Socket* ws, const nlohmann::json& event);
     void handleChatEvent(Socket* ws, nlohmann::json event);

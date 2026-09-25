@@ -83,6 +83,9 @@ public class SecurityConfig {
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
+                        // The testbed uses this read-only proxy to show active status on each canvas.
+                        // Keep the other test/admin proxy operations restricted below.
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/test/cpp-active-canvases").authenticated()
                         .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**", "/api/database/**", "/api/test/**", "/api/internal/**").hasRole("ADMIN")
                         .requestMatchers("/api/users/**").authenticated()
                         .requestMatchers("/api/canvases/**").authenticated()

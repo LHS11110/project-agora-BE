@@ -4,6 +4,8 @@
 #include <ctime>
 #include <chrono>
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <httplib.h>
 #include <iostream>
 #include <limits>
@@ -14,6 +16,10 @@
 #include <random>
 #include <sstream>
 #include <vector>
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
 
 static bool isLocalProxyPeer(std::string_view ip) {
     return ip == "127.0.0.1" || ip == "::1" || ip == "::ffff:127.0.0.1";
@@ -48,6 +54,39 @@ static std::uint64_t createSocketConnectionId() {
     std::uint64_t id = sequence.fetch_add(1, std::memory_order_relaxed);
     if (id == 0) id = sequence.fetch_add(1, std::memory_order_relaxed);
     return id;
+}
+
+static std::string bytesToHex(const unsigned char* bytes, std::size_t size) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(size * 2);
+    for (std::size_t i = 0; i < size; ++i) {
+        output.push_back(digits[bytes[i] >> 4]);
+        output.push_back(digits[bytes[i] & 0x0f]);
+    }
+    return output;
+}
+
+static std::optional<std::string> createCanvasConnectionHash(std::uint64_t connection_id) {
+    std::array<unsigned char, 32> key{};
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    if (RAND_bytes(key.data(), static_cast<int>(key.size())) != 1) {
+        OPENSSL_cleanse(key.data(), key.size());
+        return std::nullopt;
+    }
+
+    const std::string message = "agora-canvas-websocket:" + std::to_string(connection_id);
+    unsigned int digest_size = 0;
+    const unsigned char* result = HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
+            reinterpret_cast<const unsigned char*>(message.data()), message.size(), digest.data(), &digest_size);
+    OPENSSL_cleanse(key.data(), key.size());
+    if (!result || digest_size != 32) return std::nullopt;
+    return bytesToHex(digest.data(), digest_size);
+}
+
+static bool secureHashEquals(const std::string& expected, const std::string& supplied) {
+    return expected.size() == 64 && supplied.size() == expected.size()
+        && CRYPTO_memcmp(expected.data(), supplied.data(), expected.size()) == 0;
 }
 
 static std::string jsonPathKey(const nlohmann::json& value) {
@@ -792,13 +831,6 @@ void WebSocketServer::refreshUserSessionGeneration(int canvas_id, int user_id,
     }
 }
 
-WebSocketServer::Socket* WebSocketServer::findAuthorizedCanvasSocket(int canvas_id, int user_id) const {
-    const auto canvas = sockets_by_canvas_user_.find(canvas_id);
-    if (canvas == sockets_by_canvas_user_.end()) return nullptr;
-    const auto user = canvas->second.find(user_id);
-    return user == canvas->second.end() || user->second.empty() ? nullptr : *user->second.begin();
-}
-
 WebSocketServer::Socket* WebSocketServer::findBoundCanvasSocket(const PerSocketData* rtc_data) const {
     if (!rtc_data || rtc_data->rtc_canvas_connection_id == 0) return nullptr;
     Socket* canvas_ws = findSocketByConnectionId(rtc_data->rtc_canvas_connection_id);
@@ -806,7 +838,9 @@ WebSocketServer::Socket* WebSocketServer::findBoundCanvasSocket(const PerSocketD
     const auto* canvas_data = canvas_ws->getUserData();
     return !canvas_data->rtc_signaling_only && canvas_data->canvas_id == rtc_data->canvas_id
         && canvas_data->user_id == rtc_data->user_id && canvas_data->access_authorized
-        && !canvas_data->closing ? canvas_ws : nullptr;
+        && !canvas_data->closing
+        && secureHashEquals(canvas_data->rtc_canvas_connection_hash, rtc_data->rtc_canvas_connection_hash)
+        ? canvas_ws : nullptr;
 }
 
 void WebSocketServer::start() {
@@ -1059,6 +1093,7 @@ void WebSocketServer::detachRtcPeer(Socket* ws) {
         }
         data->rtc_canvas_connection_id = 0;
     }
+    data->rtc_canvas_connection_hash.clear();
     if (data->rtc_peer_id.empty()) return;
 
     const std::string peer_id = data->rtc_peer_id;
@@ -1141,44 +1176,69 @@ bool WebSocketServer::sendRtcPeerList(Socket* ws) {
 void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     auto* data = ws->getUserData();
     if (!data->rtc_signaling_only || !data->access_authorized || data->closing) return;
+    if (!event.contains("canvas_connection_id")) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_REQUIRED\"}", uWS::OpCode::TEXT);
+        return;
+    }
+    if (!event.contains("canvas_connection_hash")) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_REQUIRED\"}", uWS::OpCode::TEXT);
+        return;
+    }
+    if (!event["canvas_connection_id"].is_string()) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
+        return;
+    }
+    if (!event["canvas_connection_hash"].is_string()) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
+        return;
+    }
+
+    const std::string requested_hash = event["canvas_connection_hash"].get<std::string>();
+    if (requested_hash.size() != 64) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
+        return;
+    }
+
+    const std::string requested_id = event["canvas_connection_id"].get<std::string>();
+    std::uint64_t id = 0;
+    const auto parsed_id = std::from_chars(requested_id.data(), requested_id.data() + requested_id.size(), id);
+    if (requested_id.empty() || parsed_id.ec != std::errc{} || parsed_id.ptr != requested_id.data() + requested_id.size()
+        || id == 0) {
+        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
+        return;
+    }
+
     Socket* canvas_ws = nullptr;
-    if (!data->rtc_peer_id.empty()) {
-        canvas_ws = findBoundCanvasSocket(data);
-    } else if (event.contains("canvas_connection_id")) {
-        if (!event["canvas_connection_id"].is_string()) {
-            ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
-            return;
-        }
-        const std::string requested = event["canvas_connection_id"].get<std::string>();
-        std::uint64_t id = 0;
-        try {
-            std::size_t consumed = 0;
-            id = std::stoull(requested, &consumed, 10);
-            if (consumed != requested.size() || requested.empty()) id = 0;
-        } catch (...) { id = 0; }
-        Socket* candidate = findSocketByConnectionId(id);
-        if (candidate) {
-            const auto* candidate_data = candidate->getUserData();
-            if (!candidate_data->rtc_signaling_only && candidate_data->canvas_id == data->canvas_id
-                && candidate_data->user_id == data->user_id && candidate_data->access_authorized
-                && !candidate_data->closing) canvas_ws = candidate;
-        }
-    } else {
-        const auto canvas = sockets_by_canvas_user_.find(data->canvas_id);
-        if (canvas != sockets_by_canvas_user_.end()) {
-            const auto user = canvas->second.find(data->user_id);
-            if (user != canvas->second.end() && user->second.size() == 1) canvas_ws = *user->second.begin();
-            else if (user != canvas->second.end() && user->second.size() > 1) {
-                ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_REQUIRED\"}", uWS::OpCode::TEXT);
+    Socket* candidate = findSocketByConnectionId(id);
+    if (candidate) {
+        const auto* candidate_data = candidate->getUserData();
+        if (!candidate_data->rtc_signaling_only && candidate_data->canvas_id == data->canvas_id
+            && candidate_data->user_id == data->user_id && candidate_data->access_authorized
+            && !candidate_data->closing) {
+            if (!secureHashEquals(candidate_data->rtc_canvas_connection_hash, requested_hash)) {
+                ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
                 return;
             }
+            canvas_ws = candidate;
         }
     }
     if (!canvas_ws) {
-        detachRtcPeer(ws);
+        if (data->rtc_peer_id.empty()) detachRtcPeer(ws);
         ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}",
                  uWS::OpCode::TEXT);
         return;
+    }
+    if (!data->rtc_peer_id.empty()) {
+        Socket* existing_canvas_ws = findBoundCanvasSocket(data);
+        if (!existing_canvas_ws) {
+            detachRtcPeer(ws);
+            ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}", uWS::OpCode::TEXT);
+            return;
+        }
+        if (existing_canvas_ws != canvas_ws) {
+            ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_MISMATCH\"}", uWS::OpCode::TEXT);
+            return;
+        }
     }
     data->groups = canvas_ws->getUserData()->groups;
     data->is_admin = canvas_ws->getUserData()->is_admin;
@@ -1188,6 +1248,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     }
     data->rtc_peer_id = createRtcPeerId();
     data->rtc_canvas_connection_id = canvas_ws->getUserData()->connection_id;
+    data->rtc_canvas_connection_hash = canvas_ws->getUserData()->rtc_canvas_connection_hash;
     rtc_sockets_by_canvas_connection_[data->rtc_canvas_connection_id].insert(ws);
     sockets_by_canvas_peer_[data->canvas_id][data->rtc_peer_id] = ws;
     if (!sendRtcPeerList(ws)) {
@@ -1930,8 +1991,9 @@ void WebSocketServer::runServer() {
                                     endBlockingWorker();
                                     return;
                                 }
+                                const std::uint64_t connection_id = createSocketConnectionId();
                                 PerSocketData socket_data{
-                                    createSocketConnectionId(),
+                                    connection_id,
                                     canvas_id,
                                     authenticated_user->user_id,
                                     authenticated_user->tag_number,
@@ -1948,6 +2010,16 @@ void WebSocketServer::runServer() {
                                     {}
                                 };
                                 socket_data.rtc_signaling_only = rtc_only;
+                                if (!rtc_only) {
+                                    const auto connection_hash = createCanvasConnectionHash(connection_id);
+                                    if (!connection_hash) {
+                                        response->writeStatus("503 Service Unavailable")
+                                            ->end("Canvas connection proof could not be created");
+                                        endBlockingWorker();
+                                        return;
+                                    }
+                                    socket_data.rtc_canvas_connection_hash = *connection_hash;
+                                }
                                 response->template upgrade<PerSocketData>(
                                     std::move(socket_data), websocket_key, websocket_protocol,
                                     websocket_extensions, websocket_context);
@@ -1978,6 +2050,7 @@ void WebSocketServer::runServer() {
             const int canvas_id = data->canvas_id;
             const int user_id = data->user_id;
             const long long token_revision = data->settings_revision;
+            const std::string connection_hash = data->rtc_canvas_connection_hash;
             if (data->rtc_signaling_only) {
                 // JWT was checked at upgrade. RTC signaling never allocates a
                 // Canvas or reserves a user session; rtc_join requires a live
@@ -1994,7 +2067,7 @@ void WebSocketServer::runServer() {
                 return;
             }
             try {
-                std::thread([this, connection_id, canvas_id, user_id, token_revision]() {
+                std::thread([this, connection_id, canvas_id, user_id, token_revision, connection_hash]() {
                 pthread_setname_np(pthread_self(), "agora-connect");
                 std::shared_ptr<Canvas> canvas;
                 nlohmann::json doc;
@@ -2049,6 +2122,7 @@ void WebSocketServer::runServer() {
                                         nlohmann::json init_msg = {
                                             {"type", "init_items"}, {"canvas_id", canvas_id},
                                             {"rtc_canvas_connection_id", std::to_string(connection_id)},
+                                            {"rtc_canvas_connection_hash", connection_hash},
                                             {"server_protocol", "uWebSockets"}, {"status", "connected"},
                                             {"items", filterItemsForUser(doc, user_id)}
                                         };

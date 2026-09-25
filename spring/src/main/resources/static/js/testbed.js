@@ -13,6 +13,10 @@ let state = {
     wsPort: '',
     items: Object.create(null),
     itemGroups: [],
+    chatRooms: [],
+    currentChatRoom: '',
+    chatHistoryRequestId: '',
+    chatHistoryRequestSequence: 0,
     chatSeen: new Set(),
     pendingItemChange: null,
     settingsRevision: null,
@@ -42,6 +46,9 @@ const el = {
     connectionText: document.getElementById('connectionText'),
     
     chatContainer: document.getElementById('chatContainer'),
+    chatRoomSelect: document.getElementById('chatRoomSelect'),
+    chatRoomStatus: document.getElementById('chatRoomStatus'),
+    createChatRoomBtn: document.getElementById('createChatRoomBtn'),
     chatInput: document.getElementById('chatInput'),
     sendBtn: document.getElementById('sendBtn'),
     itemStatus: document.getElementById('itemStatus'),
@@ -330,6 +337,7 @@ function setItemEditorEnabled(enabled) {
     for (const field of [el.itemIdInput, el.itemJsonInput, el.newItemBtn, el.saveItemBtn, el.deleteItemBtn]) {
         field.disabled = !enabled;
     }
+    el.createChatRoomBtn.disabled = !enabled || !state.itemGroups.includes('admin-group');
 }
 
 function renderCanvasItems() {
@@ -344,13 +352,16 @@ function renderCanvasItems() {
         button.type = 'button';
         button.className = 'btn-outline';
         button.textContent = id;
-        button.onclick = () => {
-            el.itemIdInput.value = id;
-            el.itemJsonInput.value = JSON.stringify(state.items[id], null, 2);
-            el.itemStatus.textContent = `아이템 ${id} 편집 중`;
-        };
+        button.onclick = () => showCanvasItem(id);
         el.canvasItemsList.appendChild(button);
     }
+}
+
+function showCanvasItem(id) {
+    if (!Object.hasOwn(state.items, id)) return;
+    el.itemIdInput.value = id;
+    el.itemJsonInput.value = JSON.stringify(state.items[id], null, 2);
+    el.itemStatus.textContent = `아이템 ${id} 표시 중`;
 }
 
 function newCanvasItem() {
@@ -397,6 +408,7 @@ function deleteCanvasItem() {
     trackItemChange(id, state.items[id]);
     delete state.items[id];
     renderCanvasItems();
+    if (state.chatRooms.some(room => room.id === id)) syncChatRoomSelector();
     el.itemIdInput.value = '';
     el.itemJsonInput.value = '';
     el.itemStatus.textContent = `${id} 삭제 이벤트 전송됨. 서버 응답 대기 중...`;
@@ -421,6 +433,7 @@ function applyCanvasItemEvent(data) {
     const id = data.item_id ?? data['item-id'];
     if (id == null) return false;
     const key = String(id);
+    const wasChatRoom = state.items[key]?.type === 'chat_room';
     if (data.type === 'item_delete' || data.type === 'delete_item') {
         delete state.items[key];
     } else if (data.item && typeof data.item === 'object' && !Array.isArray(data.item)) {
@@ -431,6 +444,7 @@ function applyCanvasItemEvent(data) {
         return false;
     }
     renderCanvasItems();
+    if (wasChatRoom || state.items[key]?.type === 'chat_room') syncChatRoomSelector();
     el.itemStatus.textContent = `${key} 변경 이벤트 수신됨`;
     return true;
 }
@@ -488,8 +502,9 @@ async function connectActiveCanvas() {
             el.connectBtn.innerText = '접속 종료';
             el.connectBtn.classList.replace('btn-primary', 'btn-danger');
             
-            el.chatInput.disabled = false;
-            el.sendBtn.disabled = false;
+            el.chatRoomSelect.disabled = true;
+            el.chatInput.disabled = true;
+            el.sendBtn.disabled = true;
             el.itemStatus.textContent = '초기 아이템 목록을 기다리는 중...';
             
             addSystemMessage('🟢 WebSocket 연결이 성공적으로 수립되었습니다. 실시간 브로드캐스팅이 가능합니다.');
@@ -517,30 +532,39 @@ async function connectActiveCanvas() {
                     state.itemGroups = Array.isArray(data.groups) ? data.groups : [];
                     renderCanvasItems();
                     setItemEditorEnabled(true);
-                    el.itemStatus.textContent = `아이템 ${Object.keys(state.items).length}개 로드됨`;
-                    addSystemMessage(`초기 아이템 ${Object.keys(state.items).length}개를 받았습니다.`);
-                    socket.send(JSON.stringify({ type: 'canvas_settings_get' }));
-                    if (state.items.general?.type === 'chat_room') {
-                        socket.send(JSON.stringify({ type: 'chat_history', room_id: 'general', limit: 50 }));
+                    const itemIds = Object.keys(state.items).sort();
+                    if (itemIds.length > 0) {
+                        showCanvasItem(itemIds[0]);
+                        el.itemStatus.textContent = `초기 아이템 ${itemIds.length}개 로드됨 · ${itemIds[0]} 표시 중`;
+                    } else {
+                        el.itemStatus.textContent = '초기 아이템이 없습니다.';
                     }
+                    syncChatRoomSelector(true);
+                    addSystemMessage(`초기 아이템 ${itemIds.length}개를 받았습니다.`);
+                    socket.send(JSON.stringify({ type: 'canvas_settings_get' }));
                     return;
                 }
                 if (data.type === 'chat_history') {
+                    if (data.room_id !== state.currentChatRoom
+                        || data.request_id !== state.chatHistoryRequestId) return;
                     for (const message of data.messages || []) {
                         renderChatRecord(data.room_id, message);
                     }
+                    el.chatRoomStatus.textContent = `#${data.room_id} 대화 내역 ${data.messages?.length || 0}개 표시 중`;
                     return;
                 }
                 if (data.type === 'chat') {
-                    renderChatRecord(data.room_id, data);
-                    if (data.room_created) {
-                        socket.send(JSON.stringify({ type: 'chat_history', room_id: data.room_id, limit: 50 }));
-                    }
+                    if (data.room_id === state.currentChatRoom) renderChatRecord(data.room_id, data);
                     return;
                 }
-                if (data.type === 'error' && data.code?.startsWith('CHAT_')
-                    && data.code !== 'CHAT_ROOM_NOT_FOUND') {
-                    addSystemMessage(`요청 실패: ${data.code || '서버 오류'}`);
+                if (data.type === 'error' && data.request_id
+                    && data.request_id === state.chatHistoryRequestId) {
+                    el.chatRoomStatus.textContent = `#${state.currentChatRoom} 대화 내역을 불러오지 못했습니다.`;
+                    addSystemMessage(`채팅 내역 조회 실패: ${data.code || '서버 오류'}`);
+                    return;
+                }
+                if (data.type === 'error' && data.code?.startsWith('CHAT_')) {
+                    addSystemMessage(`채팅 요청 실패: ${data.code}`);
                     return;
                 }
                 if (data.type === 'canvas_settings_snapshot' || data.type === 'canvas_settings_changed') {
@@ -574,6 +598,7 @@ async function connectActiveCanvas() {
                         if (change.previous === undefined) delete state.items[change.id];
                         else state.items[change.id] = change.previous;
                         renderCanvasItems();
+                        syncChatRoomSelector();
                         setItemEditorEnabled(true);
                         el.itemStatus.textContent = '아이템 수정 권한이 거부되었습니다.';
                         addSystemMessage('아이템 수정 권한이 거부되었습니다. permission 그룹을 확인하세요.');
@@ -585,6 +610,7 @@ async function connectActiveCanvas() {
                 if (data.items && typeof data.items === 'object' && !Array.isArray(data.items)) {
                     state.items = Object.assign(Object.create(null), data.items);
                     renderCanvasItems();
+                    syncChatRoomSelector();
                     el.itemStatus.textContent = '캔버스 아이템 전체 변경 이벤트 수신됨';
                     return;
                 }
@@ -603,16 +629,16 @@ async function connectActiveCanvas() {
 
         socket.onclose = (e) => {
             if (state.ws !== socket) return;
-            addSystemMessage(`🔴 WebSocket 연결이 종료되었습니다. (Code: ${e.code})`);
             resetConnectionUI();
+            addSystemMessage(`🔴 WebSocket 연결이 종료되었습니다. (Code: ${e.code})`);
             loadCanvases();
         };
 
         socket.onerror = () => {
             if (state.ws !== socket) return;
+            resetConnectionUI();
             addSystemMessage('❌ WebSocket 연결 에러가 발생했습니다.');
             socket.close();
-            resetConnectionUI();
         };
 
     } catch (err) {
@@ -638,6 +664,9 @@ function resetConnectionUI() {
     state.ws = null;
     state.items = Object.create(null);
     state.itemGroups = [];
+    state.chatRooms = [];
+    state.currentChatRoom = '';
+    state.chatHistoryRequestId = '';
     state.chatSeen.clear();
     state.pendingItemChange = null;
     state.settingsPending = null;
@@ -647,6 +676,13 @@ function resetConnectionUI() {
     el.itemJsonInput.value = '';
     el.itemStatus.textContent = 'WebSocket 접속 후 편집할 수 있습니다.';
     setItemEditorEnabled(false);
+    el.chatContainer.replaceChildren();
+    addSystemMessage('채팅방에 접속하면 선택한 방의 대화 내역이 표시됩니다.');
+    el.chatRoomSelect.replaceChildren(new Option('WebSocket 접속 후 권한 있는 방을 불러옵니다.', ''));
+    el.chatRoomSelect.disabled = true;
+    el.chatRoomStatus.textContent = '채팅방을 선택하면 내역을 불러옵니다.';
+    el.createChatRoomBtn.hidden = true;
+    el.createChatRoomBtn.disabled = true;
     el.connectionText.innerText = '미연결';
     el.connectionDot.className = 'status-dot';
     el.connectionDot.style.background = 'var(--text-muted)';
@@ -659,12 +695,143 @@ function resetConnectionUI() {
 }
 
 // --- Chat UI Helpers ---
+function chatRoomPermissionLabel(permission) {
+    let groups = [];
+    if (typeof permission === 'string') {
+        groups = [permission];
+    } else if (Array.isArray(permission)) {
+        groups = permission.filter(group => typeof group === 'string');
+    } else if (permission && typeof permission === 'object') {
+        groups = Object.entries(permission)
+            .filter(([, level]) => Number.isInteger(level) && level > 0)
+            .map(([group]) => group);
+    }
+    return groups.length > 0 ? groups.join(', ') : '관리자 전용';
+}
+
+function syncChatRoomSelector(forceActivation = false) {
+    const previousRoom = state.currentChatRoom;
+    const previousRoomWasKnown = state.chatRooms.some(room => room.id === previousRoom);
+    const rooms = Object.entries(state.items)
+        .filter(([, item]) => item?.type === 'chat_room')
+        .map(([id, item]) => ({ id, permission: item.permission }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    state.chatRooms = rooms;
+    el.chatRoomSelect.replaceChildren();
+
+    if (rooms.length === 0) {
+        el.chatRoomSelect.appendChild(new Option('general (새 채팅방)', 'general'));
+    } else {
+        for (const room of rooms) {
+            const option = new Option(`${room.id} · ${chatRoomPermissionLabel(room.permission)}`, room.id);
+            el.chatRoomSelect.appendChild(option);
+        }
+    }
+
+    const selectedRoom = rooms.some(room => room.id === previousRoom)
+        ? previousRoom
+        : rooms.find(room => room.id === 'general')?.id || rooms[0]?.id || 'general';
+    const selectedRoomIsKnown = rooms.some(room => room.id === selectedRoom);
+    state.currentChatRoom = selectedRoom;
+    el.chatRoomSelect.value = selectedRoom;
+    el.chatRoomSelect.disabled = state.ws?.readyState !== WebSocket.OPEN;
+
+    if (forceActivation || previousRoom !== selectedRoom || previousRoomWasKnown !== selectedRoomIsKnown) {
+        activateChatRoom(selectedRoom);
+    } else {
+        updateChatControls();
+    }
+}
+
+function selectChatRoom(roomId) {
+    const validRoom = state.chatRooms.some(room => room.id === roomId)
+        || (state.chatRooms.length === 0 && roomId === 'general');
+    if (!validRoom || roomId === state.currentChatRoom) return;
+    state.currentChatRoom = roomId;
+    activateChatRoom(roomId);
+}
+
+function createChatRoom() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (!state.itemGroups.includes('admin-group')) return alert('캔버스 관리자만 채팅방을 만들 수 있습니다.');
+    if (state.pendingItemChange) return;
+
+    const roomId = prompt('채팅방 ID를 입력하세요. (최대 128자)');
+    if (roomId === null) return;
+    const normalizedRoomId = roomId.trim();
+    if (!normalizedRoomId || normalizedRoomId.length > 128) {
+        return alert('채팅방 ID는 1~128자로 입력하세요.');
+    }
+    if (Object.hasOwn(state.items, normalizedRoomId)) {
+        return alert('이미 사용 중인 아이템 ID입니다. 다른 채팅방 ID를 입력하세요.');
+    }
+
+    const permissionInput = prompt(
+        '접근을 허용할 그룹을 쉼표로 입력하세요. 비워 두면 admin-group 전용입니다.',
+        'default'
+    );
+    if (permissionInput === null) return;
+    const permission = [...new Set(permissionInput.split(',').map(group => group.trim()).filter(Boolean))];
+    if (permission.length === 0) permission.push('admin-group');
+
+    const item = { type: 'chat_room', permission, data: [], next_sequence: 1 };
+    state.ws.send(JSON.stringify({ type: 'item_update', item_id: normalizedRoomId, item }));
+    trackItemChange(normalizedRoomId, undefined);
+    state.items[normalizedRoomId] = item;
+    renderCanvasItems();
+    syncChatRoomSelector();
+    el.itemStatus.textContent = `채팅방 ${normalizedRoomId} 생성 요청됨`;
+}
+
+function activateChatRoom(roomId) {
+    state.chatSeen.clear();
+    state.chatHistoryRequestId = '';
+    el.chatContainer.replaceChildren();
+
+    if (!roomId) {
+        el.chatRoomStatus.textContent = '접근 가능한 채팅방이 없습니다.';
+        addSystemMessage('접근 가능한 채팅방이 없습니다.');
+        updateChatControls();
+        return;
+    }
+
+    const roomExists = state.chatRooms.some(room => room.id === roomId);
+    if (roomExists) {
+        el.chatRoomStatus.textContent = `#${roomId} 대화 내역을 불러오는 중...`;
+        addSystemMessage(`#${roomId} 채팅 내역을 불러오는 중입니다.`);
+        requestChatHistory(roomId);
+    } else {
+        el.chatRoomStatus.textContent = `#${roomId} 방은 첫 메시지를 보낼 때 생성됩니다.`;
+        addSystemMessage(`#${roomId} 방이 아직 없습니다. 첫 메시지를 보내면 생성됩니다.`);
+    }
+    updateChatControls();
+}
+
+function requestChatHistory(roomId) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    state.chatHistoryRequestSequence += 1;
+    const requestId = `chat-history-${state.chatHistoryRequestSequence}`;
+    state.chatHistoryRequestId = requestId;
+    state.ws.send(JSON.stringify({ type: 'chat_history', room_id: roomId, limit: 50, request_id: requestId }));
+}
+
+function updateChatControls() {
+    const connected = state.ws?.readyState === WebSocket.OPEN;
+    const hasSelectedRoom = Boolean(state.currentChatRoom);
+    const isCanvasAdmin = state.itemGroups.includes('admin-group');
+    el.chatRoomSelect.disabled = !connected;
+    el.chatInput.disabled = !connected || !hasSelectedRoom;
+    el.sendBtn.disabled = !connected || !hasSelectedRoom;
+    el.createChatRoomBtn.hidden = !isCanvasAdmin;
+    el.createChatRoomBtn.disabled = !connected || !isCanvasAdmin || Boolean(state.pendingItemChange);
+}
+
 function handleChatKey(e) {
     if (e.key === 'Enter') sendMessage();
 }
 
 function sendMessage() {
-    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN || !state.currentChatRoom) return;
     
     const text = el.chatInput.value.trim();
     if (!text) return;
@@ -673,9 +840,9 @@ function sendMessage() {
     try {
         payload = JSON.parse(text); // If they wrote JSON, send as JSON
     } catch {
-        payload = { type: 'chat', room_id: 'general', text };
+        payload = { type: 'chat', room_id: state.currentChatRoom, text };
     }
-    if (payload?.type === 'chat' && !payload.room_id) payload.room_id = 'general';
+    if (payload?.type === 'chat') payload.room_id = state.currentChatRoom;
 
     state.ws.send(JSON.stringify(payload));
     el.chatInput.value = '';

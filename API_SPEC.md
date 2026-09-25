@@ -187,6 +187,8 @@ Spring 오류는 다음 형태입니다.
 
 ### 테스트 페이지 프록시 API
 
+`GET /api/test/cpp-active-canvases`는 로그인한 사용자가 테스트베드에서 활성 상태를 확인할 수 있도록 인증된 사용자에게 허용됩니다. 그 밖의 `/api/test/**` 프록시 API는 관리자 전용입니다.
+
 | 메서드·경로 | 요청 |
 |---|---|
 | `POST /api/test/cpp-access` | `{ "server_ip":"127.0.0.1", "server_port":8000, "canvas_id":1 }`; `Authorization`을 C++로 전달 |
@@ -236,6 +238,7 @@ Nginx는 외부 `/wss/port/...` 요청을 같은 `<wsPort>`의 C++ 서버로 전
   "type":"init_items",
   "canvas_id":1,
   "rtc_canvas_connection_id":"12345",
+  "rtc_canvas_connection_hash":"<64-char-hex-proof>",
   "server_protocol":"uWebSockets",
   "status":"connected",
   "items":{},
@@ -245,6 +248,8 @@ Nginx는 외부 `/wss/port/...` 요청을 같은 `<wsPort>`의 C++ 서버로 전
 ```
 
 `items`는 접속자의 permission 그룹으로 필터링됩니다. `groups`는 현재 사용자가 속한 공개 그룹명만 담습니다. 내부 사용자 ID와 전체 그룹 구성원 목록은 전송하지 않습니다.
+
+`rtc_canvas_connection_id`와 `rtc_canvas_connection_hash`는 해당 캔버스 WebSocket 연결에 묶인 쌍입니다. 해시는 연결별 난수 키로 ID를 HMAC-SHA256 처리한 64자리 16진수 증명값이며, 캔버스 WebSocket 연결마다 새로 생성됩니다.
 
 ### 일반 이벤트
 
@@ -261,6 +266,12 @@ Elasticsearch의 기존 `items.*` 필드 매핑과 임의 형식의 아이템이
 ```
 
 아직 없는 `room_id`로 처음 메시지를 보내면 서버가 채팅방 아이템을 만들고, 생성자의 현재 그룹을 `permission`으로 사용합니다. 기존 방에 대한 메시지 쓰기와 내역 조회는 방 아이템의 ACL을 따릅니다. 빈 ACL은 관리자만 접근할 수 있습니다. 일반 사용자는 채팅방 아이템을 직접 수정하거나 삭제할 수 없습니다.
+
+채팅 내역은 계정 역할별로 자동 분리되지 않고 캔버스와 `room_id`를 기준으로 저장됩니다. C++ WebSocket의 `admin-group` 멤버는 방 권한을 우회해 모든 방의 실시간 메시지와 내역을 볼 수 있고, 일반 사용자는 자신이 속한 그룹이 허용된 방만 볼 수 있습니다. 관리자 전용 대화가 필요하면 `admin-group` 권한의 별도 방을 만들고, 일반 대화에는 일반 그룹 권한을 지정해야 합니다.
+
+테스트베드는 연결 후 `init_items.items`에서 사용자에게 전달된 `type: "chat_room"` 아이템을 채팅방 선택 목록에 표시합니다. 각 항목의 ID가 `room_id`, `permission`이 방 권한입니다. 초기 아이템에서는 메시지 배열(`data`)을 생략하므로, 선택한 방의 최근 메시지는 `chat_history` 요청으로 불러옵니다.
+
+캔버스의 `admin-group` 멤버에게는 테스트베드의 채팅방 만들기 버튼이 표시됩니다. 방 ID와 허용할 그룹을 지정해 `chat_room` 아이템을 생성하며, 권한 입력을 비우면 `admin-group` 전용 방을 만듭니다.
 
 메시지 보내기:
 
@@ -328,9 +339,9 @@ ACL은 저장될 `item` 또는 `data` 객체의 `permission` 필드에서 읽습
 
 RTC 신호 WebSocket은 연결 표의 `/rtc/canvas/<canvasId>` 경로로 엽니다. C++는 JWT를 확인한 뒤 `rtc_ready`를 보냅니다. 이 연결은 캔버스를 로드하거나 SQL `user_sessions`를 변경하지 않으며, 연결만 연다고 피어가 등록되지는 않습니다.
 
-캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`는 해당 WebSocket 연결을 가리키는 문자열입니다. 클라이언트는 이를 RTC 신호 WebSocket의 `rtc_join`에 전달해 피어를 특정 캔버스 WebSocket에 묶습니다. 같은 사용자·캔버스의 캔버스 WebSocket 연결이 하나뿐이면 생략할 수 있습니다. 연결이 여러 개인데 생략하면 `RTC_CANVAS_CONNECTION_REQUIRED`, 유효한 연결이 없으면 `RTC_CANVAS_SOCKET_REQUIRED`를 반환합니다.
+캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`와 `init_items.rtc_canvas_connection_hash`를 함께 RTC 신호 WebSocket의 `rtc_join`에 전달해야 합니다. 서버는 같은 캔버스·사용자의 활성 캔버스 WebSocket을 찾고 ID에 대응하는 해시를 상수 시간 비교로 검증한 뒤 피어를 묶습니다. ID가 없으면 `RTC_CANVAS_CONNECTION_REQUIRED`, ID 형식이 잘못되면 `RTC_CANVAS_CONNECTION_INVALID`, 해시가 없거나 일치하지 않으면 `RTC_CANVAS_CONNECTION_HASH_REQUIRED` 또는 `RTC_CANVAS_CONNECTION_HASH_INVALID`, 대상 소켓이 없으면 `RTC_CANVAS_SOCKET_REQUIRED`를 반환합니다. 기존 피어를 다시 `rtc_join`할 때도 같은 ID·해시 쌍을 보내야 하며, 다른 소켓으로 바꾸려 하면 `RTC_CANVAS_CONNECTION_MISMATCH`를 반환합니다.
 
-클라이언트가 `{"type":"rtc_join","canvas_connection_id":"<init_items.rtc_canvas_connection_id>"}`을 보내면 서버는 이 RTC 신호 연결 전용 `self_peer_id`와 같은 캔버스의 현재 피어 목록을 반환하고, 다른 같은 캔버스 피어에게 `rtc_peer_joined`를 보냅니다. 각 피어는 RTC 신호 연결 한 개를 나타냅니다. 이미 참여한 연결에서 `rtc_join` 또는 `rtc_list`를 보내면 현재 목록을 다시 받습니다.
+클라이언트가 `{"type":"rtc_join","canvas_connection_id":"<init_items.rtc_canvas_connection_id>","canvas_connection_hash":"<init_items.rtc_canvas_connection_hash>"}`을 보내면 서버는 이 RTC 신호 연결 전용 `self_peer_id`와 같은 캔버스의 현재 피어 목록을 반환하고, 다른 같은 캔버스 피어에게 `rtc_peer_joined`를 보냅니다. 각 피어는 RTC 신호 연결 한 개를 나타냅니다. 이미 참여한 연결에서 `rtc_join` 또는 `rtc_list`를 보내면 현재 목록을 다시 받습니다.
 
 ```json
 {"type":"rtc_ready"}

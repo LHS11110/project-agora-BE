@@ -95,6 +95,15 @@
                     </div>
                 </div>
 
+                <div class="chat-room-selector">
+                    <label for="chatRoomSelect">채팅방</label>
+                    <select id="chatRoomSelect" onchange="selectChatRoom(this.value)" disabled>
+                        <option value="">WebSocket 접속 후 권한 있는 방을 불러옵니다.</option>
+                    </select>
+                    <span id="chatRoomStatus" role="status">채팅방을 선택하면 내역을 불러옵니다.</span>
+                    <button id="createChatRoomBtn" class="btn-outline" onclick="createChatRoom()" hidden disabled>채팅방 만들기</button>
+                </div>
+
                 <div class="chat-messages" id="chatContainer">
                     <div class="msg-system">왼쪽 목록에서 캔버스를 선택한 후 접속하세요.</div>
                 </div>
@@ -106,11 +115,11 @@
 
                 <section class="item-editor" aria-labelledby="itemEditorTitle">
                     <div class="item-editor-heading">
-                        <h3 id="itemEditorTitle">캔버스 아이템 편집</h3>
-                        <span id="itemStatus" role="status">WebSocket 접속 후 편집할 수 있습니다.</span>
+                        <h3 id="itemEditorTitle">캔버스 아이템 조회·편집</h3>
+                        <span id="itemStatus" role="status">WebSocket 접속 후 초기 아이템을 불러옵니다.</span>
                     </div>
                     <div class="item-editor-body">
-                        <div class="item-list" id="canvasItemsList">접속하면 아이템 목록이 표시됩니다.</div>
+                        <div class="item-list" id="canvasItemsList">접속하면 권한에 따라 볼 수 있는 초기 아이템이 표시됩니다.</div>
                         <div class="item-form">
                             <label for="itemIdInput">아이템 ID</label>
                             <input type="text" id="itemIdInput" placeholder="예: note-1" disabled>
