@@ -28,6 +28,8 @@ public class CanvasRedisDocumentReader {
     private final String password;
     private final String sentinelAddresses;
     private final String sentinelMasterName;
+    private final String sentinelUsername;
+    private final String sentinelPassword;
     private final ElasticsearchBulkLogService logService;
 
     public CanvasRedisDocumentReader(ObjectMapper objectMapper,
@@ -35,12 +37,16 @@ public class CanvasRedisDocumentReader {
             @Value("${REDIS_USER_PASSWORD:}") String password,
             @Value("${app.redis.sentinels:}") String sentinelAddresses,
             @Value("${app.redis.sentinel-master-name:agora-master}") String sentinelMasterName,
+            @Value("${REDIS_SENTINEL_USER:}") String sentinelUsername,
+            @Value("${REDIS_SENTINEL_PASSWORD:}") String sentinelPassword,
             ElasticsearchBulkLogService logService) {
         this.objectMapper = objectMapper;
         this.username = username;
         this.password = password;
         this.sentinelAddresses = sentinelAddresses;
         this.sentinelMasterName = sentinelMasterName;
+        this.sentinelUsername = sentinelUsername;
+        this.sentinelPassword = sentinelPassword;
         this.logService = logService;
     }
 
@@ -104,6 +110,13 @@ public class CanvasRedisDocumentReader {
         try (Socket socket = openSocket(sentinel)) {
             InputStream in = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
+            if (!sentinelPassword.isBlank()) {
+                if (sentinelUsername.isBlank()) writeCommand(out, "AUTH", sentinelPassword);
+                else writeCommand(out, "AUTH", sentinelUsername, sentinelPassword);
+                if (!"OK".equals(readReply(in))) throw new IOException("Sentinel authentication failed");
+            } else if (!sentinelUsername.isBlank()) {
+                throw new IOException("Sentinel password is required when a Sentinel username is configured");
+            }
             writeCommand(out, "SENTINEL", "get-master-addr-by-name", sentinelMasterName);
             Object reply = readReply(in);
             if (!(reply instanceof List<?> values) || values.size() < 2

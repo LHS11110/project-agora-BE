@@ -47,6 +47,8 @@ private:
     std::string user_;
     std::string password_;
     std::string sentinel_master_name_;
+    std::string sentinel_user_;
+    std::string sentinel_password_;
     std::vector<std::pair<std::string, int>> sentinel_seeds_;
     int socket_fd_;
 

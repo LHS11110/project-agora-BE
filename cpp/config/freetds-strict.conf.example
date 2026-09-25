@@ -1,0 +1,9 @@
+# Copy this file to a root-readable deployment path and set DB_FREETDS_CONF to
+# that path. Install the SQL Server issuing CA in the OS trust store, or replace
+# `system` with the mounted CA bundle path. The SQL listener hostname must match
+# the server certificate SAN.
+[global]
+    tds version = 8.0
+    encryption = strict
+    ca file = system
+    check certificate hostname = yes

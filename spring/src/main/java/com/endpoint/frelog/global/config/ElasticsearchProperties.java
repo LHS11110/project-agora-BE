@@ -13,6 +13,7 @@ public class ElasticsearchProperties {
     private String host = "127.0.0.1";
     private int port = 9200;
     private String scheme = "http";
+    private String caCertificate = "";
     private String index = "canvas";
     private String username = "agora_user";
     private String password;
@@ -44,6 +45,14 @@ public class ElasticsearchProperties {
 
     public void setScheme(String scheme) {
         this.scheme = scheme;
+    }
+
+    public String getCaCertificate() {
+        return caCertificate;
+    }
+
+    public void setCaCertificate(String caCertificate) {
+        this.caCertificate = caCertificate;
     }
 
     public String getIndex() {
@@ -111,6 +120,9 @@ public class ElasticsearchProperties {
     }
 
     public String getBaseUrl() {
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalStateException("ES_SCHEME must be either http or https");
+        }
         return String.format("%s://%s:%d", scheme, host, port);
     }
 }

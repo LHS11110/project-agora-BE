@@ -1,5 +1,6 @@
 #include "Canvas.hpp"
 #include "CanvasPassword.hpp"
+#include "SqlCommand.hpp"
 #include "TestSupport.hpp"
 
 #include <functional>
@@ -64,6 +65,29 @@ void persistenceQueuePreservesOrderAndBarrier() {
     AGORA_CHECK(canvas.waitForPendingPersistence(settings_lock));
     AGORA_CHECK(!canvas.enqueuePersistence({{"sequence", 3}}, start_worker));
 }
+
+void sqlCommandKeepsUntrustedTextOutsideTheStatement() {
+    const std::string payload = "x'; DROP TABLE cpp_server;--";
+    SqlCommand command("SELECT user_id FROM users WHERE nickname = @nickname AND tag_number = @tag;");
+    command.addText("@nickname", payload).addInt("@tag", 23);
+
+    AGORA_CHECK(command.isValid());
+    AGORA_CHECK(command.statement().find(payload) == std::string::npos);
+    AGORA_CHECK(command.parameters().size() == 2);
+    AGORA_CHECK(command.parameters()[0].text_value == payload);
+    AGORA_CHECK(command.parameterDeclarations() == "@nickname NVARCHAR(4000), @tag INT");
+
+    SqlCommand networkAddress("SELECT server_id FROM cpp_server WHERE server_ip = @ip;");
+    networkAddress.addVarchar("@ip", payload);
+    AGORA_CHECK(networkAddress.isValid());
+    AGORA_CHECK(networkAddress.statement().find(payload) == std::string::npos);
+    AGORA_CHECK(networkAddress.parameters()[0].text_value == payload);
+    AGORA_CHECK(networkAddress.parameterDeclarations() == "@ip VARCHAR(4000)");
+
+    SqlCommand invalid("SELECT 1;");
+    invalid.addText("@value); DROP TABLE users;--", payload);
+    AGORA_CHECK(!invalid.isValid());
+}
 }
 
 int main() {
@@ -71,5 +95,6 @@ int main() {
     failures += runTest("password hash format and legacy normalization", passwordHashFormatsAreValidatedAndNormalized);
     failures += runTest("multiple websocket sessions per user", canvasTracksMultipleSocketsPerUser);
     failures += runTest("canvas persistence ordering and barrier", persistenceQueuePreservesOrderAndBarrier);
+    failures += runTest("SQL values stay separate from query text", sqlCommandKeepsUntrustedTextOutsideTheStatement);
     return failures == 0 ? 0 : 1;
 }

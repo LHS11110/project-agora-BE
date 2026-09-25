@@ -34,6 +34,9 @@ import static org.mockito.Mockito.verify;
 @ExtendWith(MockitoExtension.class)
 class CanvasRedisDocumentReaderFailoverTest {
 
+    private static final String SENTINEL_USER = "sentinel-reader-test";
+    private static final String SENTINEL_PASSWORD = "sentinel-test-password";
+
     @Mock
     private ElasticsearchBulkLogService logService;
 
@@ -48,6 +51,8 @@ class CanvasRedisDocumentReaderFailoverTest {
                     "test-password",
                     "127.0.0.1:" + cluster.sentinelPort(),
                     "agora-master",
+                    SENTINEL_USER,
+                    SENTINEL_PASSWORD,
                     logService);
             CanvasInfo canvasInfo = new CanvasInfo(42);
 
@@ -63,6 +68,7 @@ class CanvasRedisDocumentReaderFailoverTest {
 
             verify(logService).reportAvailability(eq("redis-sentinel"), eq(false), anyMap());
             verify(logService, times(2)).reportAvailability(eq("redis-sentinel"), eq(true), anyMap());
+            assertThat(cluster.authenticatedSentinelQueries()).isPositive();
             verify(logService).reportPrimaryChange(eq("redis-sentinel"), eq(cluster.nodeAAddress()));
             verify(logService).reportPrimaryChange(eq("redis-sentinel"), eq(cluster.nodeBAddress()));
         }
@@ -95,6 +101,10 @@ class CanvasRedisDocumentReaderFailoverTest {
 
         private String nodeBAddress() {
             return "127.0.0.1:" + nodeB.port();
+        }
+
+        private int authenticatedSentinelQueries() {
+            return sentinel.authenticatedQueries();
         }
 
         private void stopNodeA() throws IOException {
@@ -171,6 +181,8 @@ class CanvasRedisDocumentReaderFailoverTest {
 
     private static final class FakeSentinel extends FakeRespServer {
         private volatile int masterPort;
+        private final java.util.concurrent.atomic.AtomicInteger authenticatedQueries =
+                new java.util.concurrent.atomic.AtomicInteger();
 
         private FakeSentinel(int initialMasterPort) throws IOException {
             masterPort = initialMasterPort;
@@ -180,9 +192,22 @@ class CanvasRedisDocumentReaderFailoverTest {
             masterPort = port;
         }
 
+        private int authenticatedQueries() {
+            return authenticatedQueries.get();
+        }
+
         @Override
         void serve(InputStream input, OutputStream output) throws IOException {
             List<String> command = readCommand(input);
+            if (command.size() != 3 || !"AUTH".equalsIgnoreCase(command.get(0))
+                    || !SENTINEL_USER.equals(command.get(1))
+                    || !SENTINEL_PASSWORD.equals(command.get(2))) {
+                writeError(output, "Sentinel authentication required");
+                return;
+            }
+            writeSimple(output, "OK");
+            authenticatedQueries.incrementAndGet();
+            command = readCommand(input);
             if (command.size() == 3 && "SENTINEL".equalsIgnoreCase(command.get(0))) {
                 writeArray(output, List.of("127.0.0.1", Integer.toString(masterPort)));
             } else {

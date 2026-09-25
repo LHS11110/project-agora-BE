@@ -25,7 +25,7 @@ class CanvasElasticsearchIntegrationTest {
     private final Integer testCanvasId = 9876;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws Exception {
         String esPassword = System.getenv("ES_USER_PASSWORD");
         assumeTrue(esPassword != null && !esPassword.isBlank(), "ES_USER_PASSWORD is required for the integration test");
         ElasticsearchProperties props = new ElasticsearchProperties();

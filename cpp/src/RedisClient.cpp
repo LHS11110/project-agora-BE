@@ -1,5 +1,6 @@
 #include "RedisClient.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
+#include "Environment.hpp"
 #include <iostream>
 #include <sstream>
 #include <sys/socket.h>
@@ -19,8 +20,7 @@
 namespace {
 std::string envOr(const char* name, const std::string& value) {
     if (!value.empty()) return value;
-    const char* configured = std::getenv(name);
-    return configured ? configured : "";
+    return environmentValue(name);
 }
 
 bool isWrongTypeResponse(const std::string& response) {
@@ -72,6 +72,8 @@ RedisClient::RedisClient(const std::string& host, int port, const std::string& u
     : host_(host), port_(port), user_(envOr("REDIS_USER", user)),
       password_(envOr("REDIS_USER_PASSWORD", password)),
       sentinel_master_name_(envOr("REDIS_SENTINEL_MASTER_NAME", "agora-master")),
+      sentinel_user_(envOr("REDIS_SENTINEL_USER", "")),
+      sentinel_password_(envOr("REDIS_SENTINEL_PASSWORD", "")),
       sentinel_seeds_(parseSentinelSeeds(std::getenv("REDIS_SENTINELS"))), socket_fd_(-1) {
 }
 
@@ -86,6 +88,10 @@ bool RedisClient::connect() {
 
     if (password_.empty()) {
         std::cerr << "[RedisClient] REDIS_USER_PASSWORD is not configured\n";
+        return false;
+    }
+    if (sentinel_user_.empty() != sentinel_password_.empty()) {
+        std::cerr << "[RedisClient] REDIS_SENTINEL_USER and REDIS_SENTINEL_PASSWORD must be configured together\n";
         return false;
     }
 
@@ -122,6 +128,15 @@ bool RedisClient::connect() {
         for (const auto& seed : sentinel_seeds_) {
             disconnect();
             if (!connectTo(seed.first, seed.second, 700)) continue;
+            if (!sentinel_password_.empty()) {
+                const auto auth = sentinel_user_.empty()
+                    ? std::vector<std::string>{"AUTH", sentinel_password_}
+                    : std::vector<std::string>{"AUTH", sentinel_user_, sentinel_password_};
+                if (!sendCommand(auth) || readResponse() != "OK") {
+                    disconnect();
+                    continue;
+                }
+            }
             if (!sendCommand({"SENTINEL", "get-master-addr-by-name", sentinel_master_name_})) {
                 disconnect();
                 continue;

@@ -1,5 +1,7 @@
 #include "EsClient.hpp"
 #include "CanvasPassword.hpp"
+#include "ElasticsearchHttpClient.hpp"
+#include "Environment.hpp"
 #include <httplib.h>
 #include <algorithm>
 #include <chrono>
@@ -10,8 +12,7 @@
 namespace {
 std::string envOr(const char* name, const std::string& value) {
     if (!value.empty()) return value;
-    const char* configured = std::getenv(name);
-    return configured ? configured : "";
+    return environmentValue(name);
 }
 
 // Each encoded chunk stays below Elasticsearch's maximum indexed term size
@@ -80,15 +81,16 @@ std::optional<nlohmann::json> EsClient::getCanvasDocument(int canvasId) {
         std::cerr << "[EsClient] ES_USER_NAME, ES_USER_PASSWORD and ES_INDEX must be configured\n";
         return std::nullopt;
     }
-    httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(3, 0);
-    cli.set_read_timeout(3, 0);
-    cli.set_write_timeout(3, 0);
-    cli.set_basic_auth(user_, pass_);
+    auto cli = makeElasticsearchHttpClient(host_, port_);
+    if (!cli) return std::nullopt;
+    cli->set_connection_timeout(3, 0);
+    cli->set_read_timeout(3, 0);
+    cli->set_write_timeout(3, 0);
+    cli->set_basic_auth(user_, pass_);
 
     // 1. Direct doc lookup by ID
     std::string direct_path = "/" + index_ + "/_doc/" + std::to_string(canvasId);
-    auto res = cli.Get(direct_path);
+    auto res = cli->Get(direct_path);
     if (res && res->status == 200) {
         try {
             auto json_res = nlohmann::json::parse(res->body);
@@ -108,7 +110,7 @@ std::optional<nlohmann::json> EsClient::getCanvasDocument(int canvasId) {
         {"size", 1}
     };
 
-    res = cli.Post(search_path, query.dump(), "application/json");
+    res = cli->Post(search_path, query.dump(), "application/json");
     if (res && res->status == 200) {
         try {
             auto json_res = nlohmann::json::parse(res->body);
@@ -133,11 +135,12 @@ bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
         std::cerr << "[EsClient] Elasticsearch credentials are not configured\n";
         return false;
     }
-    httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(3, 0);
-    cli.set_read_timeout(3, 0);
-    cli.set_write_timeout(3, 0);
-    cli.set_basic_auth(user_, pass_);
+    auto cli = makeElasticsearchHttpClient(host_, port_);
+    if (!cli) return false;
+    cli->set_connection_timeout(3, 0);
+    cli->set_read_timeout(3, 0);
+    cli->set_write_timeout(3, 0);
+    cli->set_basic_auth(user_, pass_);
 
     nlohmann::json safe_doc = doc;
     if (safe_doc.contains("items")) {
@@ -167,7 +170,7 @@ bool EsClient::saveCanvasDocument(int canvasId, const nlohmann::json& doc) {
     std::cout << "[EsClient] Saving canvas #" << canvasId
               << " to Elasticsearch (bytes=" << payload.size() << ")\n";
     const auto started = std::chrono::steady_clock::now();
-    auto res = cli.Put(doc_path, payload, "application/json");
+    auto res = cli->Put(doc_path, payload, "application/json");
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started).count();
     if (res && (res->status == 200 || res->status == 201)) {
@@ -191,10 +194,11 @@ bool EsClient::patchCanvasFields(int canvasId, const std::map<std::string, nlohm
         std::cerr << "[EsClient] Cannot patch canvas settings: fields or Elasticsearch credentials are missing\n";
         return false;
     }
-    httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(3, 0);
-    cli.set_read_timeout(3, 0);
-    cli.set_basic_auth(user_, pass_);
+    auto cli = makeElasticsearchHttpClient(host_, port_);
+    if (!cli) return false;
+    cli->set_connection_timeout(3, 0);
+    cli->set_read_timeout(3, 0);
+    cli->set_basic_auth(user_, pass_);
 
     nlohmann::json normalized = nlohmann::json::object();
     for (const auto& [field, value] : fields) {
@@ -209,7 +213,7 @@ bool EsClient::patchCanvasFields(int canvasId, const std::map<std::string, nlohm
     const std::string path = "/" + index_ + "/_update/" + std::to_string(canvasId)
         + "?retry_on_conflict=3&refresh=true";
     const nlohmann::json body = {{"doc", normalized}};
-    auto res = cli.Post(path, body.dump(), "application/json");
+    auto res = cli->Post(path, body.dump(), "application/json");
     if (res && res->status >= 200 && res->status < 300) return true;
     std::cerr << "[EsClient] Failed to patch canvas #" << canvasId << " in Elasticsearch: "
               << (res ? std::to_string(res->status) : "connection error") << "\n";

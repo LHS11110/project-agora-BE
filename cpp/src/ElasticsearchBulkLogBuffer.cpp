@@ -1,4 +1,6 @@
 #include "ElasticsearchBulkLogBuffer.hpp"
+#include "ElasticsearchHttpClient.hpp"
+#include "Environment.hpp"
 
 #include <httplib.h>
 #include <openssl/rand.h>
@@ -26,8 +28,8 @@ void writeDiagnostic(const std::string& message) {
 }
 
 std::string envOr(const char* name, const std::string& fallback) {
-    const char* value = std::getenv(name);
-    return value && *value ? value : fallback;
+    const auto value = environmentValue(name);
+    return value.empty() ? fallback : value;
 }
 
 int envPort(const char* name, int fallback) {
@@ -240,11 +242,12 @@ void ElasticsearchBulkLogBuffer::run() {
 }
 
 bool ElasticsearchBulkLogBuffer::sendBatch(const std::vector<LogEvent>& batch) {
-    httplib::Client client(host_, port_);
-    client.set_connection_timeout(2, 0);
-    client.set_read_timeout(3, 0);
-    client.set_write_timeout(3, 0);
-    client.set_basic_auth(username_, password_);
+    auto client = makeElasticsearchHttpClient(host_, port_);
+    if (!client) return false;
+    client->set_connection_timeout(2, 0);
+    client->set_read_timeout(3, 0);
+    client->set_write_timeout(3, 0);
+    client->set_basic_auth(username_, password_);
 
     std::string payload;
     for (const auto& event : batch) {
@@ -256,7 +259,7 @@ bool ElasticsearchBulkLogBuffer::sendBatch(const std::vector<LogEvent>& batch) {
     const std::string path = "/" + index_ + "/_bulk?refresh=false";
 
     for (int attempt = 0; attempt < 3; ++attempt) {
-        auto response = client.Post(path, payload, "application/x-ndjson");
+        auto response = client->Post(path, payload, "application/x-ndjson");
         if (response && response->status >= 200 && response->status < 300
             && acceptedBulkResponse(response->body, batch.size())) {
             return true;

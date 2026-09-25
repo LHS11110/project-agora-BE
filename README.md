@@ -85,6 +85,8 @@ ADMIN_PASSWORD=<초기-관리자-비밀번호>
 
 ES_HOST=127.0.0.1
 ES_PORT=9200
+ES_SCHEME=http
+ES_CA_CERT=
 ES_INDEX=canvas
 ES_USER_NAME=agora_user
 ES_USER_PASSWORD=<elasticsearch-application-password>
@@ -103,6 +105,13 @@ REDIS_USER_PASSWORD=<redis-application-password>
 # 단일 Redis 개발 환경은 비워 두고 DB에 등록된 endpoint를 사용합니다.
 REDIS_SENTINELS=
 REDIS_SENTINEL_MASTER_NAME=agora-master
+REDIS_SENTINEL_USER=
+REDIS_SENTINEL_PASSWORD=
+
+# Production C++ FreeTDS config (strict TLS, CA and hostname validation).
+DB_ENCRYPT=true
+DB_TRUST_SERVER_CERTIFICATE=false
+DB_FREETDS_CONF=/etc/freetds/freetds.conf
 
 # 브라우저에서 별도 프론트엔드 도메인으로 API를 호출할 때만 지정합니다.
 # 여러 도메인은 쉼표로 구분합니다. 같은 도메인에서 제공하면 비워 둡니다.
@@ -121,7 +130,11 @@ Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 
 
 Spring Boot의 SLF4J/Logback 애플리케이션 로그와 C++ 서버의 stdout/stderr 로그를 별도 `ES_LOG_INDEX`에 저장합니다. 여기에 SQL listener 연결 끊김·복구와 primary 인스턴스 변경, Redis 연결 불가·복구와 Sentinel primary 변경 이벤트도 구조화해 추가합니다. 두 서버는 쓰기 전용 로그 계정으로 문서를 `create` 방식으로 추가하며 로그 조회나 기존 문서 수정은 하지 않습니다. Spring과 C++은 각각 최대 100건 또는 1초 주기로 로그를 모아 Elasticsearch `_bulk` 요청 한 번으로 전송합니다. 조정에는 `ES_LOG_BATCH_SIZE`와 `ES_LOG_FLUSH_INTERVAL_MS`를 사용하고, Spring SQL 상태 점검 주기는 `HA_FAILOVER_MONITOR_INTERVAL_MS`로 설정합니다. Elasticsearch에 연결할 수 없는 동안 큐는 최대 10,000건이며, 초과한 새 로그는 버려지고 로컬 로그에 경고가 남습니다.
 
-MSSQL은 기본적으로 TLS 인증서 검증을 사용합니다. 개발 환경에서 검증 가능한 인증서를 구성할 수 없는 경우에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 일시적으로 지정하고, 운영에서는 설정하지 마세요.
+Spring JDBC는 기본적으로 TLS 인증서 검증을 사용합니다. C++ FreeTDS는 `DB_FREETDS_CONF`에 `encryption = strict`, CA 파일, 호스트명 검증을 설정해야 합니다. 검증 가능한 인증서를 구성할 수 없는 개발 환경에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 지정하고 운영에서는 설정하지 마세요.
+
+비밀 저장소를 파일로 마운트하면 Spring은 `/run/secrets/`의 파일을 프로퍼티로 읽습니다(예: `DB_PASSWORD`, `JWT_SECRET`, `ES_LOG_USER_PASSWORD`). Spring config tree 파일은 값 끝의 개행도 비밀번호에 포함하므로 파일 생성 시 개행을 추가하지 마세요(예: `printf %s "$SECRET" > /run/secrets/DB_PASSWORD`). C++은 DB·Redis·Sentinel·Elasticsearch 비밀번호에서 `<VARIABLE>_FILE`을 지원하고 파일 끝의 CR/LF를 제거합니다(예: `DB_PASSWORD_FILE=/run/secrets/DB_PASSWORD`). 직접 설정한 환경변수가 있으면 파일보다 우선합니다.
+
+Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 인증서의 CA 파일로 설정합니다. C++과 Spring은 인증서 체인과 호스트 이름을 검증하고, 검증에 실패하면 연결하지 않습니다.
 
 ## 로컬 실행
 

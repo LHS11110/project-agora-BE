@@ -192,13 +192,26 @@ private:
 
 class FakeSentinel final : public FakeTcpServer {
 public:
-    explicit FakeSentinel(int initial_master_port) : master_port_(initial_master_port) {}
+    FakeSentinel(int initial_master_port, std::string username, std::string password)
+        : master_port_(initial_master_port), username_(std::move(username)),
+          password_(std::move(password)) {}
     ~FakeSentinel() override { stop(); }
     void promote(int port) { master_port_ = port; }
+    int authenticatedQueryCount() const { return authenticated_query_count_; }
 
 private:
     void handleClient(int socket_fd) override {
         std::vector<std::string> command;
+        if (!readCommand(socket_fd, command)
+                || command.size() != 3
+                || command[0] != "AUTH"
+                || command[1] != username_
+                || command[2] != password_) {
+            writeAll(socket_fd, "-ERR Sentinel authentication required\r\n");
+            return;
+        }
+        writeAll(socket_fd, "+OK\r\n");
+        ++authenticated_query_count_;
         if (!readCommand(socket_fd, command) || command.size() < 3 || command[0] != "SENTINEL") {
             writeAll(socket_fd, "-ERR unexpected sentinel command\r\n");
             return;
@@ -209,18 +222,23 @@ private:
     }
 
     std::atomic<int> master_port_;
+    std::string username_;
+    std::string password_;
+    std::atomic<int> authenticated_query_count_{0};
 };
 
 void runRedisSentinelFailover() {
     FakeRedisNode primary_a;
     FakeRedisNode primary_b;
-    FakeSentinel sentinel(primary_a.port());
+    FakeSentinel sentinel(primary_a.port(), "sentinel-reader-test", "sentinel-test-password");
     primary_a.start();
     primary_b.start();
     sentinel.start();
 
     ::setenv("REDIS_SENTINELS", ("127.0.0.1:" + std::to_string(sentinel.port())).c_str(), 1);
     ::setenv("REDIS_SENTINEL_MASTER_NAME", "agora-master", 1);
+    ::setenv("REDIS_SENTINEL_USER", "sentinel-reader-test", 1);
+    ::setenv("REDIS_SENTINEL_PASSWORD", "sentinel-test-password", 1);
     ::setenv("REDIS_USER", "", 1);
     ::setenv("REDIS_USER_PASSWORD", "cpp-test-password", 1);
     ::setenv("ES_LOG_USER_PASSWORD", "", 1);
@@ -238,6 +256,7 @@ void runRedisSentinelFailover() {
         sentinel.promote(primary_b.port());
         AGORA_CHECK(client.ping());
         AGORA_CHECK(primary_b.pingCount() == 1);
+        AGORA_CHECK(sentinel.authenticatedQueryCount() > 0);
     }
 }
 }
