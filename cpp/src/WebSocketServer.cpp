@@ -831,6 +831,13 @@ void WebSocketServer::refreshUserSessionGeneration(int canvas_id, int user_id,
     }
 }
 
+WebSocketServer::Socket* WebSocketServer::findAuthorizedCanvasSocket(int canvas_id, int user_id) const {
+    const auto canvas = sockets_by_canvas_user_.find(canvas_id);
+    if (canvas == sockets_by_canvas_user_.end()) return nullptr;
+    const auto user = canvas->second.find(user_id);
+    return user == canvas->second.end() || user->second.empty() ? nullptr : *user->second.begin();
+}
+
 WebSocketServer::Socket* WebSocketServer::findBoundCanvasSocket(const PerSocketData* rtc_data) const {
     if (!rtc_data || rtc_data->rtc_canvas_connection_id == 0) return nullptr;
     Socket* canvas_ws = findSocketByConnectionId(rtc_data->rtc_canvas_connection_id);
@@ -2007,7 +2014,11 @@ void WebSocketServer::runServer() {
                                     {},
                                     0,
                                     false,
-                                    {}
+                                    {},
+                                    0,
+                                    {},
+                                    false,
+                                    false
                                 };
                                 socket_data.rtc_signaling_only = rtc_only;
                                 if (!rtc_only) {
