@@ -39,7 +39,7 @@ target_compile_definitions(usockets PRIVATE LIBUS_NO_SSL)
 target_compile_options(usockets PRIVATE -O3)
 
 # Source files
-file(GLOB_RECURSE CPP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 # Executable
 add_executable(agora_cpp_server ${CPP_SOURCES})

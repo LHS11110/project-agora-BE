@@ -88,6 +88,14 @@ ES_PORT=9200
 ES_INDEX=canvas
 ES_USER_NAME=agora_user
 ES_USER_PASSWORD=<elasticsearch-application-password>
+ES_LOG_INDEX=agora-logs
+ES_LOG_USER_NAME=agora_log_writer
+ES_LOG_USER_PASSWORD=<elasticsearch-log-writer-password>
+
+# Optional: flush the bounded Elasticsearch log queue in batches.
+ES_LOG_BATCH_SIZE=100
+ES_LOG_FLUSH_INTERVAL_MS=1000
+HA_FAILOVER_MONITOR_INTERVAL_MS=10000
 
 REDIS_USER=agora_user
 REDIS_USER_PASSWORD=<redis-application-password>
@@ -103,13 +111,15 @@ EOF
 chmod 600 .env
 ```
 
-`JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다.
+`JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `ES_LOG_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다. 캔버스 문서는 `ES_USER_NAME`/`ES_USER_PASSWORD`, 운영 로그는 별도 `ES_LOG_USER_NAME`/`ES_LOG_USER_PASSWORD` 계정을 사용합니다.
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
 Redis Sentinel HA를 사용할 때는 `REDIS_SENTINELS`에 세 Sentinel 주소(운영 구성 기준, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring과 C++은 Sentinel에 현재 primary를 질의하고 Redis 노드의 `ROLE` 응답이 `master`인지 확인한 뒤 ACL 계정으로 접속합니다. 설정된 경우 DB의 `redis_server.redis_ip`/`redis_port`는 연결 대상으로 사용하지 않으므로 이 값이 failover 후 오래되어도 기존 논리 `redis_id` 배정은 유지됩니다. standalone 개발 환경에서만 Sentinel 목록을 비워 DB endpoint에 직접 연결합니다. 모든 앱 호스트에서 Sentinel 포트 `26379`와 Redis 포트 `6379`로 통신할 수 있어야 합니다.
 
 Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 문서를 읽을 때까지 제한된 재탐색을 수행하고, 읽지 못하면 fail-closed로 재시도를 요청합니다. C++도 기본적으로 실패한 Redis 쓰기를 자동 재전송하지 않아 중복 저장을 방지합니다. Redis 복제는 비동기이므로 failover 직전의 확인된 쓰기가 새 primary에 없을 수 있습니다. 캔버스 캐시 키가 사라졌거나 DB의 캐시 상태와 맞지 않으면 Elasticsearch 내용을 자동으로 복구해 진행하지 않고 요청을 실패시킵니다.
+
+Spring Boot의 SLF4J/Logback 애플리케이션 로그와 C++ 서버의 stdout/stderr 로그를 별도 `ES_LOG_INDEX`에 저장합니다. 여기에 SQL listener 연결 끊김·복구와 primary 인스턴스 변경, Redis 연결 불가·복구와 Sentinel primary 변경 이벤트도 구조화해 추가합니다. 두 서버는 쓰기 전용 로그 계정으로 문서를 `create` 방식으로 추가하며 로그 조회나 기존 문서 수정은 하지 않습니다. Spring과 C++은 각각 최대 100건 또는 1초 주기로 로그를 모아 Elasticsearch `_bulk` 요청 한 번으로 전송합니다. 조정에는 `ES_LOG_BATCH_SIZE`와 `ES_LOG_FLUSH_INTERVAL_MS`를 사용하고, Spring SQL 상태 점검 주기는 `HA_FAILOVER_MONITOR_INTERVAL_MS`로 설정합니다. Elasticsearch에 연결할 수 없는 동안 큐는 최대 10,000건이며, 초과한 새 로그는 버려지고 로컬 로그에 경고가 남습니다.
 
 MSSQL은 기본적으로 TLS 인증서 검증을 사용합니다. 개발 환경에서 검증 가능한 인증서를 구성할 수 없는 경우에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 일시적으로 지정하고, 운영에서는 설정하지 마세요.
 

@@ -1,4 +1,5 @@
 #include "MssqlClient.hpp"
+#include "ElasticsearchBulkLogBuffer.hpp"
 #include <iostream>
 #include <sybfront.h>
 #include <sybdb.h>
@@ -75,6 +76,8 @@ public:
             if (!DBDEAD(conn)) return conn;
             dbclose(conn);
             --active_connections_;
+            ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                    "mssql-ag", false, {{"listener", host_ + ":" + std::to_string(port_)}});
         }
 
         active_connections_++;
@@ -99,6 +102,8 @@ public:
             // which is configured as the AG listener.
             dbclose(conn);
             --active_connections_;
+            ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                    "mssql-ag", false, {{"listener", host_ + ":" + std::to_string(port_)}});
             cv_.notify_all();
             return;
         }
@@ -109,6 +114,7 @@ public:
 private:
     DBPROCESS* openConnectionWithRetry() {
         const std::string server_str = host_ + ":" + std::to_string(port_);
+        int failed_attempts = 0;
         for (int attempt = 0; attempt < 3; ++attempt) {
             LOGINREC* login = dblogin();
             if (!login) {
@@ -133,12 +139,26 @@ private:
                 dbclose(dbproc);
                 dbproc = nullptr;
             }
-            if (dbproc) return dbproc;
+            if (dbproc) {
+                const bool recovered = ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                        "mssql-ag", true, {{"listener", server_str}});
+                if (failed_attempts > 0 && !recovered) {
+                    ElasticsearchBulkLogBuffer::instance().record(
+                            "mssql-ag", "connection_retry_succeeded", "WARN",
+                            "SQL Server listener connection succeeded after a retry",
+                            {{"listener", server_str}, {"failed_attempts", failed_attempts}});
+                }
+                return dbproc;
+            }
 
+            ++failed_attempts;
             if (attempt < 2) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200 * (1 << attempt)));
             }
         }
+        ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                "mssql-ag", false,
+                {{"listener", server_str}, {"failed_attempts", failed_attempts}});
         std::cerr << "[MssqlClient] Could not connect to the SQL Server listener after bounded retries." << std::endl;
         return nullptr;
     }

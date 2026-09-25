@@ -19,6 +19,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include "CanvasPool.hpp"
+#include "ElasticsearchBulkLogBuffer.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
 #include "MssqlClient.hpp"
@@ -283,6 +284,10 @@ int main(int argc, char* argv[]) {
     std::cout << " - zlib (zlib license)\n";
     std::cout << " See THIRD_PARTY_LICENSES.md for full license texts.\n";
     std::cout << "========================================\n";
+
+    // Start the batched ES log sink before startup and storage logs are emitted.
+    auto& es_log_sink = ElasticsearchBulkLogBuffer::instance();
+    ElasticsearchLogStreamCapture es_log_capture(es_log_sink);
 
     CanvasPool canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port, g_advertise_ip, g_port);
 

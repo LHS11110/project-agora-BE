@@ -4,6 +4,7 @@ import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
+import com.endpoint.frelog.global.logging.ElasticsearchBulkLogService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -17,6 +18,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** Reads the active RedisJSON document; failure is fail-closed for access checks. */
 @Component
@@ -26,17 +28,20 @@ public class CanvasRedisDocumentReader {
     private final String password;
     private final String sentinelAddresses;
     private final String sentinelMasterName;
+    private final ElasticsearchBulkLogService logService;
 
     public CanvasRedisDocumentReader(ObjectMapper objectMapper,
             @Value("${REDIS_USER:}") String username,
             @Value("${REDIS_USER_PASSWORD:}") String password,
             @Value("${app.redis.sentinels:}") String sentinelAddresses,
-            @Value("${app.redis.sentinel-master-name:agora-master}") String sentinelMasterName) {
+            @Value("${app.redis.sentinel-master-name:agora-master}") String sentinelMasterName,
+            ElasticsearchBulkLogService logService) {
         this.objectMapper = objectMapper;
         this.username = username;
         this.password = password;
         this.sentinelAddresses = sentinelAddresses;
         this.sentinelMasterName = sentinelMasterName;
+        this.logService = logService;
     }
 
     public CanvasDocument read(CanvasInfo info) {
@@ -48,8 +53,12 @@ public class CanvasRedisDocumentReader {
             try {
                 RedisAddress endpoint = new RedisAddress(info.getRedisInfo().getRedisIp(),
                         Integer.parseInt(info.getRedisInfo().getRedisPort()));
-                return objectMapper.readValue(readDocument(endpoint, false, key), CanvasDocument.class);
+                String json = readDocument(endpoint, false, key);
+                logService.reportAvailability("redis", true, Map.of("endpoint", endpoint.host() + ":" + endpoint.port()));
+                return objectMapper.readValue(json, CanvasDocument.class);
             } catch (Exception e) {
+                logService.reportAvailability("redis", false,
+                        Map.of("error_type", e.getClass().getSimpleName()));
                 throw unavailable();
             }
         }
@@ -58,13 +67,23 @@ public class CanvasRedisDocumentReader {
         if (seeds.isEmpty()) throw unavailable();
         for (int attempt = 0; attempt < 3; attempt++) {
             for (RedisAddress seed : seeds) {
+                RedisAddress master;
+                String json;
                 try {
-                    RedisAddress master = discoverMaster(seed);
-                    String json = readDocument(master, true, key);
-                    return objectMapper.readValue(json, CanvasDocument.class);
+                    master = discoverMaster(seed);
+                    json = readDocument(master, true, key);
                 } catch (Exception ignored) {
                     // A seed can briefly return its old view during promotion.
                     // Query the other seeds and verify the candidate's ROLE.
+                    continue;
+                }
+                Map<String, String> details = Map.of("endpoint", master.host() + ":" + master.port());
+                logService.reportAvailability("redis-sentinel", true, details);
+                logService.reportPrimaryChange("redis-sentinel", master.host() + ":" + master.port());
+                try {
+                    return objectMapper.readValue(json, CanvasDocument.class);
+                } catch (Exception e) {
+                    throw unavailable();
                 }
             }
             if (attempt < 2) {
@@ -76,6 +95,8 @@ public class CanvasRedisDocumentReader {
                 }
             }
         }
+        logService.reportAvailability("redis-sentinel", false,
+                Map.of("seed_count", seeds.size(), "error", "primary_discovery_or_document_read_failed"));
         throw unavailable();
     }
 

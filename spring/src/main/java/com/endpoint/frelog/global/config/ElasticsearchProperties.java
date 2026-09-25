@@ -16,6 +16,9 @@ public class ElasticsearchProperties {
     private String index = "canvas";
     private String username = "agora_user";
     private String password;
+    private String logIndex = "agora-logs";
+    private String logUsername = "agora_log_writer";
+    private String logPassword;
     private boolean autoCreate = true;
     private boolean failOnError = false;
 
@@ -65,6 +68,30 @@ public class ElasticsearchProperties {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public String getLogIndex() {
+        return logIndex;
+    }
+
+    public void setLogIndex(String logIndex) {
+        this.logIndex = logIndex;
+    }
+
+    public String getLogUsername() {
+        return logUsername;
+    }
+
+    public void setLogUsername(String logUsername) {
+        this.logUsername = logUsername;
+    }
+
+    public String getLogPassword() {
+        return logPassword;
+    }
+
+    public void setLogPassword(String logPassword) {
+        this.logPassword = logPassword;
     }
 
     public boolean isAutoCreate() {

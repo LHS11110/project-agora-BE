@@ -1,4 +1,5 @@
 #include "RedisClient.hpp"
+#include "ElasticsearchBulkLogBuffer.hpp"
 #include <iostream>
 #include <sstream>
 #include <sys/socket.h>
@@ -106,8 +107,15 @@ bool RedisClient::connect() {
     // Standalone deployments retain the configured Redis endpoint. With
     // Sentinel configured, the database row endpoint is intentionally ignored.
     if (sentinel_seeds_.empty()) {
-        if (!connectTo(host_, port_, 3000)) return false;
-        return authenticate();
+        const std::string endpoint = host_ + ":" + std::to_string(port_);
+        if (!connectTo(host_, port_, 3000) || !authenticate()) {
+            ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                    "redis", false, {{"endpoint", endpoint}});
+            return false;
+        }
+        ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                "redis", true, {{"endpoint", endpoint}});
+        return true;
     }
 
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -133,7 +141,13 @@ bool RedisClient::connect() {
             std::istringstream role_parts(readResponse());
             std::string role;
             role_parts >> role;
-            if (role == "master") return true;
+            if (role == "master") {
+                const std::string endpoint = master_host + ":" + std::to_string(master_port);
+                ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                        "redis-sentinel", true, {{"endpoint", endpoint}});
+                ElasticsearchBulkLogBuffer::instance().reportPrimaryChange("redis-sentinel", endpoint);
+                return true;
+            }
 
             // Sentinel can briefly return its previous view during promotion.
             // Verify the role on the data node before accepting the connection.
@@ -141,6 +155,8 @@ bool RedisClient::connect() {
         }
         if (attempt < 2) std::this_thread::sleep_for(std::chrono::milliseconds(100 * (attempt + 1)));
     }
+    ElasticsearchBulkLogBuffer::instance().reportAvailability(
+            "redis-sentinel", false, {{"seed_count", sentinel_seeds_.size()}});
     std::cerr << "[RedisClient] Could not discover a writable Redis primary from Sentinel\n";
     disconnect();
     return false;
@@ -264,6 +280,9 @@ std::string RedisClient::readResponse() {
         // be uncertain after failover.
         if (error.rfind("READONLY", 0) == 0 || error.rfind("MASTERDOWN", 0) == 0) {
             disconnect();
+            ElasticsearchBulkLogBuffer::instance().reportAvailability(
+                    sentinel_seeds_.empty() ? "redis" : "redis-sentinel", false,
+                    {{"error", error.substr(0, 64)}});
         }
         return error;
     } else if (type == '+' || type == ':') {
