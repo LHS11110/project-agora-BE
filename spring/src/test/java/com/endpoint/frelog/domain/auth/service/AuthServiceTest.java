@@ -69,8 +69,6 @@ class AuthServiceTest {
         given(httpRequest.getRemoteAddr()).willReturn("127.0.0.1");
         given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1), eq("아고라유저"), eq("ROLE_USER"), eq("127.0.0.1")))
                 .willReturn("mock-jwt-token");
-        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(activeUser)));
-
         // when
         LoginResponse response = authService.login(request, httpRequest);
 

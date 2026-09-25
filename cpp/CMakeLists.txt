@@ -82,3 +82,30 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/LICEN
     DESTINATION share/agora/licenses RENAME uSockets-Apache-2.0.txt)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jwt-cpp/LICENSE
     DESTINATION share/agora/licenses RENAME jwt-cpp-MIT.txt)
+
+# First-party unit and local integration tests. The integration test runs a
+# fake Redis Sentinel/primary pair on loopback and needs no external services.
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(agora_cpp_unit_tests
+        tests/unit_tests.cpp
+        src/Canvas.cpp
+        src/CanvasPassword.cpp
+    )
+    target_link_libraries(agora_cpp_unit_tests PRIVATE Threads::Threads crypto)
+    target_compile_options(agora_cpp_unit_tests PRIVATE -Wall -Wextra -O2)
+    add_test(NAME agora_cpp_unit_tests COMMAND agora_cpp_unit_tests)
+
+    add_executable(agora_cpp_redis_failover_integration
+        tests/redis_failover_integration.cpp
+        src/RedisClient.cpp
+        src/ElasticsearchBulkLogBuffer.cpp
+    )
+    target_link_libraries(agora_cpp_redis_failover_integration
+        PRIVATE Threads::Threads ${HTTPLIB_LIBRARIES} crypto ssl)
+    target_compile_options(agora_cpp_redis_failover_integration PRIVATE
+        ${HTTPLIB_CFLAGS_OTHER} -Wall -Wextra -O2)
+    add_test(NAME agora_cpp_redis_failover_integration
+             COMMAND agora_cpp_redis_failover_integration)
+    set_tests_properties(agora_cpp_redis_failover_integration PROPERTIES TIMEOUT 20)
+endif()

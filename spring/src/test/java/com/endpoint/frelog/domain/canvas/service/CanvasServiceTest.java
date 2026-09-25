@@ -1,6 +1,5 @@
 package com.endpoint.frelog.domain.canvas.service;
 
-import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
@@ -63,9 +62,6 @@ class CanvasServiceTest {
 
     @Mock
     private LoadBalancerService loadBalancerService;
-
-    @Mock
-    private CppServerClient cppServerClient;
 
     @Mock
     private com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository serverInfoRepository;
@@ -142,7 +138,7 @@ class CanvasServiceTest {
 
         assertThatThrownBy(() -> canvasService.updateCanvasName(12, "Changed", userDetails))
                 .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.BAD_REQUEST);
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_ACTIVE);
     }
 
     @Test
@@ -150,7 +146,6 @@ class CanvasServiceTest {
     void accessCanvas_RequiresPassword() {
         CanvasDocument doc = new CanvasDocument("Protected", 13, 1L, "secret", "default");
         given(canvasElasticsearchService.getCanvasDocumentById(13)).willReturn(Optional.of(doc));
-        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
         given(canvasInfoRepository.findByIdWithPessimisticLock(13)).willReturn(Optional.of(new CanvasInfo(13)));
         jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
 
@@ -237,7 +232,7 @@ class CanvasServiceTest {
         // when & then
         assertThatThrownBy(() -> canvasService.deleteCanvas(200, userDetails))
                 .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.BAD_REQUEST);
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_ACTIVE);
     }
 
     @Test
@@ -246,9 +241,6 @@ class CanvasServiceTest {
         // given
         CanvasDocument doc = new CanvasDocument("Access Canvas", 300, 1L, "hashedPass", "default");
         given(canvasElasticsearchService.getCanvasDocumentById(300)).willReturn(Optional.of(doc));
-        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
-
-        given(userSessionRepository.findById(1L)).willReturn(Optional.of(new com.endpoint.frelog.domain.user.entity.UserSession(testUser)));
 
         CanvasInfo info = new CanvasInfo(300);
         info.setIsCached(false);
@@ -280,22 +272,24 @@ class CanvasServiceTest {
     }
 
     @Test
-    @DisplayName("캔버스 접속 중단 요청은 C++에 전달하고 세션 상태는 WebSocket 종료까지 유지한다")
-    void disconnectCanvasAccess_Success() {
-        // given
-        // testUser.setIsAccessed(true);
-        // testUser.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002"));
-        com.endpoint.frelog.domain.user.entity.UserSession mockSession = new com.endpoint.frelog.domain.user.entity.UserSession(testUser);
+    @DisplayName("다른 캔버스를 이용 중인 세션은 접속 서버를 할당하기 전에 거부한다")
+    void accessCanvas_AlreadyUsingAnotherCanvas_RejectsBeforeAllocation() {
+        CanvasInfo targetCanvas = new CanvasInfo(300);
+        given(canvasInfoRepository.findByIdWithPessimisticLock(300)).willReturn(Optional.of(targetCanvas));
+
+        com.endpoint.frelog.domain.user.entity.UserSession mockSession =
+                new com.endpoint.frelog.domain.user.entity.UserSession(testUser);
         mockSession.setIsAccessed(true);
-        mockSession.setCppServer(new com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo("127.0.0.1", "8000", "8002", "Cpp-1"));
+        mockSession.setCanvas(new CanvasInfo(299));
         given(userSessionRepository.findByIdWithPessimisticLock(1L)).willReturn(Optional.of(mockSession));
 
-        // when
-        canvasService.disconnectCanvasAccess(300, userDetails);
+        jakarta.servlet.http.HttpServletRequest request =
+                org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
 
-        // then
-        verify(cppServerClient).disconnectUserFromCanvas("127.0.0.1", "8000", 300, 1L);
-        assertThat(mockSession.getIsAccessed()).isTrue();
+        assertThatThrownBy(() -> canvasService.accessCanvas(300, request, userDetails))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ALREADY_CONNECTED);
+        verifyNoInteractions(loadBalancerService);
     }
 
 }

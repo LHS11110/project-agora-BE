@@ -307,18 +307,21 @@ Spring은 실시간 서버 부하 확인을 위해 C++ `GET /api/canvas/count`�
 ## 테스트와 점검
 
 ```bash
-# Spring 단위·통합 테스트
+# Spring 단위·통합 테스트 (Redis 장애복구/SQL 상태감시 포함)
 ./spring/gradlew -p spring test
 
-# C++ 빌드
-cmake -S cpp -B cpp/build
+# C++ 빌드와 단위·통합 테스트 등록
+cmake -S cpp -B cpp/build -DBUILD_TESTING=ON
 cmake --build cpp/build -j2
+ctest --test-dir cpp/build --output-on-failure
 
 # 서버 상태
 curl http://127.0.0.1:8080/api/auth/health
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/canvas/active
 ```
+
+C++ 단위 테스트는 캔버스 연결 수명주기, persistence queue, 비밀번호 해시 형식을 검사합니다. C++ 통합 테스트는 loopback에 가짜 Redis Sentinel과 primary 두 개를 띄워 기존 primary의 READONLY 응답과 승격 뒤 재연결을 확인합니다. 실제 DB·Redis·Elasticsearch 서비스는 중단하거나 변경하지 않습니다.
 
 DB·RedisJSON·Elasticsearch CRUD 및 권한 테스트는 DB 저장소에서 실행합니다.
 

@@ -1,7 +1,9 @@
 package com.endpoint.frelog.global.controller;
 
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
-import com.endpoint.frelog.domain.loadbalancer.repository.ServerInfoRepository;
+import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
+import com.endpoint.frelog.domain.user.entity.UserSession;
+import com.endpoint.frelog.domain.user.repository.UserSessionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -11,8 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
-import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.List;
 
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -25,7 +26,7 @@ class TestPageControllerTest {
     private MockMvc mockMvc;
 
     @Mock
-    private ServerInfoRepository serverInfoRepository;
+    private UserSessionRepository userSessionRepository;
 
     @InjectMocks
     private TestPageController controller;
@@ -36,27 +37,36 @@ class TestPageControllerTest {
     }
 
     @Test
-    void rejectsUnregisteredProxyTarget() throws Exception {
-        given(serverInfoRepository.findByServerIpAndServerPort("169.254.169.254", "80"))
-                .willReturn(Optional.empty());
+    void returnsDatabaseBackedActiveCanvasList() throws Exception {
+        UserSession first = new UserSession();
+        first.setIsAccessed(true);
+        first.setCanvas(new CanvasInfo(42));
+        UserSession second = new UserSession();
+        second.setIsAccessed(true);
+        second.setCanvas(new CanvasInfo(42));
+        given(userSessionRepository.findByIsAccessedTrue()).willReturn(List.of(first, second));
 
-        mockMvc.perform(get("/api/test/cpp-active-canvases")
-                        .param("host", "169.254.169.254")
-                        .param("port", "80"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error").exists());
+        mockMvc.perform(get("/api/test/cpp-active-canvases"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"))
+                .andExpect(jsonPath("$.count").value(1))
+                .andExpect(jsonPath("$.canvases[0].canvas_id").value(42))
+                .andExpect(jsonPath("$.canvases[0].active_user_count").value(2));
     }
 
     @Test
-    void rejectsStaleRegisteredProxyTarget() throws Exception {
-        ServerInfo stale = new ServerInfo("127.0.0.1", "8000", "8002");
-        stale.setLastHeartbeatAt(LocalDateTime.now().minusMinutes(1));
-        given(serverInfoRepository.findByServerIpAndServerPort("127.0.0.1", "8000"))
-                .willReturn(Optional.of(stale));
+    void returnsDatabaseBackedActiveCanvasCount() throws Exception {
+        UserSession first = new UserSession();
+        first.setIsAccessed(true);
+        first.setCanvas(new CanvasInfo(42));
+        UserSession second = new UserSession();
+        second.setIsAccessed(true);
+        second.setCanvas(new CanvasInfo(43));
+        given(userSessionRepository.findByIsAccessedTrue()).willReturn(List.of(first, second));
 
-        mockMvc.perform(get("/api/test/cpp-canvas-count")
-                        .param("host", "127.0.0.1")
-                        .param("port", "8000"))
-                .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/test/cpp-canvas-count"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("success"))
+                .andExpect(jsonPath("$.count").value(2));
     }
 }
