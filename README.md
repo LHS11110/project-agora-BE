@@ -141,6 +141,40 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 
 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`는 백엔드 프로세스 사용자에게 파일 읽기와 상위 디렉터리 탐색 권한이 있어야 합니다. 로컬 DB 저장소의 개발 인증서는 저장소 내부 권한이 제한될 수 있으므로 CA 공개 인증서만 이 저장소의 Git 제외 디렉터리 `.local-certs/`에 복사해 사용합니다. 개인 키가 있는 인증서 디렉터리의 권한을 넓히지 마세요. 운영에서는 공개 CA 인증서를 백엔드 컨테이너의 읽기 전용 secret 경로로 마운트합니다.
 
+## Docker로 백엔드 실행
+
+`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소가 제공하는 SQL Server·Elasticsearch·Redis Sentinel은 별도로 실행해야 합니다. DB 컨테이너는 `agora-net`, Redis Sentinel/노드는 TLS가 적용된 내부망 `agora-redis-ha`를 사용합니다. 두 네트워크와 해당 저장소 컨테이너들이 먼저 준비되어 있어야 합니다. 최초 DB 스키마·계정·인덱스 설정은 [DB 저장소 안내](../project-agora-DB/README.md)를 먼저 완료하세요.
+
+백엔드 Compose는 프로젝트 루트 `.env`의 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`를 호스트의 CA 파일 경로로 사용해 컨테이너에 읽기 전용으로 마운트합니다. 컨테이너 안에서는 각각 `/run/certs/elasticsearch-ca.crt`, `/run/certs/redis-ca.crt`로 참조합니다. TLS 연결을 위해 Elasticsearch는 HTTPS, Redis/Sentinel은 TLS를 사용하며 `REDIS_SENTINELS`에는 세 Sentinel 주소를 설정해야 합니다. 이미지에는 `.env`나 인증서를 복사하지 않습니다.
+
+운영 환경에서 C++ SQL TLS 인증서 검증을 사용할 때 Docker 컨테이너 경로는 `DOCKER_DB_FREETDS_CONF=/etc/freetds/freetds.conf`로 설정합니다. 기본 FreeTDS 설정은 OS 신뢰 저장소와 서버 호스트명 검증을 사용합니다. OS 신뢰 저장소에 없는 SQL CA를 쓸 때는 `CPP_SQL_CA_CERT_HOST_PATH`로 호스트 CA 파일을 마운트하고, `CPP_FREETDS_CONF_HOST_PATH`가 가리키는 FreeTDS 설정에서 `/run/certs/sql-ca-bundle.crt`를 `ca file`로 지정합니다. 로컬 자체 서명 DB에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 사용합니다.
+
+DB 저장소의 기존 Compose 스택과 Sentinel HA 구성을 healthy 상태로 올린 뒤 백엔드를 시작합니다. HA Redis를 사용할 때 standalone Redis와 Sentinel 구성을 동시에 시작하면 호스트 포트가 겹칠 수 있으므로 DB 저장소의 Redis HA 안내에 따라 실행하세요.
+
+```bash
+cd /path/to/project-agora-BE
+./scripts/backend-docker.sh config
+./scripts/backend-docker.sh build  # 선택 사항: up 명령이 이미지도 빌드합니다.
+./scripts/backend-docker.sh up
+./scripts/backend-docker.sh health
+```
+
+`up`은 `agora-net`, `agora-redis-ha` 네트워크와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 네트워크 주소나 AG listener를 쓸 때는 `.env`에 `DOCKER_DB_HOST`/`DOCKER_DB_PORT`, `DOCKER_ES_HOST`/`DOCKER_ES_PORT`를 지정하세요. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
+
+컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 현재 Nginx 예시는 호스트 loopback 포트들을 프록시합니다.
+
+```bash
+./scripts/backend-docker.sh status
+./scripts/backend-docker.sh logs spring
+./scripts/backend-docker.sh logs cpp
+./scripts/backend-docker.sh restart  # 이미지 재빌드 없이 컨테이너를 재생성
+./scripts/backend-docker.sh stop
+./scripts/backend-docker.sh start
+./scripts/backend-docker.sh down    # 백엔드 컨테이너만 제거; DB와 볼륨은 유지
+```
+
+소스 변경을 이미지에 반영할 때는 `./scripts/backend-docker.sh up`을 다시 실행합니다. `.env`나 Docker 설정을 바꿨을 때도 Compose가 컨테이너를 재생성합니다. `logs`는 계속 출력되므로 `Ctrl+C`를 눌러도 컨테이너는 중지되지 않습니다. 서버 health API는 `http://127.0.0.1:8080/api/auth/health`와 `http://127.0.0.1:8000/health`입니다.
+
 ## 로컬 실행
 
 먼저 DB 저장소에서 인프라를 준비합니다.
@@ -290,16 +324,13 @@ curl -fsS http://127.0.0.1:8000/health
 
 [nginx/agora.conf.example](nginx/agora.conf.example) 파일에는 Spring Boot API 프록시와 C++ 포트별 WSS 라우팅이 통합된 전체 Nginx 설정 예시가 포함되어 있습니다.
 
-같은 Nginx 가상 호스트에서 React/Vite 빌드 파일도 제공합니다. 프론트엔드 저장소에서 빌드한 `dist/` 내용을 `/var/www/agora-frontend/`로 배포하세요. `/`, `/login`, `/profile`, `/search`, `/canvases/...`는 SPA `index.html`로 처리되고, 정적 자산은 파일로 제공합니다.
+같은 Nginx 가상 호스트에서 React/Vite 프런트엔드는 Docker 컨테이너로 제공합니다. 프런트엔드 저장소의 운영 Compose가 `127.0.0.1:4173`에 컨테이너 포트를 바인딩하고, 이 Nginx 설정은 `/api/`와 `/wss/` 외의 요청을 컨테이너로 전달합니다. 컨테이너 내부 Nginx가 SPA 경로, 정적 파일, 로컬 MathJax 에셋을 처리합니다.
 
 ```bash
 cd /path/to/project-agora-FE
-npm run build
-sudo install -d -o root -g root -m 755 /var/www/agora-frontend
-sudo cp -a dist/. /var/www/agora-frontend/
-sudo chown -R root:root /var/www/agora-frontend
-sudo find /var/www/agora-frontend -type d -exec chmod 755 {} +
-sudo find /var/www/agora-frontend -type f -exec chmod 644 {} +
+docker compose up -d --build
+docker compose ps
+curl -fsS http://127.0.0.1:4173/
 ```
 
 Nginx 설정을 적용하기 전 `server_name`과 인증서 경로를 배포 도메인에 맞게 바꾸세요. 자체 서명 인증서는 로컬 테스트에만 사용합니다.

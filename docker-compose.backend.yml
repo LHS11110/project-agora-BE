@@ -1,0 +1,153 @@
+name: agora-backend
+
+services:
+  spring:
+    image: agora-spring:local
+    build:
+      context: .
+      dockerfile: docker/spring.Dockerfile
+    container_name: agora-spring
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - .env
+    environment:
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: "8080"
+      DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
+      DB_PORT: ${DOCKER_DB_PORT:-1433}
+      ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
+      ES_PORT: ${DOCKER_ES_PORT:-9200}
+      ES_SCHEME: https
+      ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
+      REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
+      REDIS_TLS_ENABLED: "true"
+      REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+    volumes:
+      - type: bind
+        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
+        target: /run/certs/elasticsearch-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
+        target: /run/certs/redis-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - agora-net
+      - redis-ha
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/auth/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  cpp:
+    image: agora-cpp:local
+    build:
+      context: .
+      dockerfile: docker/cpp.Dockerfile
+    container_name: agora-cpp
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
+      PORT: "8000"
+      WS_PORT: "8002"
+      DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
+      DB_PORT: ${DOCKER_DB_PORT:-1433}
+      ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
+      ES_PORT: ${DOCKER_ES_PORT:-9200}
+      ES_SCHEME: https
+      ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      JAVA_HOST: agora-spring
+      JAVA_PORT: "8080"
+      REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
+      REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
+      REDIS_TLS_ENABLED: "true"
+      REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-}
+    volumes:
+      - type: bind
+        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
+        target: /run/certs/elasticsearch-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
+        target: /run/certs/redis-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-strict.conf.example}
+        target: /etc/freetds/freetds.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CPP_SQL_CA_CERT_HOST_PATH:-/etc/ssl/certs/ca-certificates.crt}
+        target: /run/certs/sql-ca-bundle.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8002:8002"
+    networks:
+      - agora-net
+      - redis-ha
+    depends_on:
+      spring:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+networks:
+  agora-net:
+    external: true
+    name: agora-net
+  redis-ha:
+    external: true
+    name: agora-redis-ha
