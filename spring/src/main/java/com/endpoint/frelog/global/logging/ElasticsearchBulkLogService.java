@@ -114,24 +114,34 @@ public class ElasticsearchBulkLogService {
 
     @PreDestroy
     public void flushOnShutdown() {
-        flushBatches(MAX_BATCHES_PER_FLUSH);
+        if (!enabled) return;
+        flushLock.lock();
+        try {
+            flushBatchesWhileLocked(QUEUE_CAPACITY);
+        } finally {
+            flushLock.unlock();
+        }
     }
 
     private void flushBatches(int maxBatches) {
         if (!enabled || !flushLock.tryLock()) return;
         try {
-            for (int batchNumber = 0; batchNumber < maxBatches; batchNumber++) {
-                List<LogEvent> batch = drainBatch();
-                if (batch.isEmpty()) break;
-                if (!sendBatch(batch)) {
-                    requeueBatch(batch);
-                    break;
-                }
-            }
-            if (queue.size() < QUEUE_CAPACITY / 2) overflowWarned.set(false);
+            flushBatchesWhileLocked(maxBatches);
         } finally {
             flushLock.unlock();
         }
+    }
+
+    private void flushBatchesWhileLocked(int maxBatches) {
+        for (int batchNumber = 0; batchNumber < maxBatches; batchNumber++) {
+            List<LogEvent> batch = drainBatch();
+            if (batch.isEmpty()) break;
+            if (!sendBatch(batch)) {
+                requeueBatch(batch);
+                break;
+            }
+        }
+        if (queue.size() < QUEUE_CAPACITY / 2) overflowWarned.set(false);
     }
 
     private List<LogEvent> drainBatch() {

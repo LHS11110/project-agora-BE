@@ -39,11 +39,12 @@ ctest --test-dir cpp/build --output-on-failure
 | 캔버스 비밀번호 | BCrypt 저장 형식, 레거시 비밀번호 정규화, C++ 서버와 공유하는 PBKDF2 형식의 검증을 확인합니다. |
 | 로드 밸런서 | 서버/Redis 후보가 없을 때의 오류와 단일 후보 선택, P2C 방식의 부하가 낮은 후보 선택을 확인합니다. |
 | Elasticsearch 서비스 | REST 요청의 색인·삭제·조회, 인덱스 부재, 통신 실패 및 `fail-on-error` 동작을 모의 응답으로 검증합니다. |
+| Elasticsearch 로그 배치 | 로컬 HTTP stub으로 로그 bulk 전송을 확인하고, graceful shutdown 시 정기 flush 한도보다 많은 큐 항목도 모두 flush하는지 검증합니다. |
 | Redis Sentinel 장애 전환 | 실제 `CanvasRedisDocumentReader`가 인증을 요구하는 로컬 가짜 Sentinel과 Redis 노드 A/B에 RESP로 접속합니다. Sentinel 별도 계정 인증, A 중단 후 읽기 실패 및 장애 로그 상태를 확인하고, Sentinel이 B를 새 primary로 알리면 문서를 다시 읽고 복구·primary 변경 로그 호출을 확인합니다. 로그 서비스는 모의 객체입니다. |
 | SQL Server AG 모니터 | 모의 `DataSource`가 먼저 연결 실패를 반환하고 이후 SQL Server 메타데이터 및 `SELECT @@SERVERNAME` 결과를 반환하도록 구성합니다. 장애·복구와 primary 이름 변경에 따른 로그 서비스 호출을 검증합니다. |
 | 선택적 Elasticsearch 실연동 | `CanvasElasticsearchIntegrationTest`는 `ES_USER_PASSWORD`가 설정되고 `localhost:9200`의 클러스터가 응답할 때만 실행됩니다. `ES_USER_NAME`은 선택 항목이며 기본값은 `agora_user`입니다. `canvas` 인덱스에 고정 ID `9876`, 이름 `Agora-Integration-Test-Canvas` 문서를 저장·조회·수정·삭제하고 정리합니다. 조건이 충족되지 않으면 테스트가 실패하는 대신 건너뜁니다. |
 
-관련 코드는 `spring/src/test/java` 아래에 있습니다. 특히 장애 전환 테스트는 각각 `CanvasRedisDocumentReaderFailoverTest`와 `HaFailoverMonitorTest`입니다.
+관련 코드는 `spring/src/test/java` 아래에 있습니다. 장애 전환 테스트는 각각 `CanvasRedisDocumentReaderFailoverTest`와 `HaFailoverMonitorTest`이고, 로그 종료 flush 테스트는 `ElasticsearchBulkLogServiceTest`입니다.
 
 ## C++ 테스트 범위
 
