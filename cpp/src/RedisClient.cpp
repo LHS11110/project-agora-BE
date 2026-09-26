@@ -16,11 +16,23 @@
 #include <netdb.h>
 #include <thread>
 #include <chrono>
+#include <climits>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
 
 namespace {
 std::string envOr(const char* name, const std::string& value) {
     if (!value.empty()) return value;
     return environmentValue(name);
+}
+
+bool envEnabled(const char* name) {
+    const char* value = std::getenv(name);
+    if (!value) return false;
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized == "true" || normalized == "1" || normalized == "yes";
 }
 
 bool isWrongTypeResponse(const std::string& response) {
@@ -74,11 +86,35 @@ RedisClient::RedisClient(const std::string& host, int port, const std::string& u
       sentinel_master_name_(envOr("REDIS_SENTINEL_MASTER_NAME", "agora-master")),
       sentinel_user_(envOr("REDIS_SENTINEL_USER", "")),
       sentinel_password_(envOr("REDIS_SENTINEL_PASSWORD", "")),
-      sentinel_seeds_(parseSentinelSeeds(std::getenv("REDIS_SENTINELS"))), socket_fd_(-1) {
+      sentinel_seeds_(parseSentinelSeeds(std::getenv("REDIS_SENTINELS"))),
+      tls_ca_cert_(envOr("REDIS_TLS_CA_CERT", "")),
+      tls_enabled_(envEnabled("REDIS_TLS_ENABLED")), tls_config_valid_(!tls_enabled_),
+      socket_fd_(-1), ssl_context_(nullptr), ssl_(nullptr) {
+    if (!tls_enabled_) return;
+    if (tls_ca_cert_.empty()) {
+        std::cerr << "[RedisClient] REDIS_TLS_ENABLED requires REDIS_TLS_CA_CERT\n";
+        return;
+    }
+
+    ssl_context_ = SSL_CTX_new(TLS_client_method());
+    if (!ssl_context_) {
+        std::cerr << "[RedisClient] Could not create a Redis TLS client context\n";
+        return;
+    }
+    SSL_CTX_set_min_proto_version(ssl_context_, TLS1_2_VERSION);
+    SSL_CTX_set_verify(ssl_context_, SSL_VERIFY_PEER, nullptr);
+    if (SSL_CTX_load_verify_locations(ssl_context_, tls_ca_cert_.c_str(), nullptr) != 1) {
+        std::cerr << "[RedisClient] Could not load REDIS_TLS_CA_CERT\n";
+        SSL_CTX_free(ssl_context_);
+        ssl_context_ = nullptr;
+        return;
+    }
+    tls_config_valid_ = true;
 }
 
 RedisClient::~RedisClient() {
     disconnect();
+    if (ssl_context_) SSL_CTX_free(ssl_context_);
 }
 
 bool RedisClient::connect() {
@@ -88,6 +124,10 @@ bool RedisClient::connect() {
 
     if (password_.empty()) {
         std::cerr << "[RedisClient] REDIS_USER_PASSWORD is not configured\n";
+        return false;
+    }
+    if (tls_enabled_ && !tls_config_valid_) {
+        std::cerr << "[RedisClient] Redis TLS is enabled but its CA configuration is invalid\n";
         return false;
     }
     if (sentinel_user_.empty() != sentinel_password_.empty()) {
@@ -217,7 +257,34 @@ bool RedisClient::connectTo(const std::string& host, int port, int timeout_ms) {
         }
         if (original_flags >= 0) fcntl(fd, F_SETFL, original_flags);
         if (result == 0) {
+            SSL* candidate_ssl = nullptr;
+            if (tls_enabled_) {
+                candidate_ssl = SSL_new(ssl_context_);
+                if (!candidate_ssl || SSL_set_fd(candidate_ssl, fd) != 1) {
+                    if (candidate_ssl) SSL_free(candidate_ssl);
+                    close(fd);
+                    continue;
+                }
+
+                in_addr ipv4{};
+                in6_addr ipv6{};
+                X509_VERIFY_PARAM* verify = SSL_get0_param(candidate_ssl);
+                const bool is_ip = inet_pton(AF_INET, host.c_str(), &ipv4) == 1
+                        || inet_pton(AF_INET6, host.c_str(), &ipv6) == 1;
+                const bool identity_set = is_ip
+                        ? X509_VERIFY_PARAM_set1_ip_asc(verify, host.c_str()) == 1
+                        : X509_VERIFY_PARAM_set1_host(verify, host.c_str(), 0) == 1;
+                if ((!is_ip && SSL_set_tlsext_host_name(candidate_ssl, host.c_str()) != 1)
+                        || !identity_set || SSL_connect(candidate_ssl) != 1
+                        || SSL_get_verify_result(candidate_ssl) != X509_V_OK) {
+                    SSL_free(candidate_ssl);
+                    close(fd);
+                    ERR_clear_error();
+                    continue;
+                }
+            }
             socket_fd_ = fd;
+            ssl_ = candidate_ssl;
             connected = true;
         } else {
             close(fd);
@@ -228,10 +295,24 @@ bool RedisClient::connectTo(const std::string& host, int port, int timeout_ms) {
 }
 
 void RedisClient::disconnect() {
+    if (ssl_) {
+        SSL_free(ssl_);
+        ssl_ = nullptr;
+    }
     if (socket_fd_ >= 0) {
         close(socket_fd_);
         socket_fd_ = -1;
     }
+}
+
+ssize_t RedisClient::readTransport(void* buffer, std::size_t size) {
+    if (ssl_) return SSL_read(ssl_, buffer, static_cast<int>(std::min(size, static_cast<std::size_t>(INT_MAX))));
+    return ::read(socket_fd_, buffer, size);
+}
+
+ssize_t RedisClient::writeTransport(const void* buffer, std::size_t size) {
+    if (ssl_) return SSL_write(ssl_, buffer, static_cast<int>(std::min(size, static_cast<std::size_t>(INT_MAX))));
+    return ::write(socket_fd_, buffer, size);
 }
 
 bool RedisClient::sendCommand(const std::vector<std::string>& args) {
@@ -248,7 +329,7 @@ bool RedisClient::sendCommand(const std::vector<std::string>& args) {
     std::string msg = oss.str();
     std::size_t total = 0;
     while (total < msg.size()) {
-        ssize_t sent = write(socket_fd_, msg.data() + total, msg.size() - total);
+        ssize_t sent = writeTransport(msg.data() + total, msg.size() - total);
         if (sent <= 0) {
             disconnect();
             return false;
@@ -262,14 +343,14 @@ std::string RedisClient::readLine() {
     std::string line;
     char c;
     while (socket_fd_ >= 0) {
-        const ssize_t received = read(socket_fd_, &c, 1);
+        const ssize_t received = readTransport(&c, 1);
         if (received != 1) {
             disconnect();
             return "";
         }
         if (c == '\r') {
             char next_c;
-            if (read(socket_fd_, &next_c, 1) == 1 && next_c == '\n') {
+            if (readTransport(&next_c, 1) == 1 && next_c == '\n') {
                 break;
             }
             disconnect();
@@ -308,7 +389,7 @@ std::string RedisClient::readResponse() {
         std::vector<char> buf(len);
         ssize_t total = 0;
         while (total < len) {
-            ssize_t r = read(socket_fd_, buf.data() + total, len - total);
+            ssize_t r = readTransport(buf.data() + total, len - total);
             if (r <= 0) break;
             total += r;
         }
@@ -316,7 +397,7 @@ std::string RedisClient::readResponse() {
         char crlf[2];
         ssize_t crlf_total = 0;
         while (crlf_total < 2) {
-            ssize_t r = read(socket_fd_, crlf + crlf_total, 2 - crlf_total);
+            ssize_t r = readTransport(crlf + crlf_total, 2 - crlf_total);
             if (r <= 0) break;
             crlf_total += r;
         }

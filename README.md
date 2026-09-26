@@ -101,12 +101,15 @@ HA_FAILOVER_MONITOR_INTERVAL_MS=10000
 
 REDIS_USER=agora_user
 REDIS_USER_PASSWORD=<redis-application-password>
-# Sentinel HA 환경에서는 모든 seed를 쉼표로 구분해 지정합니다.
+# 로컬 HA Compose에서는 같은 Docker 호스트의 내부 사설 주소를 지정합니다.
+# 운영에서는 BE 호스트에서 도달 가능한 사설 Sentinel 주소를 사용합니다.
 # 단일 Redis 개발 환경은 비워 두고 DB에 등록된 endpoint를 사용합니다.
-REDIS_SENTINELS=
+REDIS_SENTINELS=172.20.0.6:26379,172.20.0.3:26379,172.20.0.4:26379
 REDIS_SENTINEL_MASTER_NAME=agora-master
 REDIS_SENTINEL_USER=
 REDIS_SENTINEL_PASSWORD=
+REDIS_TLS_ENABLED=true
+REDIS_TLS_CA_CERT=/etc/agora/certs/redis-ca.crt
 
 # Production C++ FreeTDS config (strict TLS, CA and hostname validation).
 DB_ENCRYPT=true
@@ -124,7 +127,7 @@ chmod 600 .env
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
-Redis Sentinel HA를 사용할 때는 `REDIS_SENTINELS`에 세 Sentinel 주소(운영 구성 기준, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring과 C++은 Sentinel에 현재 primary를 질의하고 Redis 노드의 `ROLE` 응답이 `master`인지 확인한 뒤 ACL 계정으로 접속합니다. 설정된 경우 DB의 `redis_server.redis_ip`/`redis_port`는 연결 대상으로 사용하지 않으므로 이 값이 failover 후 오래되어도 기존 논리 `redis_id` 배정은 유지됩니다. standalone 개발 환경에서만 Sentinel 목록을 비워 DB endpoint에 직접 연결합니다. 모든 앱 호스트에서 Sentinel 포트 `26379`와 Redis 포트 `6379`로 통신할 수 있어야 합니다.
+Redis Sentinel HA를 사용할 때는 `REDIS_SENTINELS`에 세 Sentinel 주소(운영 구성 기준, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring과 C++은 CA를 검증하는 TLS로 Sentinel에 현재 primary를 질의하고, Redis 노드에도 TLS로 접속해 `ROLE` 응답이 `master`인지 확인한 뒤 ACL 계정으로 접속합니다. `REDIS_TLS_ENABLED=true`와 호스트에서 읽을 수 있는 `REDIS_TLS_CA_CERT`를 설정해야 하며, 인증서 SAN에는 Sentinel seed와 Sentinel이 반환하는 Redis 주소가 포함되어야 합니다. 설정된 경우 DB의 `redis_server.redis_ip`/`redis_port`는 연결 대상으로 사용하지 않으므로 이 값이 failover 후 오래되어도 기존 논리 `redis_id` 배정은 유지됩니다. 로컬 HA Compose는 Docker 내부 사설 주소를 사용하고 Redis의 평문 포트를 비활성화합니다. 운영에서는 모든 앱 호스트에서 신뢰할 수 있는 사설망을 통해 Sentinel 포트 `26379`와 Redis 포트 `6379`에 접근할 수 있어야 하며, TLS를 유지해야 합니다. standalone 개발 환경에서만 Sentinel 목록을 비워 DB endpoint에 직접 연결합니다.
 
 Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 문서를 읽을 때까지 제한된 재탐색을 수행하고, 읽지 못하면 fail-closed로 재시도를 요청합니다. C++도 기본적으로 실패한 Redis 쓰기를 자동 재전송하지 않아 중복 저장을 방지합니다. Redis 복제는 비동기이므로 failover 직전의 확인된 쓰기가 새 primary에 없을 수 있습니다. 캔버스 캐시 키가 사라졌거나 DB의 캐시 상태와 맞지 않으면 Elasticsearch 내용을 자동으로 복구해 진행하지 않고 요청을 실패시킵니다.
 
@@ -135,6 +138,8 @@ Spring JDBC는 기본적으로 TLS 인증서 검증을 사용합니다. C++ Free
 비밀 저장소를 파일로 마운트하면 Spring은 `/run/secrets/`의 파일을 프로퍼티로 읽습니다(예: `DB_PASSWORD`, `JWT_SECRET`, `ES_LOG_USER_PASSWORD`). Spring config tree 파일은 값 끝의 개행도 비밀번호에 포함하므로 파일 생성 시 개행을 추가하지 마세요(예: `printf %s "$SECRET" > /run/secrets/DB_PASSWORD`). C++은 DB·Redis·Sentinel·Elasticsearch 비밀번호에서 `<VARIABLE>_FILE`을 지원하고 파일 끝의 CR/LF를 제거합니다(예: `DB_PASSWORD_FILE=/run/secrets/DB_PASSWORD`). 직접 설정한 환경변수가 있으면 파일보다 우선합니다.
 
 Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 인증서의 CA 파일로 설정합니다. C++과 Spring은 인증서 체인과 호스트 이름을 검증하고, 검증에 실패하면 연결하지 않습니다.
+
+`ES_CA_CERT`와 `REDIS_TLS_CA_CERT`는 백엔드 프로세스 사용자에게 파일 읽기와 상위 디렉터리 탐색 권한이 있어야 합니다. 로컬 DB 저장소의 개발 인증서는 저장소 내부 권한이 제한될 수 있으므로 CA 공개 인증서만 이 저장소의 Git 제외 디렉터리 `.local-certs/`에 복사해 사용합니다. 개인 키가 있는 인증서 디렉터리의 권한을 넓히지 마세요. 운영에서는 공개 CA 인증서를 백엔드 컨테이너의 읽기 전용 secret 경로로 마운트합니다.
 
 ## 로컬 실행
 
@@ -147,6 +152,8 @@ docker compose up -d
 ./redis/init-redis.sh
 ./elasticsearch/init-elasticsearch.sh
 ```
+
+이 Docker Compose는 DB·Redis·Elasticsearch 인프라를 시작합니다. Spring과 C++ 백엔드는 이 저장소에서 별도 프로세스로 실행합니다. DB가 이미 초기화된 뒤 단순히 백엔드를 다시 시작할 때는 DB 저장소에서 `docker compose up -d`만 실행하면 됩니다. 초기화 스크립트 사용 시점과 상태 확인은 [DB 저장소 안내](../project-agora-DB/README.md)를 따르세요.
 
 로컬 MSSQL 컨테이너는 자체 서명 인증서를 사용하므로, 로컬 개발 `.env`에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 설정합니다. 운영 DB에서는 CA 검증이 되는 인증서를 구성하고 이 값을 설정하지 마세요.
 
@@ -170,6 +177,8 @@ cd /path/to/project-agora-BE
 bash spring/run-local.sh
 ```
 
+이 명령은 Spring을 현재 터미널의 전경 프로세스로 실행합니다. 실행 중인 터미널을 로그 확인용으로 열어 두세요. 스크립트가 프로젝트 루트 `.env`를 읽으므로 별도로 `source`할 필요가 없습니다.
+
 로컬 실행 스크립트가 프로젝트 루트의 `.env`를 불러오고 `JWT_SECRET`이 설정됐는지 확인한 뒤, 빌드 JAR의 임시 사본으로 서버를 시작합니다. 따라서 실행 중 `bootJar`를 다시 빌드해도 기존 서버가 참조하는 JAR이 바뀌지 않습니다. 새 코드를 적용하려면 서버를 재시작해야 합니다. 운영 환경에서는 기존처럼 서비스 관리자가 환경변수를 주입해야 합니다.
 
 프로젝트 루트에서 `java -jar spring/build/libs/frelog-0.0.1-SNAPSHOT.jar`를 직접 실행해도 Spring이 같은 `.env`를 읽습니다. 다른 디렉터리에서 실행할 때는 실행 스크립트를 사용하세요.
@@ -189,11 +198,32 @@ set +a
 
 명령 인자는 `BIND_IP ADVERTISE_IP REST_PORT WS_PORT` 순서입니다. 위 구성은 C++ 포트를 로컬에만 열고 Nginx가 외부 HTTPS/WSS 트래픽을 전달합니다. 바이너리는 `HOST`를 지정하지 않으면 `0.0.0.0`에 바인드하므로, 이 운영 예시처럼 loopback만 허용하려면 인자 또는 `HOST=127.0.0.1`로 지정합니다. 다중 C++ 인스턴스는 포트를 겹치지 않게 지정합니다. Nginx 예시 설정은 `8002`부터 `8099`의 WS 포트만 전달합니다.
 
+### 실행 확인, 중지, 재시작
+
+Spring과 C++을 각각 실행한 뒤 두 health API가 HTTP 200을 반환하는지 확인합니다.
+
+```bash
+curl -fsS http://127.0.0.1:8080/api/auth/health
+curl -fsS http://127.0.0.1:8000/health
+```
+
+각 명령은 서비스 상태가 정상이면 JSON 응답을 출력합니다. 포트 사용 여부는 다음처럼 확인할 수 있습니다.
+
+```bash
+ss -ltnp | rg ':(8080|8000|8002)\b'
+```
+
+터미널에서 실행한 서버를 종료할 때는 해당 서버 터미널에서 `Ctrl+C`를 누릅니다. 코드 변경을 적용하려면 Spring 또는 C++ 프로세스를 종료한 뒤 빌드 명령을 다시 실행하고 해당 서버를 다시 시작합니다. C++ 서버를 재시작하면 DB의 서버 등록과 heartbeat가 다시 수행됩니다. DB Docker 스택은 백엔드만 재시작할 때 중지할 필요가 없습니다.
+
+터미널을 계속 열어 두기 어렵거나 부팅 후 자동 시작이 필요하면 아래 [systemd 운영 예시](#systemd-운영-예시)를 사용하세요. 임의의 `pkill` 명령으로 Java나 C++ 프로세스를 종료하면 다른 실행 인스턴스까지 영향을 줄 수 있으므로, 로컬 전경 실행은 `Ctrl+C`, systemd 실행은 `systemctl`로 관리합니다.
+
 채팅은 `items[room_id]`의 `chat_room` 아이템으로 관리됩니다. 메시지는 해당 아이템의 `data` 배열에 방별 순번과 함께 저장되며, `{"type":"chat","room_id":"general","text":"test"}` 이벤트로 보냅니다. `chat_history` 이벤트의 `limit` 또는 `from_sequence`/`to_sequence`로 최근 내역이나 순번 구간을 조회할 수 있습니다. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
 
 캔버스 설정은 비활성 상태에서는 Spring REST API로, 활성 상태에서는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. 활성 캔버스에 Spring 수정 요청을 보내면 `409 CANVAS_006`과 접속 후 설정에서 변경하라는 안내를 반환합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch 문서에서 참여자와 revision을 확인하고, 설정 업데이트에서는 사용자 활성 상태·서버 할당·참여자·`admin-group` 권한을 검사합니다. 성공한 설정 변경은 Redis와 Elasticsearch에 즉시 반영되며, Elasticsearch 업데이트는 설정 필드만 패치해 실시간 아이템을 덮어쓰지 않습니다. 성공하면 `canvas_settings_result`를 보낸 사람에게, 비밀번호 해시를 제외한 `canvas_settings_changed`를 다른 참여자에게 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다.
 
 ## systemd 운영 예시
+
+systemd는 백엔드를 터미널과 분리해 실행하고 재부팅 후 자동 시작하도록 구성할 때 사용합니다. 먼저 DB Docker 서비스가 실행 중이고, Spring JAR과 C++ 바이너리를 빌드했는지 확인하세요. 아래 예시의 `User`, 저장소 경로, `.env` 경로는 실제 서버에 맞게 바꾸고 `.env`에는 예시 값이 아닌 유효한 설정을 입력합니다. `.env`는 `User`로 지정한 서비스 계정이 읽을 수 있게 소유자와 권한을 설정하세요(예: 서비스 계정 소유, `0600`). `EnvironmentFile`은 shell 스크립트가 아니므로 `export`, 명령 치환, shell 변수 확장을 넣지 말고 `KEY=value` 형식을 사용하세요.
 
 ```ini
 # /etc/systemd/system/agora-spring.service
@@ -232,7 +262,28 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now agora-spring agora-cpp
+sudo systemctl enable agora-spring agora-cpp
+sudo systemctl start agora-spring
+sudo systemctl start agora-cpp
+sudo systemctl status --no-pager agora-spring agora-cpp
+
+# 로그 확인
+sudo journalctl -u agora-spring -u agora-cpp -f
+
+# 순차 중지·재시작
+sudo systemctl stop agora-cpp agora-spring
+sudo systemctl start agora-spring
+sudo systemctl start agora-cpp
+
+# 또는 두 백엔드 재시작
+sudo systemctl restart agora-spring agora-cpp
+```
+
+`enable`은 서버 재부팅 후 자동 시작을 설정하고, `start`는 지금 서버를 시작합니다. `agora-cpp`는 Spring API를 사용하므로 Spring을 먼저 시작합니다. DB Compose는 이 unit에 포함되지 않으므로 DB 저장소의 Docker 서비스가 먼저 준비되어 있어야 합니다. 각 서버의 health API도 확인합니다.
+
+```bash
+curl -fsS http://127.0.0.1:8080/api/auth/health
+curl -fsS http://127.0.0.1:8000/health
 ```
 
 ## Nginx와 WSS

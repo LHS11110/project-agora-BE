@@ -8,6 +8,7 @@
 #include <cstring>
 #include <netinet/in.h>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <sys/socket.h>
 #include <thread>
@@ -241,6 +242,8 @@ void runRedisSentinelFailover() {
     ::setenv("REDIS_SENTINEL_PASSWORD", "sentinel-test-password", 1);
     ::setenv("REDIS_USER", "", 1);
     ::setenv("REDIS_USER_PASSWORD", "cpp-test-password", 1);
+    ::setenv("REDIS_TLS_ENABLED", "false", 1);
+    ::unsetenv("REDIS_TLS_CA_CERT");
     ::setenv("ES_LOG_USER_PASSWORD", "", 1);
 
     {
@@ -259,8 +262,32 @@ void runRedisSentinelFailover() {
         AGORA_CHECK(sentinel.authenticatedQueryCount() > 0);
     }
 }
+
+void runRedisTlsSentinelSmoke() {
+    const char* configured_seeds = std::getenv("REDIS_SENTINELS");
+    AGORA_CHECK(configured_seeds != nullptr && *configured_seeds != '\0');
+    AGORA_CHECK(std::getenv("REDIS_TLS_ENABLED") != nullptr);
+    AGORA_CHECK(std::string(std::getenv("REDIS_TLS_ENABLED")) == "true");
+
+    std::istringstream input(configured_seeds);
+    std::string seed;
+    int checked = 0;
+    while (std::getline(input, seed, ',')) {
+        if (seed.empty()) continue;
+        ::setenv("REDIS_SENTINELS", seed.c_str(), 1);
+        RedisClient client;
+        AGORA_CHECK(client.connect());
+        AGORA_CHECK(client.ping());
+        client.disconnect();
+        ++checked;
+    }
+    AGORA_CHECK(checked == 3);
+}
 }
 
 int main() {
+    if (std::getenv("AGORA_REDIS_TLS_SMOKE")) {
+        return runTest("Redis TLS Sentinel discovery and primary verification", runRedisTlsSentinelSmoke);
+    }
     return runTest("Redis Sentinel primary promotion and client reconnection", runRedisSentinelFailover);
 }

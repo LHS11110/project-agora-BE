@@ -4,8 +4,11 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include <cstddef>
+#include <sys/types.h>
 #include <utility>
 #include <nlohmann/json.hpp>
+#include <openssl/ssl.h>
 
 class RedisClient {
 public:
@@ -50,9 +53,16 @@ private:
     std::string sentinel_user_;
     std::string sentinel_password_;
     std::vector<std::pair<std::string, int>> sentinel_seeds_;
+    std::string tls_ca_cert_;
+    bool tls_enabled_;
+    bool tls_config_valid_;
     int socket_fd_;
+    SSL_CTX* ssl_context_;
+    SSL* ssl_;
 
     bool connectTo(const std::string& host, int port, int timeout_ms);
+    ssize_t readTransport(void* buffer, std::size_t size);
+    ssize_t writeTransport(const void* buffer, std::size_t size);
     bool sendCommand(const std::vector<std::string>& args);
     std::string readResponse();
     std::string readLine();

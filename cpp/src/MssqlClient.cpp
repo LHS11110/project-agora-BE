@@ -24,19 +24,33 @@ std::string envOr(const char* name, const std::string& value) {
 bool addRpcTextParameter(DBPROCESS* dbproc, const char* name, const std::string& value) {
     if (value.size() > SqlCommand::kMaxRpcTextBytes) return false;
     const DBINT byte_length = static_cast<DBINT>(value.size());
-    const DBINT max_length = std::max<DBINT>(byte_length, 1);
     // The login uses UTF-8; SQL parameter declarations below decide whether
     // the server treats each value as VARCHAR or NVARCHAR.
-    return dbrpcparam(dbproc, name, 0, SYBVARCHAR, max_length, byte_length,
+    // All parameters passed to sp_executesql are input-only. FreeTDS requires
+    // maxlen=-1 for input RPC parameters; using the value's byte length here
+    // makes dbrpcparam fail before the SQL reaches the server.
+    return dbrpcparam(dbproc, name, 0, SYBVARCHAR, -1, byte_length,
                       reinterpret_cast<BYTE*>(const_cast<char*>(value.data()))) == SUCCEED;
 }
 
 bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
-    if (!dbproc || !command.isValid() || dbrpcinit(dbproc, "sp_executesql", 0) != SUCCEED) return false;
+    if (!dbproc) return false;
+    if (!command.isValid()) {
+        std::cerr << "[MssqlClient] Rejected invalid parameterized SQL command.\n";
+        return false;
+    }
+    if (dbrpcinit(dbproc, "sp_executesql", 0) != SUCCEED) {
+        std::cerr << "[MssqlClient] Could not initialize sp_executesql RPC.\n";
+        return false;
+    }
 
     const std::string declarations = command.parameterDeclarations();
-    if (!addRpcTextParameter(dbproc, "@stmt", command.statement())
-        || !addRpcTextParameter(dbproc, "@params", declarations)) {
+    if (!addRpcTextParameter(dbproc, "@stmt", command.statement())) {
+        std::cerr << "[MssqlClient] Could not bind sp_executesql statement parameter.\n";
+        return false;
+    }
+    if (!addRpcTextParameter(dbproc, "@params", declarations)) {
+        std::cerr << "[MssqlClient] Could not bind sp_executesql declaration parameter.\n";
         return false;
     }
 
@@ -51,19 +65,26 @@ bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
     std::size_t int_value_index = 0;
     for (const auto& parameter : command.parameters()) {
         if (parameter.type != SqlCommand::ParameterType::Int32) {
-            if (!addRpcTextParameter(dbproc, parameter.name.c_str(), parameter.text_value)) return false;
+            if (!addRpcTextParameter(dbproc, parameter.name.c_str(), parameter.text_value)) {
+                std::cerr << "[MssqlClient] Could not bind sp_executesql text parameter.\n";
+                return false;
+            }
             continue;
         }
 
         DBINT& value = int_values[int_value_index++];
-        if (dbrpcparam(dbproc, parameter.name.c_str(), 0, SYBINT4,
-                      static_cast<DBINT>(sizeof(value)), static_cast<DBINT>(sizeof(value)),
+        if (dbrpcparam(dbproc, parameter.name.c_str(), 0, SYBINT4, -1, -1,
                       reinterpret_cast<BYTE*>(&value)) != SUCCEED) {
+            std::cerr << "[MssqlClient] Could not bind sp_executesql integer parameter.\n";
             return false;
         }
     }
 
-    return dbrpcsend(dbproc) == SUCCEED;
+    if (dbrpcsend(dbproc) != SUCCEED) {
+        std::cerr << "[MssqlClient] Could not send sp_executesql RPC.\n";
+        return false;
+    }
+    return true;
 }
 
 std::string readSqlServerName(DBPROCESS* dbproc) {
@@ -307,7 +328,10 @@ bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_po
 
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) return false;
+        if (ret == FAIL) {
+            std::cerr << "[MssqlClient] SQL Server rejected C++ server registration.\n";
+            return false;
+        }
         while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
             if (ret == FAIL) break;
         }

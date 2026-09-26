@@ -9,13 +9,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManagerFactory;
+import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.CertificateFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +39,8 @@ public class CanvasRedisDocumentReader {
     private final String sentinelMasterName;
     private final String sentinelUsername;
     private final String sentinelPassword;
+    private final boolean tlsEnabled;
+    private final SSLContext redisSslContext;
     private final ElasticsearchBulkLogService logService;
 
     public CanvasRedisDocumentReader(ObjectMapper objectMapper,
@@ -39,6 +50,8 @@ public class CanvasRedisDocumentReader {
             @Value("${app.redis.sentinel-master-name:agora-master}") String sentinelMasterName,
             @Value("${REDIS_SENTINEL_USER:}") String sentinelUsername,
             @Value("${REDIS_SENTINEL_PASSWORD:}") String sentinelPassword,
+            @Value("${app.redis.tls-enabled:false}") boolean tlsEnabled,
+            @Value("${app.redis.tls-ca-certificate:}") String tlsCaCertificate,
             ElasticsearchBulkLogService logService) {
         this.objectMapper = objectMapper;
         this.username = username;
@@ -47,6 +60,8 @@ public class CanvasRedisDocumentReader {
         this.sentinelMasterName = sentinelMasterName;
         this.sentinelUsername = sentinelUsername;
         this.sentinelPassword = sentinelPassword;
+        this.tlsEnabled = tlsEnabled;
+        this.redisSslContext = tlsEnabled ? createRedisSslContext(tlsCaCertificate) : null;
         this.logService = logService;
     }
 
@@ -106,7 +121,7 @@ public class CanvasRedisDocumentReader {
         throw unavailable();
     }
 
-    private RedisAddress discoverMaster(RedisAddress sentinel) throws Exception {
+    RedisAddress discoverMaster(RedisAddress sentinel) throws Exception {
         try (Socket socket = openSocket(sentinel)) {
             InputStream in = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
@@ -129,6 +144,20 @@ public class CanvasRedisDocumentReader {
                 throw new IOException("Sentinel returned an invalid master address");
             }
             return new RedisAddress(host, port);
+        }
+    }
+
+    boolean isPrimary(RedisAddress endpoint) throws Exception {
+        try (Socket socket = openSocket(endpoint)) {
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+            if (username.isBlank()) writeCommand(out, "AUTH", password);
+            else writeCommand(out, "AUTH", username, password);
+            if (!"OK".equals(readReply(in))) throw new IOException("Redis authentication failed");
+            writeCommand(out, "ROLE");
+            Object role = readReply(in);
+            return role instanceof List<?> values && !values.isEmpty()
+                    && "master".equalsIgnoreCase(String.valueOf(values.get(0)));
         }
     }
 
@@ -163,10 +192,44 @@ public class CanvasRedisDocumentReader {
         try {
             socket.connect(new InetSocketAddress(address.host(), address.port()), 1200);
             socket.setSoTimeout(2000);
-            return socket;
-        } catch (IOException e) {
+            if (!tlsEnabled) return socket;
+
+            SSLSocket tlsSocket = (SSLSocket) redisSslContext.getSocketFactory()
+                    .createSocket(socket, address.host(), address.port(), true);
+            SSLParameters parameters = tlsSocket.getSSLParameters();
+            parameters.setEndpointIdentificationAlgorithm("HTTPS");
+            tlsSocket.setSSLParameters(parameters);
+            tlsSocket.startHandshake();
+            tlsSocket.setSoTimeout(2000);
+            return tlsSocket;
+        } catch (IOException | RuntimeException e) {
             socket.close();
             throw e;
+        }
+    }
+
+    private static SSLContext createRedisSslContext(String caCertificate) {
+        if (caCertificate == null || caCertificate.isBlank()) {
+            throw new IllegalStateException("REDIS_TLS_ENABLED requires REDIS_TLS_CA_CERT");
+        }
+        Path caPath = Path.of(caCertificate);
+        if (!Files.isRegularFile(caPath) || !Files.isReadable(caPath)) {
+            throw new IllegalStateException("Redis TLS CA certificate is not readable: " + caPath);
+        }
+        try (InputStream input = Files.newInputStream(caPath)) {
+            var certificate = CertificateFactory.getInstance("X.509").generateCertificate(input);
+            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+            trustStore.setCertificateEntry("agora-redis-ca", certificate);
+
+            TrustManagerFactory trustManagers = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
+            trustManagers.init(trustStore);
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, trustManagers.getTrustManagers(), new SecureRandom());
+            return context;
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not configure verified Redis TLS", e);
         }
     }
 
@@ -261,5 +324,5 @@ public class CanvasRedisDocumentReader {
         return new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "활성 캔버스의 최신 상태를 확인할 수 없습니다. 잠시 후 다시 시도하세요.");
     }
 
-    private record RedisAddress(String host, int port) {}
+    record RedisAddress(String host, int port) {}
 }

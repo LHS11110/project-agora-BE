@@ -6,6 +6,7 @@ import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.logging.ElasticsearchBulkLogService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -53,6 +54,8 @@ class CanvasRedisDocumentReaderFailoverTest {
                     "agora-master",
                     SENTINEL_USER,
                     SENTINEL_PASSWORD,
+                    false,
+                    "",
                     logService);
             CanvasInfo canvasInfo = new CanvasInfo(42);
 
@@ -72,6 +75,37 @@ class CanvasRedisDocumentReaderFailoverTest {
             verify(logService).reportPrimaryChange(eq("redis-sentinel"), eq(cluster.nodeAAddress()));
             verify(logService).reportPrimaryChange(eq("redis-sentinel"), eq(cluster.nodeBAddress()));
         }
+    }
+
+    @Test
+    @EnabledIfEnvironmentVariable(named = "AGORA_REDIS_TLS_SMOKE", matches = "true")
+    void queriesEveryConfiguredSentinelAndVerifiesThePrimaryOverTls() throws Exception {
+        String sentinelAddresses = System.getenv("REDIS_SENTINELS");
+        String sentinelUser = System.getenv("REDIS_SENTINEL_USER");
+        String sentinelPassword = System.getenv("REDIS_SENTINEL_PASSWORD");
+        String user = System.getenv("REDIS_USER");
+        String password = System.getenv("REDIS_USER_PASSWORD");
+        String caCertificate = System.getenv("REDIS_TLS_CA_CERT");
+        assertThat(System.getenv("REDIS_TLS_ENABLED")).isEqualTo("true");
+        assertThat(sentinelAddresses).isNotBlank();
+
+        ObjectMapper objectMapper = new ObjectMapper();
+        CanvasRedisDocumentReader reader = new CanvasRedisDocumentReader(
+                objectMapper, user, password, sentinelAddresses, "agora-master",
+                sentinelUser, sentinelPassword, true, caCertificate, logService);
+        CanvasRedisDocumentReader.RedisAddress expected = null;
+        int checked = 0;
+        for (String raw : sentinelAddresses.split(",")) {
+            String[] parts = raw.trim().split(":");
+            assertThat(parts).hasSize(2);
+            var discovered = reader.discoverMaster(new CanvasRedisDocumentReader.RedisAddress(
+                    parts[0], Integer.parseInt(parts[1])));
+            assertThat(reader.isPrimary(discovered)).isTrue();
+            if (expected == null) expected = discovered;
+            else assertThat(discovered).isEqualTo(expected);
+            checked++;
+        }
+        assertThat(checked).isEqualTo(3);
     }
 
     private static final class FakeSentinelCluster implements AutoCloseable {
