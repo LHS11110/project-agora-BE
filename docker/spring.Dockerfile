@@ -18,7 +18,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 agora \
-    && useradd --system --uid 10001 --gid agora --no-create-home --shell /usr/sbin/nologin agora
+    && useradd --system --uid 10001 --gid agora --no-create-home --shell /usr/sbin/nologin agora \
+    && mkdir -p /home/agora/project-agora/canvas-resource \
+    && chown -R 10001:10001 /home/agora
 
 WORKDIR /app
 COPY --from=build --chown=10001:10001 /workspace/spring/build/libs/frelog-0.0.1-SNAPSHOT.jar /app/app.jar

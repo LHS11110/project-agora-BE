@@ -37,6 +37,12 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
 cd "$PROJECT_DIR"
 
 compose() {
+    local network_gateway
+    network_gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' agora-net 2>/dev/null || true)"
+    if [[ -z "${CPP_TRUSTED_PROXY_IPS:-}" && -n "$network_gateway" ]]; then
+        export CPP_TRUSTED_PROXY_IPS="$network_gateway"
+    fi
+
     docker compose \
         --project-directory "$PROJECT_DIR" \
         --env-file "$ENV_FILE" \
@@ -49,6 +55,23 @@ require_network() {
     local network_name="$1"
     docker network inspect "$network_name" >/dev/null 2>&1 \
         || die "Docker network '$network_name' is missing. Start the matching DB/Sentinel Compose stack first."
+}
+
+backend_network_references_are_stale() {
+    local container_name network_name current_network_id container_network_id
+
+    for container_name in agora-spring agora-cpp; do
+        docker inspect "$container_name" >/dev/null 2>&1 || continue
+        for network_name in agora-net agora-redis-ha; do
+            current_network_id="$(docker network inspect --format '{{.Id}}' "$network_name")"
+            container_network_id="$(docker inspect --format "{{with index .NetworkSettings.Networks \"$network_name\"}}{{.NetworkID}}{{end}}" "$container_name")"
+            if [[ -n "$container_network_id" && "$container_network_id" != "$current_network_id" ]]; then
+                return 0
+            fi
+        done
+    done
+
+    return 1
 }
 
 wait_for_healthy_container() {
@@ -76,6 +99,7 @@ wait_for_healthy_container() {
 
 check_dependencies() {
     require_network agora-net
+
     require_network agora-redis-ha
 
     for container_name in \
@@ -94,6 +118,11 @@ check_dependencies() {
 
 wait_for_backend_health() {
     local timeout_seconds="${BACKEND_START_WAIT_SECONDS:-180}"
+
+    if backend_network_references_are_stale; then
+        printf 'Backend containers reference a replaced Docker network; recreating them with current networks.\n' >&2
+        set -- --force-recreate "$@"
+    fi
 
     if ! compose up -d --wait --wait-timeout "$timeout_seconds" "$@"; then
         compose ps

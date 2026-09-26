@@ -28,7 +28,7 @@ flowchart LR
 | `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | 기본 `HOST=0.0.0.0`, REST `8000`, WS `8002`; 아래 운영 예시는 loopback 바인드 |
 | `nginx/` | HTTPS/WSS 역방향 프록시 | `:443` |
 | MS SQL Server AG listener | 계정, 세션, 캔버스 배정, 서버 메타데이터 | 로컬 `127.0.0.1:1433`; 운영에서는 listener DNS/VIP |
-| Redis Stack HA | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | standalone `127.0.0.1:6379`; HA에서는 Sentinel이 primary 탐색 |
+| Redis Stack HA | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | 필수 Sentinel seed로 현재 primary 탐색 |
 | Elasticsearch | 캔버스 문서 영구 저장소 | `127.0.0.1:9200` |
 
 ## 캔버스 접속 흐름
@@ -127,7 +127,7 @@ chmod 600 .env
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
-Redis Sentinel HA를 사용할 때는 `REDIS_SENTINELS`에 세 Sentinel 주소(운영 구성 기준, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring과 C++은 CA를 검증하는 TLS로 Sentinel에 현재 primary를 질의하고, Redis 노드에도 TLS로 접속해 `ROLE` 응답이 `master`인지 확인한 뒤 ACL 계정으로 접속합니다. `REDIS_TLS_ENABLED=true`와 호스트에서 읽을 수 있는 `REDIS_TLS_CA_CERT`를 설정해야 하며, 인증서 SAN에는 Sentinel seed와 Sentinel이 반환하는 Redis 주소가 포함되어야 합니다. 설정된 경우 DB의 `redis_server.redis_ip`/`redis_port`는 연결 대상으로 사용하지 않으므로 이 값이 failover 후 오래되어도 기존 논리 `redis_id` 배정은 유지됩니다. 로컬 HA Compose는 Docker 내부 사설 주소를 사용하고 Redis의 평문 포트를 비활성화합니다. 운영에서는 모든 앱 호스트에서 신뢰할 수 있는 사설망을 통해 Sentinel 포트 `26379`와 Redis 포트 `6379`에 접근할 수 있어야 하며, TLS를 유지해야 합니다. standalone 개발 환경에서만 Sentinel 목록을 비워 DB endpoint에 직접 연결합니다.
+모든 환경은 `REDIS_SENTINELS`에 Sentinel 주소(운영 구성 기준 3개, 포트 `26379`)를 지정하고 master 이름은 `agora-master`로 둡니다. Spring 설정과 C++ 클라이언트는 Sentinel seed 없이 시작하지 않으며 DB의 `redis_server.redis_ip`/`redis_port`로 직접 연결하는 fallback은 없습니다. C++은 CA를 검증하는 TLS로 Sentinel에서 현재 primary를 찾고, Redis 노드의 `ROLE`이 `master`인지 확인한 뒤 ACL 계정으로 연결합니다. `REDIS_TLS_ENABLED=true`와 컨테이너에서 읽을 수 있는 `REDIS_TLS_CA_CERT`를 설정하고, 인증서 SAN에는 Sentinel seed와 Sentinel이 반환하는 Redis 주소를 포함해야 합니다. SQL에는 HA 서비스 행 하나를 활성화하고, 이 행의 IP/포트는 호환을 위한 논리 식별 주소입니다. failover 후 기존 `redis_id` 배정은 유지됩니다. 저장소의 standalone Redis Compose는 제거했습니다. 운영에서는 앱 호스트에서 사설망으로 Sentinel `26379`와 Redis `6379`에 접근할 수 있도록 제한하고 TLS를 유지합니다.
 
 Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 문서를 읽을 때까지 제한된 재탐색을 수행하고, 읽지 못하면 fail-closed로 재시도를 요청합니다. C++도 기본적으로 실패한 Redis 쓰기를 자동 재전송하지 않아 중복 저장을 방지합니다. Redis 복제는 비동기이므로 failover 직전의 확인된 쓰기가 새 primary에 없을 수 있습니다. 캔버스 캐시 키가 사라졌거나 DB의 캐시 상태와 맞지 않으면 Elasticsearch 내용을 자동으로 복구해 진행하지 않고 요청을 실패시킵니다.
 
@@ -143,13 +143,32 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 
 ## Docker로 백엔드 실행
 
-`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소가 제공하는 SQL Server·Elasticsearch·Redis Sentinel은 별도로 실행해야 합니다. DB 컨테이너는 `agora-net`, Redis Sentinel/노드는 TLS가 적용된 내부망 `agora-redis-ha`를 사용합니다. 두 네트워크와 해당 저장소 컨테이너들이 먼저 준비되어 있어야 합니다. 최초 DB 스키마·계정·인덱스 설정은 [DB 저장소 안내](../project-agora-DB/README.md)를 먼저 완료하세요.
+`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소 루트의 기본 `docker compose up`은 SQL Server·Elasticsearch·Redis Sentinel HA를 시작합니다. 같은 Docker 엔진에서 DB와 백엔드는 `agora-net` 및 `agora-redis-ha` 네트워크 이름으로 연결됩니다. 컨테이너 이름과 네트워크가 준비되면 Docker DNS가 자동으로 이름을 찾으므로, 별도 네트워크 설정 파일을 백엔드에 복사할 필요는 없습니다. DB 환경 파일의 계정·Sentinel 주소가 바뀌면 백엔드 `.env`에도 반영한 뒤 컨테이너를 재생성해야 합니다. 아래 시작 스크립트가 DB 볼륨을 확인하고, 이전 Sentinel Compose 프로젝트에서 전환이 필요한 경우 기존 HA 볼륨을 보존하며 프로젝트를 옮긴 뒤 연결값을 동기화합니다. Elasticsearch가 healthy가 된 뒤 `elasticsearch/.env`의 캔버스·로그 계정과 역할을 동기화하고 Spring을 시작합니다. 최초 DB 스키마·인덱스 설정은 [DB 저장소 안내](../project-agora-DB/README.md)를 먼저 완료하세요.
 
 백엔드 Compose는 프로젝트 루트 `.env`의 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`를 호스트의 CA 파일 경로로 사용해 컨테이너에 읽기 전용으로 마운트합니다. 컨테이너 안에서는 각각 `/run/certs/elasticsearch-ca.crt`, `/run/certs/redis-ca.crt`로 참조합니다. TLS 연결을 위해 Elasticsearch는 HTTPS, Redis/Sentinel은 TLS를 사용하며 `REDIS_SENTINELS`에는 세 Sentinel 주소를 설정해야 합니다. 이미지에는 `.env`나 인증서를 복사하지 않습니다.
 
-운영 환경에서 C++ SQL TLS 인증서 검증을 사용할 때 Docker 컨테이너 경로는 `DOCKER_DB_FREETDS_CONF=/etc/freetds/freetds.conf`로 설정합니다. 기본 FreeTDS 설정은 OS 신뢰 저장소와 서버 호스트명 검증을 사용합니다. OS 신뢰 저장소에 없는 SQL CA를 쓸 때는 `CPP_SQL_CA_CERT_HOST_PATH`로 호스트 CA 파일을 마운트하고, `CPP_FREETDS_CONF_HOST_PATH`가 가리키는 FreeTDS 설정에서 `/run/certs/sql-ca-bundle.crt`를 `ca file`로 지정합니다. 로컬 자체 서명 DB에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 사용합니다.
+운영 환경에서 C++ SQL TLS 인증서 검증을 사용할 때 Docker 컨테이너 경로는 `DOCKER_DB_FREETDS_CONF=/etc/freetds/freetds.conf`로 설정합니다. `DB_TRUST_SERVER_CERTIFICATE=false`이면 기본 FreeTDS 설정이 TLS를 강제하고 OS 신뢰 저장소와 서버 호스트명을 검증합니다. OS 신뢰 저장소에 없는 SQL CA를 쓸 때는 `CPP_SQL_CA_CERT_HOST_PATH`로 호스트 CA 파일을 마운트하고, `CPP_FREETDS_CONF_HOST_PATH`가 가리키는 FreeTDS 설정에서 `/run/certs/sql-ca-bundle.crt`를 `ca file`로 지정합니다. 로컬 자체 서명 DB에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 사용하세요. 이 설정은 TLS 암호화를 유지하면서 자체 서명 인증서 검증만 건너뛰는 개발용 FreeTDS 설정을 자동 선택합니다.
 
-DB 저장소의 기존 Compose 스택과 Sentinel HA 구성을 healthy 상태로 올린 뒤 백엔드를 시작합니다. HA Redis를 사용할 때 standalone Redis와 Sentinel 구성을 동시에 시작하면 호스트 포트가 겹칠 수 있으므로 DB 저장소의 Redis HA 안내에 따라 실행하세요.
+로컬 단일 Docker 엔진에서 DB와 백엔드를 함께 실행할 때는 아래 스크립트가 MSSQL·Elasticsearch를 올리고 health를 기다린 다음 기본 Redis Sentinel HA를 준비합니다. 기존 standalone 컨테이너나 데이터 볼륨이 남아 있으면 데이터를 자동으로 버리지 않고 RDB 이관 안내와 함께 멈춥니다. 레거시 데이터를 HA로 옮긴 뒤 다시 실행하면 retired 컨테이너를 제거하고 Redis HA ACL·색인·단일 `redis_server` 등록을 적용합니다. 이어 DB 계정과 Sentinel 주소를 백엔드 `.env`에 동기화한 뒤 백엔드를 시작합니다. `.env`는 소유자 전용 권한(`0600`)으로 다시 씁니다. 스크립트는 SQL·Elasticsearch 데이터 볼륨이 있는지도 확인하며 누락된 볼륨을 빈 데이터로 새로 만들지 않습니다. 최초 실행 전 SQL 스키마와 Elasticsearch 계정은 초기화되어 있어야 합니다.
+
+```bash
+cd /path/to/project-agora-BE
+./scripts/start-docker-stack.sh
+```
+
+이 스크립트는 DB와 백엔드가 같은 Docker 엔진을 쓸 때만 사용합니다. 별도 Docker 호스트에서는 Docker bridge 네트워크와 컨테이너 이름이 호스트 간에 공유되지 않으므로, DB 서버의 도달 가능한 사설 IP/DNS를 `DOCKER_DB_HOST`, `DOCKER_ES_HOST`, `REDIS_SENTINELS`에 설정하고 Redis 노드가 사설망 주소를 광고하도록 구성해야 합니다. 이 경우 각 호스트에서 해당 호스트용 Compose를 시작하고, 백엔드 호스트의 네트워크·방화벽 및 인증서 SAN을 별도로 맞춰야 합니다.
+
+운영에서 비밀 관리자가 환경값을 주입하는 구성에는 이 로컬 동기화 스크립트를 사용하지 마세요. 운영의 DB 주소·CA·비밀값은 각 서버의 비밀 관리 및 다중 호스트 배포 설정으로 공급합니다.
+
+이 백엔드 Compose는 `agora-redis-primary`와 세 Sentinel을 검사하고 `agora-redis-ha` 네트워크의 Sentinel 주소를 사용합니다. DB 저장소의 루트 Compose는 primary·replica·Sentinel HA 구성만 시작합니다. 예전 standalone 컨테이너를 제거해 호스트 포트 `6379`나 Redis Insight 포트 `8001` 충돌 경로도 구성에서 없앴습니다.
+
+```bash
+cd /path/to/project-agora-DB
+# One-time transition when upgrading from the previous project-agora-db-ha stack
+./ops/migrate-local-redis-ha.sh
+docker compose up -d
+docker compose ps
+```
 
 ```bash
 cd /path/to/project-agora-BE
@@ -159,9 +178,9 @@ cd /path/to/project-agora-BE
 ./scripts/backend-docker.sh health
 ```
 
-`up`은 `agora-net`, `agora-redis-ha` 네트워크와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 네트워크 주소나 AG listener를 쓸 때는 `.env`에 `DOCKER_DB_HOST`/`DOCKER_DB_PORT`, `DOCKER_ES_HOST`/`DOCKER_ES_PORT`를 지정하세요. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
+`up`은 `agora-net`, `agora-redis-ha` 네트워크와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. DB 스택이 Docker 네트워크를 교체해 기존 백엔드 컨테이너가 사라진 네트워크 ID를 참조하면, 스크립트가 백엔드 컨테이너를 새 네트워크에 다시 연결합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 네트워크 주소나 AG listener를 쓸 때는 `.env`에 `DOCKER_DB_HOST`/`DOCKER_DB_PORT`, `DOCKER_ES_HOST`/`DOCKER_ES_PORT`를 지정하세요. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
 
-컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 현재 Nginx 예시는 호스트 loopback 포트들을 프록시합니다.
+컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring 캔버스 이미지는 `agora-backend-spring-resources` 볼륨에 저장되어 컨테이너를 재생성해도 유지됩니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 현재 Nginx 예시는 호스트 loopback 포트들을 프록시합니다. `backend-docker.sh`는 `agora-net`의 Docker 게이트웨이를 C++의 `CPP_TRUSTED_PROXY_IPS`로 전달해, 신뢰한 호스트 프록시의 `X-Real-IP`만 접속 JWT의 IP 확인에 사용합니다. 직접 `docker compose`로 백엔드만 시작할 때는 `CPP_TRUSTED_PROXY_IPS`에 해당 네트워크의 게이트웨이 주소를 지정해야 합니다.
 
 ```bash
 ./scripts/backend-docker.sh status

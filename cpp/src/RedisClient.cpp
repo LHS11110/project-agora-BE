@@ -80,8 +80,9 @@ std::vector<std::pair<std::string, int>> parseSentinelSeeds(const char* configur
 }
 }
 
-RedisClient::RedisClient(const std::string& host, int port, const std::string& user, const std::string& password)
-    : host_(host), port_(port), user_(envOr("REDIS_USER", user)),
+RedisClient::RedisClient(const std::string& /*logical_host*/, int /*logical_port*/,
+                         const std::string& user, const std::string& password)
+    : user_(envOr("REDIS_USER", user)),
       password_(envOr("REDIS_USER_PASSWORD", password)),
       sentinel_master_name_(envOr("REDIS_SENTINEL_MASTER_NAME", "agora-master")),
       sentinel_user_(envOr("REDIS_SENTINEL_USER", "")),
@@ -130,8 +131,12 @@ bool RedisClient::connect() {
         std::cerr << "[RedisClient] Redis TLS is enabled but its CA configuration is invalid\n";
         return false;
     }
-    if (sentinel_user_.empty() != sentinel_password_.empty()) {
-        std::cerr << "[RedisClient] REDIS_SENTINEL_USER and REDIS_SENTINEL_PASSWORD must be configured together\n";
+    if (sentinel_seeds_.empty()) {
+        std::cerr << "[RedisClient] REDIS_SENTINELS is required; direct Redis connections are disabled\n";
+        return false;
+    }
+    if (sentinel_user_.empty() || sentinel_password_.empty()) {
+        std::cerr << "[RedisClient] REDIS_SENTINEL_USER and REDIS_SENTINEL_PASSWORD are required\n";
         return false;
     }
 
@@ -150,32 +155,14 @@ bool RedisClient::connect() {
         return true;
     };
 
-    // Standalone deployments retain the configured Redis endpoint. With
-    // Sentinel configured, the database row endpoint is intentionally ignored.
-    if (sentinel_seeds_.empty()) {
-        const std::string endpoint = host_ + ":" + std::to_string(port_);
-        if (!connectTo(host_, port_, 3000) || !authenticate()) {
-            ElasticsearchBulkLogBuffer::instance().reportAvailability(
-                    "redis", false, {{"endpoint", endpoint}});
-            return false;
-        }
-        ElasticsearchBulkLogBuffer::instance().reportAvailability(
-                "redis", true, {{"endpoint", endpoint}});
-        return true;
-    }
-
     for (int attempt = 0; attempt < 3; ++attempt) {
         for (const auto& seed : sentinel_seeds_) {
             disconnect();
             if (!connectTo(seed.first, seed.second, 700)) continue;
-            if (!sentinel_password_.empty()) {
-                const auto auth = sentinel_user_.empty()
-                    ? std::vector<std::string>{"AUTH", sentinel_password_}
-                    : std::vector<std::string>{"AUTH", sentinel_user_, sentinel_password_};
-                if (!sendCommand(auth) || readResponse() != "OK") {
-                    disconnect();
-                    continue;
-                }
+            const auto auth = std::vector<std::string>{"AUTH", sentinel_user_, sentinel_password_};
+            if (!sendCommand(auth) || readResponse() != "OK") {
+                disconnect();
+                continue;
             }
             if (!sendCommand({"SENTINEL", "get-master-addr-by-name", sentinel_master_name_})) {
                 disconnect();

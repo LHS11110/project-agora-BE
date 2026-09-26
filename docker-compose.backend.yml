@@ -13,6 +13,22 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
+    volumes:
+      - type: volume
+        source: spring-resources
+        target: /home/agora/project-agora/canvas-resource
+      - type: bind
+        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
+        target: /run/certs/elasticsearch-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
+        target: /run/certs/redis-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -32,19 +48,6 @@ services:
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
-    volumes:
-      - type: bind
-        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
-        target: /run/certs/elasticsearch-ca.crt
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
-        target: /run/certs/redis-ca.crt
-        read_only: true
-        bind:
-          create_host_path: false
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -83,6 +86,7 @@ services:
     environment:
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
+      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
       PORT: "8000"
       WS_PORT: "8002"
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
@@ -97,7 +101,7 @@ services:
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
-      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-}
+      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-${DB_FREETDS_CONF:-/etc/freetds/freetds.conf}}
     volumes:
       - type: bind
         source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
@@ -112,7 +116,7 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-strict.conf.example}
+        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-${DB_TRUST_SERVER_CERTIFICATE:-false}.conf.example}
         target: /etc/freetds/freetds.conf
         read_only: true
         bind:
@@ -151,3 +155,7 @@ networks:
   redis-ha:
     external: true
     name: agora-redis-ha
+
+volumes:
+  spring-resources:
+    name: agora-backend-spring-resources

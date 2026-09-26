@@ -45,8 +45,6 @@ public:
     bool updateJson(const std::string& key, const std::function<void(nlohmann::json&)>& modifier);
 
 private:
-    std::string host_;
-    int port_;
     std::string user_;
     std::string password_;
     std::string sentinel_master_name_;

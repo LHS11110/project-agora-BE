@@ -109,7 +109,14 @@ public class CanvasService {
                 "default"
         );
         document.setDescription(description != null ? description : "");
-        canvasElasticsearchService.saveCanvas(document);
+        try {
+            if (!canvasElasticsearchService.saveCanvas(document)) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "캔버스 저장에 실패했습니다.");
+            }
+        } catch (RuntimeException e) {
+            canvasResourceService.deleteCanvasResourceDirectory(targetId);
+            throw e;
+        }
 
         log.info("신규 캔버스 #{} 생성 완료: name='{}', admin_user_id={}", targetId, canvasName, userId);
         return CanvasSummaryResponse.of(document, imagePath);

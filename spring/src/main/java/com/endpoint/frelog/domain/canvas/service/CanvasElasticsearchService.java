@@ -286,7 +286,13 @@ public class CanvasElasticsearchService {
                     return Optional.of(decodeCanvasDocument(resp.get("_source")));
                 }
             }
-        } catch (Exception ignored) {
+        } catch (HttpClientErrorException.NotFound e) {
+            if (isIndexNotFoundException(e)) {
+                throw canvasReadFailure("문서 ID 조회", e);
+            }
+            // A missing document can still have a legacy document ID, so try the field query below.
+        } catch (Exception e) {
+            throw canvasReadFailure("문서 ID 조회", e);
         }
 
         try {
@@ -316,19 +322,26 @@ public class CanvasElasticsearchService {
             }
             return Optional.empty();
         } catch (HttpClientErrorException.NotFound e) {
-            handleIndexNotFound("도큐먼트 ID 검색 (getCanvasDocumentById)", e);
-            return Optional.empty();
+            throw canvasReadFailure("canvas-id 검색", e);
         } catch (Exception e) {
-            if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 ID 검색 (getCanvasDocumentById)", e);
-                return Optional.empty();
-            }
-            log.warn("Elasticsearch 캔버스 ID {} 검색 실패: {}", canvasId, e.getMessage());
-            if (properties.isFailOnError()) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 검색 실패: " + e.getMessage());
-            }
-            return Optional.empty();
+            throw canvasReadFailure("canvas-id 검색", e);
         }
+    }
+
+    private CustomException canvasReadFailure(String operation, Exception e) {
+        if (isIndexNotFoundException(e)) {
+            log.error("Elasticsearch 캔버스 인덱스 '{}'를 읽을 수 없습니다 ({}).", properties.getIndex(), operation);
+            return new CustomException(
+                    ErrorCode.ELASTICSEARCH_INDEX_NOT_FOUND,
+                    "Elasticsearch 캔버스 인덱스를 읽을 수 없습니다."
+            );
+        }
+
+        log.error("Elasticsearch 캔버스 조회 실패 ({}): {}", operation, e.getMessage());
+        return new CustomException(
+                ErrorCode.INTERNAL_SERVER_ERROR,
+                "캔버스 저장소 조회에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        );
     }
 
     /**

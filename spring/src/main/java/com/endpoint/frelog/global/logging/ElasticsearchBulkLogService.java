@@ -64,7 +64,7 @@ public class ElasticsearchBulkLogService {
     public void record(String component, String event, String level, String message, Map<String, ?> details) {
         if (!enabled) return;
         Map<String, Object> document = new LinkedHashMap<>();
-        document.put("@timestamp", Instant.now().toString());
+        document.put("@timestamp", Instant.now().toEpochMilli());
         document.put("event_id", UUID.randomUUID().toString());
         document.put("service", "agora-spring");
         document.put("instance", instance);

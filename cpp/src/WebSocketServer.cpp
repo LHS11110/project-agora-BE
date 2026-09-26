@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdlib>
 #include <httplib.h>
 #include <iostream>
 #include <limits>
@@ -21,8 +22,38 @@
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
 
-static bool isLocalProxyPeer(std::string_view ip) {
-    return ip == "127.0.0.1" || ip == "::1" || ip == "::ffff:127.0.0.1";
+static std::string_view normalizeProxyIp(std::string_view ip) {
+    constexpr std::string_view ipv4MappedPrefix = "::ffff:";
+    if (ip.rfind(ipv4MappedPrefix, 0) == 0) {
+        return ip.substr(ipv4MappedPrefix.size());
+    }
+    return ip;
+}
+
+static bool isTrustedProxyPeer(std::string_view ip) {
+    ip = normalizeProxyIp(ip);
+    if (ip == "127.0.0.1" || ip == "::1") return true;
+
+    const char* configured_proxies = std::getenv("CPP_TRUSTED_PROXY_IPS");
+    if (configured_proxies == nullptr || configured_proxies[0] == '\0') return false;
+
+    const std::string_view proxy_list(configured_proxies);
+    std::size_t start = 0;
+    while (start < proxy_list.size()) {
+        const auto end = proxy_list.find(',', start);
+        auto candidate = proxy_list.substr(start, end == std::string_view::npos
+            ? proxy_list.size() - start : end - start);
+        while (!candidate.empty() && (candidate.front() == ' ' || candidate.front() == '\t')) {
+            candidate.remove_prefix(1);
+        }
+        while (!candidate.empty() && (candidate.back() == ' ' || candidate.back() == '\t')) {
+            candidate.remove_suffix(1);
+        }
+        if (normalizeProxyIp(candidate) == ip) return true;
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return false;
 }
 
 static std::string getQueryParam(std::string_view query, const std::string& key) {
@@ -1938,7 +1969,7 @@ void WebSocketServer::runServer() {
 
             std::string token = getQueryParam(query, "token");
             std::string client_ip = std::string(res->getRemoteAddressAsText());
-            if (isLocalProxyPeer(client_ip)) {
+            if (isTrustedProxyPeer(client_ip)) {
                 const auto forwarded_ip = req->getHeader("x-real-ip");
                 if (!forwarded_ip.empty()) {
                     client_ip.assign(forwarded_ip.data(), forwarded_ip.size());

@@ -1,0 +1,6 @@
+# Local development only: SQL Server's self-signed certificate is not verified.
+# Encryption remains required. Production must set DB_TRUST_SERVER_CERTIFICATE=false
+# and use the strict configuration with a trusted issuing CA and hostname check.
+[global]
+    tds version = 8.0
+    encryption = require
