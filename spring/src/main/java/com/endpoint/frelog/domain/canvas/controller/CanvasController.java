@@ -1,6 +1,7 @@
 package com.endpoint.frelog.domain.canvas.controller;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
+import com.endpoint.frelog.domain.canvas.dto.CreateCanvasRequest;
 import com.endpoint.frelog.domain.canvas.dto.CanvasResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
@@ -62,15 +63,10 @@ public class CanvasController {
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<CanvasSummaryResponse> createCanvasJson(
-            @RequestBody java.util.Map<String, Object> body,
+            @Valid @RequestBody CreateCanvasRequest body,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        String canvasName = (String) body.get("canvasName");
-        if (canvasName == null) canvasName = (String) body.get("canvas-name");
-        String description = (String) body.get("description");
-        String canvasPassword = (String) body.get("canvasPassword");
-        if (canvasPassword == null) canvasPassword = (String) body.get("canvas-password");
-
-        CanvasSummaryResponse response = canvasService.createCanvas(canvasName, description, canvasPassword, null, currentUser);
+        CanvasSummaryResponse response = canvasService.createCanvas(
+                body.canvasName(), body.description(), body.canvasPassword(), null, currentUser);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -117,6 +113,7 @@ public class CanvasController {
         return ResponseEntity.ok()
                 .contentType(contentType)
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
+                .header("X-Content-Type-Options", "nosniff")
                 .body(image);
     }
 
@@ -145,7 +142,7 @@ public class CanvasController {
 
     @PatchMapping("/{canvasId}/password")
     public ResponseEntity<Void> updatePassword(@PathVariable Integer canvasId,
-            @RequestBody CanvasUpdateDtos.UpdatePasswordRequest request,
+            @Valid @RequestBody CanvasUpdateDtos.UpdatePasswordRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         canvasService.updateCanvasPassword(canvasId, request.canvasPassword(), currentUser);
         return ResponseEntity.noContent().build();
@@ -186,11 +183,14 @@ public class CanvasController {
     @PostMapping("/{canvasId}/access")
     public ResponseEntity<CanvasUpdateDtos.AccessResponse> accessCanvasPath(
             @PathVariable Integer canvasId,
-            @RequestBody(required = false) CanvasUpdateDtos.AccessPasswordRequest accessRequest,
+            @Valid @RequestBody(required = false) CanvasUpdateDtos.AccessPasswordRequest accessRequest,
             HttpServletRequest request,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        CanvasUpdateDtos.AccessResponse response = canvasService.accessCanvas(canvasId, request, currentUser,
-                accessRequest == null ? null : accessRequest.password());
+        String password = accessRequest == null ? null : accessRequest.password();
+        String passwordToken = accessRequest == null ? null : accessRequest.canvasPasswordToken();
+        CanvasUpdateDtos.AccessResponse response = passwordToken == null || passwordToken.isBlank()
+                ? canvasService.accessCanvas(canvasId, request, currentUser, password)
+                : canvasService.accessCanvas(canvasId, request, currentUser, password, passwordToken);
         return ResponseEntity.ok(response);
     }
 

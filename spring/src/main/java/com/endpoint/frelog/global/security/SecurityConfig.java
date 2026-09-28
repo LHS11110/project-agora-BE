@@ -83,6 +83,7 @@ public class SecurityConfig {
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/users").hasRole("ADMIN")
                         // The testbed reads this DB-backed active-session snapshot.
                         // Keep the other test/admin endpoints restricted below.
                         .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/test/cpp-active-canvases").authenticated()

@@ -36,6 +36,7 @@ private:
     int port_;
     std::string advertised_host_;
     std::string jwt_secret_;
+    std::string internal_api_token_;
     std::string db_host_;
     int db_port_;
     httplib::Server server_;

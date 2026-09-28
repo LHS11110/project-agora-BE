@@ -43,6 +43,9 @@ public:
     // Remove canvas from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
     bool removeCanvas(int canvas_id);
 
+    // Freeze and persist every loaded canvas before notifying clients of a server restart.
+    bool saveCanvasesForShutdown();
+
     // Disconnect a user across all active canvases
     void disconnectUserFromAll(int user_id);
 
@@ -75,6 +78,9 @@ private:
     std::shared_ptr<std::mutex> lifecycleMutexForCanvas(int canvas_id);
     std::shared_ptr<Canvas> getOrCreateCanvasWithLifecycleLock(int canvas_id);
     bool removeCanvasImpl(int canvas_id);
+    bool saveCanvasSnapshotToElasticsearch(
+        int canvas_id, const std::shared_ptr<Canvas>& canvas,
+        std::unique_lock<std::mutex>& settings_lock, std::string& cache_generation);
     bool unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
 
     std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;

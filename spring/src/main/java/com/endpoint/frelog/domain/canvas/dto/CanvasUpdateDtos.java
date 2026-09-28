@@ -3,6 +3,7 @@ package com.endpoint.frelog.domain.canvas.dto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import java.util.List;
 
 public class CanvasUpdateDtos {
@@ -27,6 +28,7 @@ public class CanvasUpdateDtos {
     ) {}
 
     public record UpdatePasswordRequest(
+            @Size(max = 72, message = "캔버스 비밀번호는 최대 72자까지 가능합니다.")
             @JsonProperty("canvas_password")
             @com.fasterxml.jackson.annotation.JsonAlias({"canvasPassword", "password"})
             String canvasPassword
@@ -86,7 +88,19 @@ public class CanvasUpdateDtos {
             Integer canvasId
     ) {}
 
-    public record AccessPasswordRequest(String password) {}
+    public record AccessPasswordRequest(
+            @Size(max = 72, message = "캔버스 비밀번호는 최대 72자까지 가능합니다.")
+            @JsonProperty("password")
+            @com.fasterxml.jackson.annotation.JsonAlias("canvasPassword")
+            String password,
+            @JsonProperty("canvas_password_token")
+            @com.fasterxml.jackson.annotation.JsonAlias({"canvasPasswordToken", "password_token"})
+            String canvasPasswordToken
+    ) {
+        public AccessPasswordRequest(String password) {
+            this(password, null);
+        }
+    }
 
     public record AccessResponse(
             @JsonProperty("server_id")
@@ -96,7 +110,13 @@ public class CanvasUpdateDtos {
             String wsPort,
 
             @JsonProperty("canvas_access_token")
-            String canvasAccessToken
+            String canvasAccessToken,
+
+            @JsonProperty("canvas_password_token")
+            String canvasPasswordToken
     ) {
+        public AccessResponse(Integer serverId, String wsPort, String canvasAccessToken) {
+            this(serverId, wsPort, canvasAccessToken, null);
+        }
     }
 }

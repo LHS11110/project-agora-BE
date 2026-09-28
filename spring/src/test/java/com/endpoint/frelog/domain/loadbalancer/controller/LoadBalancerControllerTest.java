@@ -64,13 +64,13 @@ class LoadBalancerControllerTest {
     }
 
     @Test
-    @DisplayName("서버 할당 API 호출 시 등록된 서버가 없으면 404 및 '등록된 서버가 없습니다.' 에러 메시지 반환")
+    @DisplayName("서버 할당 API 호출 시 등록된 서버가 없으면 503 및 '등록된 서버가 없습니다.' 에러 메시지 반환")
     void allocateServer_NoServerAvailable() throws Exception {
         given(loadBalancerService.allocateServer())
                 .willThrow(new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "등록된 서버가 없습니다."));
 
         mockMvc.perform(post("/api/load-balancer/allocate/server"))
-                .andExpect(status().isNotFound())
+                .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("LB_001"))
                 .andExpect(jsonPath("$.message").value("등록된 서버가 없습니다."));
     }

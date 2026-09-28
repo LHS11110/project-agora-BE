@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.List;
@@ -61,7 +62,9 @@ public class AuthService {
             throw new CustomException(ErrorCode.USER_WITHDRAWN);
         }
 
-        if (user.getPasswordHash() == null || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
+        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72
+                || user.getPasswordHash() == null
+                || !passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         }
 
@@ -87,6 +90,9 @@ public class AuthService {
     public UserResponse signup(SignupRequest request) {
         if (userRepository.existsByEmail(request.email())) {
             throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
+        }
+        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
 
         String encodedPassword = passwordEncoder.encode(request.password());
@@ -143,6 +149,9 @@ public class AuthService {
         }
 
         if (request.password() != null && !request.password().isBlank()) {
+            if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
+                throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
+            }
             user.changePassword(passwordEncoder.encode(request.password()));
         }
 

@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Find threads and pkg-config
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(Poco REQUIRED COMPONENTS Foundation)
 pkg_check_modules(HTTPLIB REQUIRED cpp-httplib)
 
 # Include directories
@@ -52,6 +53,7 @@ target_link_libraries(agora_cpp_server
     PRIVATE
     Threads::Threads
     usockets
+    Poco::Foundation
     z
     ${HTTPLIB_LIBRARIES}
     crypto

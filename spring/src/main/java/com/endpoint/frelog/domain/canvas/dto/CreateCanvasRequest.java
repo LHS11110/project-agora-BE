@@ -21,10 +21,13 @@ public record CreateCanvasRequest(
         @JsonAlias({"canvas-password", "canvasPassword"})
         String canvasPassword,
 
+        @Size(max = 4000, message = "설명은 최대 4000자까지 가능합니다.")
+        String description,
+
         @JsonAlias({"init-group", "initGroup"})
         String initGroup
 ) {
     public CreateCanvasRequest(String canvasName) {
-        this(canvasName, null, null);
+        this(canvasName, null, null, null);
     }
 }

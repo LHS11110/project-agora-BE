@@ -3,26 +3,46 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+#include <charconv>
+#include <system_error>
+
+namespace {
+bool parsePositiveId(const std::string& value, int& result) {
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), result);
+    return error == std::errc{} && end == value.data() + value.size() && result > 0;
+}
+
+void writeInvalidId(httplib::Response& res) {
+    res.status = 400;
+    res.set_content(R"({"status":400,"error":"BAD_REQUEST","message":"잘못된 ID입니다."})",
+                    "application/json; charset=utf-8");
+}
+}
 
 void CanvasControlApi::registerRoutes(httplib::Server& server) {
     // These routes control in-memory realtime state owned by CanvasPool.
     server.Post(R"(/api/users/(\d+)/disconnect)", [this](const httplib::Request& req, httplib::Response& res) {
-        const int user_id = std::stoi(req.matches[1]);
+        int user_id = 0;
+        if (!parsePositiveId(req.matches[1], user_id)) return writeInvalidId(res);
         canvas_pool_.disconnectUserFromAll(user_id);
         res.status = 200;
         res.set_content(R"({"status":"success","message":"User disconnected"})", "application/json");
     });
 
     server.Post(R"(/api/canvas/(\d+)/users/(\d+)/disconnect)", [this](const httplib::Request& req, httplib::Response& res) {
-        const int canvas_id = std::stoi(req.matches[1]);
-        const int user_id = std::stoi(req.matches[2]);
+        int canvas_id = 0;
+        int user_id = 0;
+        if (!parsePositiveId(req.matches[1], canvas_id) || !parsePositiveId(req.matches[2], user_id)) {
+            return writeInvalidId(res);
+        }
         canvas_pool_.disconnectUser(canvas_id, user_id);
         res.status = 200;
         res.set_content(R"({"status":"success","message":"User disconnected from canvas"})", "application/json");
     });
 
     server.Delete(R"(/api/canvas/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        const int canvas_id = std::stoi(req.matches[1]);
+        int canvas_id = 0;
+        if (!parsePositiveId(req.matches[1], canvas_id)) return writeInvalidId(res);
         const bool removed = canvas_pool_.removeCanvas(canvas_id);
         const nlohmann::json body = {
             {"status", "success"}, {"canvas_id", canvas_id}, {"removed", removed}

@@ -24,7 +24,7 @@ public enum ErrorCode {
 
     ELASTICSEARCH_INDEX_NOT_FOUND(HttpStatus.INTERNAL_SERVER_ERROR, "ES_001", "Elasticsearch 인덱스가 존재하지 않습니다."),
 
-    NO_SERVER_AVAILABLE(HttpStatus.NOT_FOUND, "LB_001", "등록된 서버가 없습니다."),
+    NO_SERVER_AVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "LB_001", "등록된 서버가 없습니다."),
     NO_REDIS_AVAILABLE(HttpStatus.NOT_FOUND, "LB_002", "등록된 Redis 서버가 없습니다."),
     SERVER_NOT_FOUND(HttpStatus.NOT_FOUND, "LB_003", "서버를 찾을 수 없습니다."),
     REDIS_NOT_FOUND(HttpStatus.NOT_FOUND, "LB_004", "Redis 서버를 찾을 수 없습니다."),
@@ -32,6 +32,11 @@ public enum ErrorCode {
     BAD_REQUEST(HttpStatus.BAD_REQUEST, "COMMON_000", "잘못된 요청입니다."),
     FORBIDDEN(HttpStatus.FORBIDDEN, "AUTH_007", "권한이 없습니다."),
     INVALID_INPUT_VALUE(HttpStatus.BAD_REQUEST, "COMMON_001", "입력값이 유효하지 않습니다."),
+    UNSUPPORTED_MEDIA_TYPE(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "COMMON_004", "지원하지 않는 콘텐츠 형식입니다."),
+    PAYLOAD_TOO_LARGE(HttpStatus.CONTENT_TOO_LARGE, "COMMON_003", "요청 크기가 허용된 한도를 초과했습니다."),
+    METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "COMMON_005", "지원하지 않는 HTTP 메서드입니다."),
+    RESOURCE_NOT_FOUND(HttpStatus.NOT_FOUND, "COMMON_006", "요청한 경로를 찾을 수 없습니다."),
+    NOT_ACCEPTABLE(HttpStatus.NOT_ACCEPTABLE, "COMMON_007", "요청한 응답 형식을 제공할 수 없습니다."),
     INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "COMMON_002", "서버 내부 오류가 발생했습니다.");
 
     private final HttpStatus httpStatus;

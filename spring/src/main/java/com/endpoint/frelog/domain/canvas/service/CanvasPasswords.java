@@ -31,7 +31,10 @@ public final class CanvasPasswords {
 
     public static boolean matches(String supplied, String stored) {
         if (supplied == null || stored == null) return false;
-        if (stored.startsWith("$2")) return BCRYPT.matches(supplied, stored);
+        if (stored.startsWith("$2")) {
+            if (supplied.getBytes(StandardCharsets.UTF_8).length > 72) return false;
+            return BCRYPT.matches(supplied, stored);
+        }
         if (stored.startsWith("pbkdf2$")) {
             try {
                 String[] parts = stored.split("\\$");

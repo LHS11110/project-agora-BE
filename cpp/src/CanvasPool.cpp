@@ -291,9 +291,10 @@ void CanvasPool::setWebSocketCallbacks(Canvas::WebSocketCallbacks callbacks) {
     }
 }
 
-bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
-    if (!canvas) return false;
-    std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
+bool CanvasPool::saveCanvasSnapshotToElasticsearch(
+        int canvas_id, const std::shared_ptr<Canvas>& canvas,
+        std::unique_lock<std::mutex>& settings_lock, std::string& cache_generation) {
+    if (!canvas || !settings_lock.owns_lock()) return false;
     std::cout << "[CanvasPool] Waiting for Canvas #" << canvas_id
               << " pending Redis writes before Elasticsearch snapshot\n";
     if (!canvas->waitForPendingPersistence(settings_lock)) {
@@ -304,15 +305,7 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
     std::cout << "[CanvasPool] Canvas #" << canvas_id
               << " Redis writes drained; starting Elasticsearch snapshot\n";
 
-    // Active users and SQL reservations were checked under the lifecycle lock.
-    // Do not queue a disconnect-all callback here: it could run after a new
-    // Canvas instance is loaded for this ID and close its fresh sockets.
-
-    // 1. Fetch canvas document from Redis and reflect to Elasticsearch.
-    // Keep the Redis root until MSSQL says uncached: Spring holds the SQL
-    // canvas row lock while choosing Redis or Elasticsearch.
     nlohmann::json final_doc;
-    std::string cache_generation;
     try {
         RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
         auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
@@ -339,6 +332,73 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
         std::cout << "[CanvasPool] Reflected Canvas #" << canvas_id << " from Redis to Elasticsearch\n";
     } catch (const std::exception& e) {
         std::cerr << "[CanvasPool] Error during Redis/ES sync for canvas #" << canvas_id << ": " << e.what() << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool CanvasPool::saveCanvasesForShutdown() {
+    std::vector<std::pair<int, std::shared_ptr<Canvas>>> canvases;
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        canvases.reserve(canvases_.size());
+        for (const auto& [canvas_id, canvas] : canvases_) {
+            if (canvas) canvases.emplace_back(canvas_id, canvas);
+        }
+    }
+    std::sort(canvases.begin(), canvases.end(), [](const auto& left, const auto& right) {
+        return left.first < right.first;
+    });
+
+    // Keep each canvas lifecycle stable while shutdown freezes writes and
+    // persists snapshots. Sorting gives concurrent cleanup the same lock order.
+    std::vector<std::unique_lock<std::mutex>> lifecycle_locks;
+    lifecycle_locks.reserve(canvases.size());
+    for (const auto& [canvas_id, canvas] : canvases) {
+        (void)canvas;
+        auto lifecycle_mutex = lifecycleMutexForCanvas(canvas_id);
+        lifecycle_locks.emplace_back(*lifecycle_mutex);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        canvases.erase(std::remove_if(canvases.begin(), canvases.end(), [this](const auto& entry) {
+            const auto current = canvases_.find(entry.first);
+            return current == canvases_.end() || current->second != entry.second;
+        }), canvases.end());
+    }
+
+    // Freeze every canvas before snapshotting any of them so no canvas keeps
+    // accepting writes while another canvas is being saved.
+    for (const auto& [canvas_id, canvas] : canvases) {
+        (void)canvas_id;
+        std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
+        canvas->unloading.store(true);
+    }
+
+    bool all_saved = true;
+    for (const auto& [canvas_id, canvas] : canvases) {
+        std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
+        std::string cache_generation;
+        if (!saveCanvasSnapshotToElasticsearch(canvas_id, canvas, settings_lock, cache_generation)) {
+            all_saved = false;
+        }
+    }
+    return all_saved;
+}
+
+bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
+    if (!canvas) return false;
+    std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
+
+    // Active users and SQL reservations were checked under the lifecycle lock.
+    // Do not queue a disconnect-all callback here: it could run after a new
+    // Canvas instance is loaded for this ID and close its fresh sockets.
+
+    // Keep the Redis root until MSSQL says uncached: Spring holds the SQL
+    // canvas row lock while choosing Redis or Elasticsearch.
+    std::string cache_generation;
+    if (!saveCanvasSnapshotToElasticsearch(canvas_id, canvas, settings_lock, cache_generation)) {
         return false;
     }
 

@@ -7,6 +7,9 @@
 #include <csignal>
 #include <cstdint>
 #include <cerrno>
+#include <charconv>
+#include <optional>
+#include <string_view>
 #include <thread>
 #include <chrono>
 #include <mutex>
@@ -28,6 +31,7 @@
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
 #include "MssqlClient.hpp"
+#include "Environment.hpp"
 
 static HttpServer* g_server = nullptr;
 static WebSocketServer* g_ws_server = nullptr;
@@ -43,6 +47,38 @@ static std::string g_db_host = "127.0.0.1";
 static int g_db_port = 1433;
 
 namespace {
+std::optional<int> parseInteger(std::string_view value, int minimum, int maximum) {
+    int parsed = 0;
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size()
+            || parsed < minimum || parsed > maximum) {
+        return std::nullopt;
+    }
+    return parsed;
+}
+
+bool readIntegerEnvironment(const char* name, int& target, int minimum, int maximum) {
+    const char* configured = std::getenv(name);
+    if (!configured) return true;
+    const auto parsed = parseInteger(configured, minimum, maximum);
+    if (!parsed) {
+        std::cerr << "Invalid integer setting: " << name << "\n";
+        return false;
+    }
+    target = *parsed;
+    return true;
+}
+
+bool readIntegerArgument(const char* value, const char* name, int& target, int minimum, int maximum) {
+    const auto parsed = parseInteger(value, minimum, maximum);
+    if (!parsed) {
+        std::cerr << "Invalid integer argument: " << name << "\n";
+        return false;
+    }
+    target = *parsed;
+    return true;
+}
+
 void writeSignalText(const char* text, std::size_t length) {
     while (length > 0) {
         const ssize_t written = write(STDERR_FILENO, text, length);
@@ -198,22 +234,37 @@ void installCrashTraceHandlers() {
 }
 }
 
-void stop_servers() {
+void stop_servers(CanvasPool& canvas_pool) {
     if (g_shutdown_started.exchange(true)) return;
-    MssqlClient(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
-    std::cout << "[Agora C++ Server] 서버를 DB에서 비활성화했습니다.\n";
-    if (g_ws_server) {
-        g_ws_server->stop();
-    }
-    if (g_server) {
-        g_server->stop();
-    }
-    
+
     {
         std::lock_guard<std::mutex> lock(g_cleanup_mutex);
         g_cleanup_running = false;
     }
     g_cleanup_cv.notify_all();
+
+    MssqlClient(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
+    std::cout << "[Agora C++ Server] 서버를 DB에서 비활성화했습니다.\n";
+
+    if (g_ws_server) {
+        g_ws_server->stopAcceptingClients();
+    }
+    if (g_server) {
+        g_server->stop();
+    }
+
+    if (!canvas_pool.saveCanvasesForShutdown()) {
+        std::cerr << "[Agora C++ Server] 일부 Canvas를 Elasticsearch에 저장하지 못했습니다. "
+                     "Redis 캐시는 보존한 채 종료를 계속합니다.\n";
+    }
+
+    if (g_ws_server) {
+        g_ws_server->stopForRestart();
+    }
+
+    // Close callbacks have now cleared SQL sessions. Uncache each saved canvas
+    // so another server can load it before clients reconnect.
+    canvas_pool.cleanupInactiveCanvases();
 }
 
 int main(int argc, char* argv[]) {
@@ -235,13 +286,13 @@ int main(int argc, char* argv[]) {
 
     if (const char* env_host = std::getenv("HOST")) host = env_host;
     if (const char* env_adv_ip = std::getenv("ADVERTISE_IP")) g_advertise_ip = env_adv_ip;
-    if (const char* env_port = std::getenv("PORT")) g_port = std::stoi(env_port);
+    if (!readIntegerEnvironment("PORT", g_port, 1, 65535)) return 1;
     if (const char* env_db_host = std::getenv("DB_HOST")) g_db_host = env_db_host;
-    if (const char* env_db_port = std::getenv("DB_PORT")) g_db_port = std::stoi(env_db_port);
+    if (!readIntegerEnvironment("DB_PORT", g_db_port, 1, 65535)) return 1;
     if (const char* env_es_host = std::getenv("ES_HOST")) es_host = env_es_host;
-    if (const char* env_es_port = std::getenv("ES_PORT")) es_port = std::stoi(env_es_port);
+    if (!readIntegerEnvironment("ES_PORT", es_port, 1, 65535)) return 1;
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
-    if (const char* env_java_port = std::getenv("JAVA_PORT")) java_port = std::stoi(env_java_port);
+    if (!readIntegerEnvironment("JAVA_PORT", java_port, 1, 65535)) return 1;
 
     const char* env_jwt_secret = std::getenv("JWT_SECRET");
     if (!env_jwt_secret || std::string(env_jwt_secret).size() < 32) {
@@ -250,20 +301,29 @@ int main(int argc, char* argv[]) {
     }
     std::string jwt_secret = env_jwt_secret;
 
+    const std::string internal_api_token = environmentValue("CPP_INTERNAL_API_TOKEN");
+    if (internal_api_token.size() < 32) {
+        std::cerr << "CPP_INTERNAL_API_TOKEN must be configured and at least 32 characters long\n";
+        return 1;
+    }
+
     int ws_port = g_port + 2;
 
     if (argc >= 5) {
         host = argv[1];
         g_advertise_ip = argv[2];
-        g_port = std::stoi(argv[3]);
-        ws_port = std::stoi(argv[4]);
+        if (!readIntegerArgument(argv[3], "REST port", g_port, 1, 65535)
+                || !readIntegerArgument(argv[4], "WebSocket port", ws_port, 1, 65535)) return 1;
     } else {
         if (argc > 1) host = argv[1];
         if (argc > 2) g_advertise_ip = argv[2];
-        if (argc > 3) g_port = std::stoi(argv[3]);
-        if (argc > 4) ws_port = std::stoi(argv[4]);
+        if (argc > 3 && !readIntegerArgument(argv[3], "REST port", g_port, 1, 65535)) return 1;
     }
-    if (const char* env_ws_port = std::getenv("WS_PORT")) ws_port = std::stoi(env_ws_port);
+    if (!readIntegerEnvironment("WS_PORT", ws_port, 1, 65535)) return 1;
+    if (ws_port < 1 || ws_port > 65535) {
+        std::cerr << "Derived WebSocket port is outside the valid range; configure WS_PORT explicitly.\n";
+        return 1;
+    }
 
     if (g_advertise_ip == "127.0.0.1" && host != "0.0.0.0") {
         g_advertise_ip = host;
@@ -316,6 +376,13 @@ int main(int argc, char* argv[]) {
     g_server = &server;
     g_ws_server = &ws_server;
 
+    // Start listeners before the signal waiter so a queued SIGINT/SIGTERM can
+    // never stop an unstarted server and then accidentally let it start later.
+    ws_server.start();
+    std::thread http_server_thread([&server]() {
+        server.start();
+    });
+
     std::thread signal_thread([&]() {
         pthread_setname_np(pthread_self(), "agora-signal");
         while (g_cleanup_running) {
@@ -324,15 +391,8 @@ int main(int argc, char* argv[]) {
             if (signal != SIGINT && signal != SIGTERM) continue;
 
             std::cout << "\n[Agora C++ Server] Caught signal " << signal << ", shutting down..." << std::endl;
-            int active_count = canvas_pool.getActiveCanvasCount();
-            if (active_count > 0 && !g_graceful_shutdown.exchange(true)) {
-                std::cout << "[Agora C++ Server] 이용중인 캔버스가 존재합니다. (Active: " << active_count << ")\n";
-                std::cout << "[Agora C++ Server] 안전 종료 모드로 진입합니다. 모든 연결이 끝나면 종료합니다.\n";
-                mssql.setServerInactive(g_advertise_ip, g_port);
-                g_cleanup_cv.notify_all();
-                continue;
-            }
-            stop_servers();
+            g_graceful_shutdown = true;
+            stop_servers(canvas_pool);
             break;
         }
     });
@@ -343,26 +403,14 @@ int main(int argc, char* argv[]) {
             if (!g_graceful_shutdown && !mssql.heartbeatServer(g_advertise_ip, g_port)) {
                 std::cerr << "[Agora C++ Server] Server heartbeat update failed\n";
             }
-            canvas_pool.cleanupInactiveCanvases();
-
-            if (g_graceful_shutdown && canvas_pool.getActiveCanvasCount() == 0) {
-                std::cout << "\n[Agora C++ Server] 모든 사용자가 접속을 종료하여 서버를 안전하게 종료합니다.\n";
-                // Trigger shutdown
-                stop_servers();
-                break;
-            }
+            if (!g_graceful_shutdown) canvas_pool.cleanupInactiveCanvases();
 
             std::unique_lock<std::mutex> lock(g_cleanup_mutex);
-            if (g_graceful_shutdown) {
-                g_cleanup_cv.wait_for(lock, std::chrono::seconds(1), [] { return !g_cleanup_running; });
-            } else {
-                g_cleanup_cv.wait_for(lock, std::chrono::seconds(5), [] { return !g_cleanup_running || g_graceful_shutdown; });
-            }
+            g_cleanup_cv.wait_for(lock, std::chrono::seconds(5), [] { return !g_cleanup_running || g_graceful_shutdown; });
         }
     });
 
-    ws_server.start();
-    server.start();
+    if (http_server_thread.joinable()) http_server_thread.join();
 
     {
         std::lock_guard<std::mutex> lock(g_cleanup_mutex);

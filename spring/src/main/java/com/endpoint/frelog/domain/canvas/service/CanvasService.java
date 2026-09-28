@@ -32,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.nio.charset.StandardCharsets;
 
 @Service
 public class CanvasService {
@@ -88,6 +89,15 @@ public class CanvasService {
             CustomUserDetails currentUser) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "캔버스 생성은 로그인한 사용자만 가능합니다.");
+        }
+        if (canvasName == null || canvasName.isBlank() || canvasName.length() > 255) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 이름은 1자 이상 255자 이하여야 합니다.");
+        }
+        if (description != null && description.length() > 4000) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "설명은 최대 4000자까지 가능합니다.");
+        }
+        if (canvasPassword != null && canvasPassword.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
 
         Long userId = currentUser.getUserId();
@@ -210,6 +220,9 @@ public class CanvasService {
     public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
         CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
         if (password == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
+        if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
+        }
         canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
                 java.util.Collections.singletonMap("canvas-password-hash",
                         password.isBlank() ? null : CanvasPasswords.hashForStorage(password))));
@@ -348,6 +361,13 @@ public class CanvasService {
     @Transactional
     public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest,
                                                          CustomUserDetails currentUser, String suppliedPassword) {
+        return accessCanvas(canvasId, httpRequest, currentUser, suppliedPassword, null);
+    }
+
+    @Transactional
+    public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest,
+                                                         CustomUserDetails currentUser, String suppliedPassword,
+                                                         String suppliedPasswordToken) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
@@ -374,7 +394,11 @@ public class CanvasService {
         CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
 
         String storedPassword = doc.getCanvasPasswordHash();
-        if (storedPassword != null && !storedPassword.isBlank()) {
+        long settingsRevision = doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision();
+        boolean passwordProtected = storedPassword != null && !storedPassword.isBlank();
+        boolean validPasswordToken = passwordProtected && jwtTokenProvider.validateCanvasPasswordGrant(
+                suppliedPasswordToken, currentUser.getUserId(), canvasId, settingsRevision);
+        if (passwordProtected && !validPasswordToken) {
             if (suppliedPassword == null || suppliedPassword.isBlank()) {
                 throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
             }
@@ -446,11 +470,17 @@ public class CanvasService {
                 canvasId,
                 httpRequest.getRemoteAddr(), 
                 serverHash,
-                doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision()
+                settingsRevision
         );
 
+        String canvasPasswordToken = passwordProtected
+                ? validPasswordToken
+                    ? suppliedPasswordToken
+                    : jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), canvasId, settingsRevision)
+                : null;
+
         // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환
-        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken);
+        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken, canvasPasswordToken);
     }
 
     // =========================================================================

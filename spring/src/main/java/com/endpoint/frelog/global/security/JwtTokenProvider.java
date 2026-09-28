@@ -18,6 +18,7 @@ import java.util.Date;
 public class JwtTokenProvider {
 
     private static final Logger log = LoggerFactory.getLogger(JwtTokenProvider.class);
+    private static final long CANVAS_PASSWORD_GRANT_EXPIRATION_MS = 30 * 60 * 1000L;
 
     private final SecretKey key;
     private final long expirationMs;
@@ -68,6 +69,43 @@ public class JwtTokenProvider {
                 .expiration(validity)
                 .signWith(key, Jwts.SIG.HS256)
                 .compact();
+    }
+
+    public String createCanvasPasswordGrant(Long userId, Integer canvasId, long settingsRevision) {
+        Date now = new Date();
+        Date validity = new Date(now.getTime() + CANVAS_PASSWORD_GRANT_EXPIRATION_MS);
+
+        return Jwts.builder()
+                .subject("canvas-password-grant")
+                .claim("userId", userId)
+                .claim("canvasId", canvasId)
+                .claim("settingsRevision", settingsRevision)
+                .issuedAt(now)
+                .expiration(validity)
+                .signWith(key, Jwts.SIG.HS256)
+                .compact();
+    }
+
+    public boolean validateCanvasPasswordGrant(String token, Long userId, Integer canvasId, long settingsRevision) {
+        if (token == null || token.isBlank()) return false;
+
+        try {
+            Claims claims = Jwts.parser()
+                    .verifyWith(key)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+            Object tokenUserId = claims.get("userId");
+            Object tokenCanvasId = claims.get("canvasId");
+            Object tokenSettingsRevision = claims.get("settingsRevision");
+            return "canvas-password-grant".equals(claims.getSubject())
+                    && tokenUserId instanceof Number userIdNumber && userIdNumber.longValue() == userId
+                    && tokenCanvasId instanceof Number canvasIdNumber && canvasIdNumber.intValue() == canvasId
+                    && tokenSettingsRevision instanceof Number revisionNumber
+                    && revisionNumber.longValue() == settingsRevision;
+        } catch (JwtException | IllegalArgumentException e) {
+            return false;
+        }
     }
 
     public String getEmailFromToken(String token) {

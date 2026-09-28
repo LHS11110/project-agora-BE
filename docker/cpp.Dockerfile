@@ -10,6 +10,7 @@ RUN apt-get update \
         cmake \
         libcpp-httplib-dev \
         freetds-dev \
+        libpoco-dev \
         libssl-dev \
         nlohmann-json3-dev \
         pkg-config \
@@ -33,6 +34,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         libcpp-httplib0.14t64 \
+        libpocofoundation80t64 \
         libsybdb5 \
         libssl3t64 \
         zlib1g \

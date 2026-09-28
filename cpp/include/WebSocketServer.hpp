@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <optional>
 #include <cstdint>
+#include <future>
 #include <deque>
 #include <tuple>
 #include <vector>
@@ -53,16 +54,18 @@ public:
 
     void start();
     void stop();
+    void stopAcceptingClients();
+    void stopForRestart();
 
     int getWsPort() const { return ws_port_; }
     bool isRunning() const { return running_; }
 
-    void broadcastToCanvas(int canvas_id, const nlohmann::json& data, int exclude_user_id = -1);
     void sendToUser(int canvas_id, int user_id, const nlohmann::json& data);
     void disconnectUser(int canvas_id, int user_id);
     void disconnectCanvas(int canvas_id);
 
 private:
+    void stop(bool send_reconnect_signal);
     void runServer();
     void registerSocket(Socket* ws);
     void unregisterSocket(Socket* ws);
@@ -75,8 +78,6 @@ private:
     void closeSocketSession(Socket* ws, int code, const std::string& reason);
     void indexSocket(Socket* ws);
     void unindexSocket(Socket* ws);
-    std::unordered_set<Socket*> socketsForGroups(
-        int canvas_id, const std::unordered_set<std::string>& groups) const;
     bool beginBlockingWorker();
     void endBlockingWorker();
     void clearSessionAsync(int user_id, int canvas_id, std::uint64_t session_generation);
@@ -98,15 +99,20 @@ private:
     void* listen_socket_{nullptr};
     uWS::Loop* loop_{nullptr};
     std::mutex loop_mutex_;
+    std::condition_variable loop_cv_;
+    bool listener_setup_complete_{false};
+    std::atomic<bool> shutdown_preparing_{false};
     std::mutex worker_mutex_;
     std::condition_variable worker_cv_;
     int active_workers_{0};
     int active_blocking_workers_{0};
+    std::atomic<bool> accepting_{false};
     std::vector<std::tuple<int, int, std::uint64_t>> shutdown_session_reservations_;
     std::thread session_cleanup_thread_;
     std::mutex session_cleanup_mutex_;
     std::condition_variable session_cleanup_cv_;
     bool session_cleanup_stopping_{false};
+    bool session_cleanup_active_{false};
     std::deque<int> session_cleanup_order_;
     std::unordered_map<int, std::pair<int, std::uint64_t>> session_cleanup_pending_;
     std::unordered_set<Socket*> registered_sockets_;
@@ -115,8 +121,6 @@ private:
     std::unordered_map<int, std::unordered_set<Socket*>> rtc_signaling_sockets_by_canvas_;
     std::unordered_map<std::uint64_t, std::unordered_set<Socket*>> rtc_sockets_by_canvas_connection_;
     std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;
-    std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<Socket*>>> sockets_by_canvas_group_;
-    std::unordered_map<int, std::unordered_set<Socket*>> admin_sockets_by_canvas_;
     std::unordered_map<int, std::unordered_map<std::string, Socket*>> sockets_by_canvas_peer_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<std::string>>> item_permissions_by_canvas_;
     std::unordered_map<int, std::unordered_set<std::string>> chat_rooms_by_canvas_;

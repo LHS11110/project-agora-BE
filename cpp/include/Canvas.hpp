@@ -16,7 +16,6 @@
 class Canvas {
 public:
     struct WebSocketCallbacks {
-        std::function<void(int, const nlohmann::json&, int)> broadcast;
         std::function<void(int, int, const nlohmann::json&)> send_to_user;
         std::function<void(int, int)> disconnect_user;
         std::function<void(int)> disconnect_all;
@@ -79,9 +78,6 @@ public:
 
     // WebSocket transport callbacks are supplied by WebSocketServer through CanvasPool.
     void setWebSocketCallbacks(WebSocketCallbacks callbacks);
-
-    // Broadcast to active canvas WebSocket sessions.
-    void broadcast(const nlohmann::json& data, int exclude_user_id = -1);
 
     // Send to the user's active canvas WebSocket sessions.
     void sendToUser(int user_id, const nlohmann::json& data);

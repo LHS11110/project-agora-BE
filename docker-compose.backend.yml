@@ -33,21 +33,44 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    env_file:
-      - .env
     environment:
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: "8080"
+      DB_NAME: ${DB_NAME:-agora_db}
+      DB_USER: ${DB_USER:-agora_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_ENCRYPT: ${DB_ENCRYPT:-true}
+      DB_TRUST_SERVER_CERTIFICATE: ${DB_TRUST_SERVER_CERTIFICATE:-false}
+      DB_MULTI_SUBNET_FAILOVER: ${DB_MULTI_SUBNET_FAILOVER:-true}
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
       DB_PORT: ${DOCKER_DB_PORT:-1433}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
       ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
       ES_PORT: ${DOCKER_ES_PORT:-9200}
       ES_SCHEME: https
       ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      ES_INDEX: ${ES_INDEX:-canvas}
+      ES_USER_NAME: ${ES_USER_NAME:-agora_user}
+      ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
+      ES_LOG_INDEX: ${ES_LOG_INDEX:-agora-logs}
+      ES_LOG_USER_NAME: ${ES_LOG_USER_NAME:-agora_log_writer}
+      ES_LOG_USER_PASSWORD: ${ES_LOG_USER_PASSWORD:-}
+      ES_LOG_BATCH_SIZE: ${ES_LOG_BATCH_SIZE:-100}
+      ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
+      HA_FAILOVER_MONITOR_INTERVAL_MS: ${HA_FAILOVER_MONITOR_INTERVAL_MS:-10000}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      CPP_WS_PORT_OFFSET: ${CPP_WS_PORT_OFFSET:-2}
+      CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      REDIS_USER: ${REDIS_USER:?Set REDIS_USER in .env}
+      REDIS_USER_PASSWORD: ${REDIS_USER_PASSWORD:?Set REDIS_USER_PASSWORD in .env}
       REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
+      REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
+      REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     ports:
       - "127.0.0.1:8080:8080"
     networks:
@@ -81,24 +104,43 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    env_file:
-      - .env
     environment:
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
       CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-127.0.0.1,::1}
       PORT: "8000"
       WS_PORT: "8002"
+      REST_THREAD_POOL: ${REST_THREAD_POOL:-16}
+      CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
+      CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
       DB_PORT: ${DOCKER_DB_PORT:-1433}
+      DB_NAME: ${DB_NAME:-agora_db}
+      DB_USER: ${DB_USER:-agora_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_ENCRYPT: ${DB_ENCRYPT:-true}
+      DB_TRUST_SERVER_CERTIFICATE: ${DB_TRUST_SERVER_CERTIFICATE:-false}
       ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
       ES_PORT: ${DOCKER_ES_PORT:-9200}
       ES_SCHEME: https
       ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      ES_INDEX: ${ES_INDEX:-canvas}
+      ES_USER_NAME: ${ES_USER_NAME:-agora_user}
+      ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
+      ES_LOG_INDEX: ${ES_LOG_INDEX:-agora-logs}
+      ES_LOG_USER_NAME: ${ES_LOG_USER_NAME:-agora_log_writer}
+      ES_LOG_USER_PASSWORD: ${ES_LOG_USER_PASSWORD:-}
+      ES_LOG_BATCH_SIZE: ${ES_LOG_BATCH_SIZE:-100}
+      ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
       JAVA_HOST: agora-spring
       JAVA_PORT: "8080"
+      REDIS_USER: ${REDIS_USER:?Set REDIS_USER in .env}
+      REDIS_USER_PASSWORD: ${REDIS_USER_PASSWORD:?Set REDIS_USER_PASSWORD in .env}
       REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
+      REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
+      REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-${DB_FREETDS_CONF:-/etc/freetds/freetds.conf}}

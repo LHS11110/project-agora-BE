@@ -8,7 +8,7 @@ public record UpdateUserRequest(
         @JsonProperty("nickname")
         String nickname,
 
-        @Size(min = 4, max = 100, message = "비밀번호는 4자 이상이어야 합니다.")
+        @Size(min = 4, max = 72, message = "비밀번호는 4자 이상 72자 이하여야 합니다.")
         @JsonProperty("password")
         String password
 ) {

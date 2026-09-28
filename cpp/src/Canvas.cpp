@@ -170,19 +170,6 @@ void Canvas::setWebSocketCallbacks(WebSocketCallbacks callbacks) {
     web_socket_callbacks_ = std::move(callbacks);
 }
 
-void Canvas::broadcast(const nlohmann::json& data, int exclude_user_id) {
-    WebSocketCallbacks callbacks;
-
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex);
-        callbacks = web_socket_callbacks_;
-    }
-
-    if (callbacks.broadcast) {
-        callbacks.broadcast(canvas_id, data, exclude_user_id);
-    }
-}
-
 void Canvas::sendToUser(int user_id, const nlohmann::json& data) {
     WebSocketCallbacks callbacks;
 

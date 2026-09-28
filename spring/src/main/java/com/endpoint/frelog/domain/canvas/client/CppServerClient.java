@@ -2,6 +2,8 @@ package com.endpoint.frelog.domain.canvas.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -19,17 +21,21 @@ public class CppServerClient {
     private static final int UNAVAILABLE = Integer.MAX_VALUE;
 
     private final RestClient restClient;
+    private final String internalApiToken;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public CppServerClient() {
+    @Autowired
+    public CppServerClient(@Value("${app.cpp.internal-api-token:}") String internalApiToken) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofMillis(3000));
         requestFactory.setReadTimeout(Duration.ofMillis(3000));
         this.restClient = RestClient.builder().requestFactory(requestFactory).build();
+        this.internalApiToken = internalApiToken;
     }
 
     public CppServerClient(RestClient restClient) {
         this.restClient = restClient;
+        this.internalApiToken = "";
     }
 
     public int getCanvasCountFromServer(String serverIp, String serverPort) {
@@ -38,6 +44,7 @@ public class CppServerClient {
             String port = serverPort == null || serverPort.isBlank() ? "8000" : serverPort.trim();
             String body = restClient.get()
                     .uri(URI.create("http://" + host + ":" + port + "/api/canvas/count"))
+                    .header("X-Agora-Internal-Token", internalApiToken)
                     .retrieve()
                     .body(String.class);
 
