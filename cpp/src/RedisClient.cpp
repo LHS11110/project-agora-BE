@@ -29,6 +29,9 @@
 namespace {
 constexpr std::size_t kCanvasDocumentCacheDefaultCapacity = 256;
 constexpr std::size_t kCanvasDocumentCacheMaximumCapacity = 4096;
+constexpr std::size_t kMaximumRedisBulkReplyBytes = 256 * 1024 * 1024;
+constexpr std::size_t kMaximumRedisArrayElements = 1'000'000;
+constexpr char kRedisErrorMarker = '\x01';
 
 bool isCanvasDocumentKey(const std::string& key) {
     constexpr char prefix[] = "canvas:";
@@ -60,8 +63,34 @@ std::size_t canvasDocumentCacheCapacity() {
     }
 }
 
-Poco::LRUCache<std::string, std::string>& canvasDocumentCache() {
-    static Poco::LRUCache<std::string, std::string> cache(canvasDocumentCacheCapacity());
+class CanvasDocumentCache {
+public:
+    explicit CanvasDocumentCache(std::size_t capacity) : cache_(capacity) {}
+
+    std::optional<std::string> get(const std::string& key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto value = cache_.get(key);
+        if (!value) return std::nullopt;
+        return *value;
+    }
+
+    void add(const std::string& key, const std::string& value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cache_.add(key, value);
+    }
+
+    void remove(const std::string& key) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cache_.remove(key);
+    }
+
+private:
+    Poco::LRUCache<std::string, std::string> cache_;
+    std::mutex mutex_;
+};
+
+CanvasDocumentCache& canvasDocumentCache() {
+    static CanvasDocumentCache cache(canvasDocumentCacheCapacity());
     return cache;
 }
 
@@ -253,11 +282,28 @@ bool envEnabled(const char* name) {
 }
 
 bool isWrongTypeResponse(const std::string& response) {
-    std::string normalized = response;
+    const std::string message = !response.empty() && response.front() == kRedisErrorMarker
+        ? response.substr(1) : response;
+    std::string normalized = message;
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return normalized.find("wrongtype") != std::string::npos
         || normalized.find("wrong redis type") != std::string::npos;
+}
+
+bool isRedisErrorResponse(const std::string& response) {
+    return !response.empty() && response.front() == kRedisErrorMarker;
+}
+
+bool parseRespLength(const std::string& text, long long& value) {
+    if (text.empty()) return false;
+    try {
+        std::size_t parsed_length = 0;
+        value = std::stoll(text, &parsed_length);
+        return parsed_length == text.size();
+    } catch (...) {
+        return false;
+    }
 }
 
 std::vector<std::pair<std::string, int>> parseSentinelSeeds(const char* configured) {
@@ -560,6 +606,12 @@ std::string RedisClient::readLine() {
             disconnect();
             return "";
         } else {
+            // RESP line headers and simple strings should remain small. Reject
+            // malformed peers instead of growing this buffer without a bound.
+            if (line.size() >= 64 * 1024) {
+                disconnect();
+                return "";
+            }
             line += c;
         }
     }
@@ -584,16 +636,23 @@ std::string RedisClient::readResponse() {
                     sentinel_seeds_.empty() ? "redis" : "redis-sentinel", false,
                     {{"error", error.substr(0, 64)}});
         }
-        return error;
+        return std::string(1, kRedisErrorMarker) + error;
     } else if (type == '+' || type == ':') {
         return prefix.substr(1);
     } else if (type == '$') {
-        int len = std::stoi(prefix.substr(1));
-        if (len == -1) return "";
-        std::vector<char> buf(len);
+        long long parsed_length = 0;
+        if (!parseRespLength(prefix.substr(1), parsed_length)
+                || parsed_length < -1
+                || parsed_length > static_cast<long long>(kMaximumRedisBulkReplyBytes)) {
+            disconnect();
+            return "";
+        }
+        if (parsed_length == -1) return "";
+        const auto length = static_cast<std::size_t>(parsed_length);
+        std::vector<char> buf(length);
         ssize_t total = 0;
-        while (total < len) {
-            ssize_t r = readTransport(buf.data() + total, len - total);
+        while (static_cast<std::size_t>(total) < length) {
+            ssize_t r = readTransport(buf.data() + total, length - static_cast<std::size_t>(total));
             if (r <= 0) break;
             total += r;
         }
@@ -605,15 +664,23 @@ std::string RedisClient::readResponse() {
             if (r <= 0) break;
             crlf_total += r;
         }
-        if (total != len || crlf_total != 2) {
+        if (static_cast<std::size_t>(total) != length || crlf_total != 2
+                || crlf[0] != '\r' || crlf[1] != '\n') {
             disconnect();
             return "";
         }
         return std::string(buf.data(), static_cast<std::size_t>(total));
     } else if (type == '*') {
-        int count = std::stoi(prefix.substr(1));
+        long long parsed_count = 0;
+        if (!parseRespLength(prefix.substr(1), parsed_count)
+                || parsed_count < -1
+                || parsed_count > static_cast<long long>(kMaximumRedisArrayElements)) {
+            disconnect();
+            return "";
+        }
+        if (parsed_count == -1) return "";
         std::string result;
-        for (int i = 0; i < count; ++i) {
+        for (long long i = 0; i < parsed_count; ++i) {
             std::string item = readResponse();
             if (i > 0) result += " ";
             result += item;
@@ -686,7 +753,7 @@ std::optional<std::string> RedisClient::readFromRedis(const std::string& key) {
         if (!sendCommand({"GET", key})) return std::nullopt;
         res = readResponse();
     }
-    if (res.empty()) return std::nullopt;
+    if (res.empty() || isRedisErrorResponse(res)) return std::nullopt;
     return res;
 }
 
@@ -726,7 +793,7 @@ std::optional<std::string> RedisClient::getJsonPath(const std::string& key, cons
     }
     if (!sendCommand({"JSON.GET", key, path})) return std::nullopt;
     const std::string response = readResponse();
-    if (response.empty() || response.rfind("ERR", 0) == 0) return std::nullopt;
+    if (response.empty() || isRedisErrorResponse(response)) return std::nullopt;
     return response;
 }
 
@@ -1018,7 +1085,7 @@ end
                       to_sequence ? std::to_string(*to_sequence) : std::string("0"),
                       std::to_string(limit), mode})) return std::nullopt;
     const std::string response = readResponse();
-    if (response.empty() || response.rfind("ERR", 0) == 0) return std::nullopt;
+    if (response.empty() || isRedisErrorResponse(response)) return std::nullopt;
     return response;
 }
 
@@ -1126,7 +1193,7 @@ bool RedisClient::deleteJsonPath(const std::string& key, const std::string& path
         return false;
     }
     const std::string response = readResponse();
-    const bool deleted = !response.empty() && response.find("ERR") == std::string::npos;
+    const bool deleted = !response.empty() && !isRedisErrorResponse(response);
     if (!deleted && is_document) canvasDocumentCache().remove(key);
     if (deleted && is_document && !cache_updated) {
         const auto latest = readFromRedis(key);
@@ -1176,7 +1243,7 @@ bool RedisClient::deletePattern(const std::string& pattern) {
 
     if (!sendCommand({"KEYS", pattern})) return false;
     std::string keys_str = readResponse();
-    if (keys_str.rfind("ERR", 0) == 0) return false;
+    if (isRedisErrorResponse(keys_str)) return false;
     if (keys_str.empty()) return true;
 
     std::istringstream iss(keys_str);

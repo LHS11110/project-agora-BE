@@ -164,6 +164,7 @@ class FakeRedisNode final : public FakeTcpServer {
 public:
     ~FakeRedisNode() override { stop(); }
     void becomeReadOnly() { read_only_ = true; }
+    void rejectJsonDeleteWithNoAuth() { reject_json_delete_with_noauth_ = true; }
     int pingCount() const { return ping_count_; }
 
 private:
@@ -181,6 +182,8 @@ private:
                 ++ping_count_;
                 if (read_only_) writeAll(socket_fd, "-READONLY You can't write against a read only replica.\r\n");
                 else writeAll(socket_fd, "+PONG\r\n");
+            } else if (name == "JSON.DEL" && reject_json_delete_with_noauth_) {
+                writeAll(socket_fd, "-NOAUTH Authentication required.\r\n");
             } else {
                 writeAll(socket_fd, "-ERR unsupported test command\r\n");
             }
@@ -188,6 +191,7 @@ private:
     }
 
     std::atomic<bool> read_only_{false};
+    std::atomic<bool> reject_json_delete_with_noauth_{false};
     std::atomic<int> ping_count_{0};
 };
 
@@ -260,6 +264,10 @@ void runRedisSentinelFailover() {
         AGORA_CHECK(client.ping());
         AGORA_CHECK(primary_b.pingCount() == 1);
         AGORA_CHECK(sentinel.authenticatedQueryCount() > 0);
+
+        // RESP error replies must not be mistaken for successful JSON deletes.
+        primary_b.rejectJsonDeleteWithNoAuth();
+        AGORA_CHECK(!client.deleteJsonPath("canvas:987654321", "$.items"));
     }
 }
 

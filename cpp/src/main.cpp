@@ -269,6 +269,13 @@ void stop_servers(CanvasPool& canvas_pool) {
 
 int main(int argc, char* argv[]) {
     installCrashTraceHandlers();
+    struct sigaction ignore_sigpipe{};
+    ignore_sigpipe.sa_handler = SIG_IGN;
+    sigemptyset(&ignore_sigpipe.sa_mask);
+    if (sigaction(SIGPIPE, &ignore_sigpipe, nullptr) != 0) {
+        std::cerr << "Could not disable SIGPIPE delivery for network clients\n";
+        return 1;
+    }
     pthread_setname_np(pthread_self(), "agora-main");
 
     sigset_t handled_signals;
