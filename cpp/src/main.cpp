@@ -1,5 +1,8 @@
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 #include <cstdlib>
 #include <csignal>
 #include <cstdint>
@@ -19,7 +22,9 @@
 #include <ucontext.h>
 #include <unistd.h>
 #include "CanvasPool.hpp"
+#include "CanvasControlApi.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
+#include "HealthApi.hpp"
 #include "HttpServer.hpp"
 #include "WebSocketServer.hpp"
 #include "MssqlClient.hpp"
@@ -299,7 +304,11 @@ int main(int argc, char* argv[]) {
         std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << g_advertise_ip << ", REST: " << g_port << ", WS: " << ws_port << ")\n";
     }
 
-    HttpServer server(canvas_pool, host, g_port, g_advertise_ip, jwt_secret, g_db_host, g_db_port);
+    std::vector<std::unique_ptr<HttpApiModule>> api_modules;
+    api_modules.push_back(std::make_unique<CanvasControlApi>(canvas_pool));
+    api_modules.push_back(std::make_unique<HealthApi>());
+    HttpServer server(canvas_pool, host, g_port, g_advertise_ip, jwt_secret, g_db_host, g_db_port,
+                      std::move(api_modules));
     WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id, const std::string& client_ip) {
         return server.authenticateTokenForCanvas(token, canvas_id, client_ip, ws_port);
     }, java_host, java_port);

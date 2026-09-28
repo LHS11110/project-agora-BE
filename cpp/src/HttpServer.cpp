@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <chrono>
 #include <limits>
+#include <utility>
 #include <nlohmann/json.hpp>
 #include "MssqlClient.hpp"
 
@@ -25,8 +26,9 @@ std::string normalizeClientIp(std::string ip) {
 
 HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
                        const std::string& advertised_host, const std::string& jwt_secret,
-                       const std::string& db_host, int db_port)
-    : canvas_pool_(canvas_pool), host_(host), port_(port), advertised_host_(advertised_host),
+                       const std::string& db_host, int db_port,
+                       std::vector<std::unique_ptr<HttpApiModule>> api_modules)
+    : canvas_pool_(canvas_pool), api_modules_(std::move(api_modules)), host_(host), port_(port), advertised_host_(advertised_host),
       jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
     // cpp-httplib enables SO_REUSEPORT by default on Linux. That lets a second
     // server bind the same port and makes the kernel distribute requests to a
@@ -154,7 +156,7 @@ std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const st
 }
 
 void HttpServer::setupRoutes() {
-    // Global CORS Preflight and headers
+    // CORS is transport-wide; endpoint implementations live in API modules.
     server_.Options(".*", [](const httplib::Request&, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
@@ -168,85 +170,7 @@ void HttpServer::setupRoutes() {
         res.set_header("Access-Control-Allow-Headers", "*");
     });
 
-
-
-    // POST /api/access removed as per user request (봇용 API 제거)
-
-
-
-    // 사용자 연결 중단 API (Spring 회원 삭제 시 호출)
-    server_.Post(R"(/api/users/(\d+)/disconnect)", [this](const httplib::Request& req, httplib::Response& res) {
-        int user_id = std::stoi(req.matches[1]);
-        canvas_pool_.disconnectUserFromAll(user_id);
-        res.status = 200;
-        res.set_content("{\"status\":\"success\",\"message\":\"User disconnected\"}", "application/json");
-    });
-
-    // 캔버스별 사용자 연결 중단 API
-    server_.Post(R"(/api/canvas/(\d+)/users/(\d+)/disconnect)", [this](const httplib::Request& req, httplib::Response& res) {
-        int canvas_id = std::stoi(req.matches[1]);
-        int user_id = std::stoi(req.matches[2]);
-        canvas_pool_.disconnectUser(canvas_id, user_id);
-        res.status = 200;
-        res.set_content("{\"status\":\"success\",\"message\":\"User disconnected from canvas\"}", "application/json");
-    });
-
-    // POST /api/access/disconnect removed as per user request (봇용 API 제거)
-
-    // 비활성 캔버스의 C++ 캐시 언로드 API (Spring 삭제 경로와 별개)
-    server_.Delete(R"(/api/canvas/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
-        int canvas_id = std::stoi(req.matches[1]);
-        bool removed = canvas_pool_.removeCanvas(canvas_id);
-        res.status = 200;
-        nlohmann::json r = {{"status", "success"}, {"canvas_id", canvas_id}, {"removed", removed}};
-        res.set_content(r.dump(), "application/json");
-    });
-
-    // 활성 캔버스 수 조회 API (로드 밸런서 측정용)
-    server_.Get("/api/canvas/count", [this](const httplib::Request& req, httplib::Response& res) {
-        (void)req;
-        int count = canvas_pool_.getActiveCanvasCount();
-        nlohmann::json r = {{"status", "success"}, {"count", count}};
-        res.status = 200;
-        res.set_content(r.dump(), "application/json");
-    });
-
-    // 활성 캔버스 상세 목록 및 수 조회 API
-    server_.Get("/api/canvas/active", [this](const httplib::Request& req, httplib::Response& res) {
-        (void)req;
-        auto ids = canvas_pool_.getActiveCanvasIds();
-        nlohmann::json canvas_list = nlohmann::json::array();
-        for (int cid : ids) {
-            auto c = canvas_pool_.getCanvas(cid);
-            if (c) {
-                canvas_list.push_back({
-                    {"canvas_id", cid},
-                    {"canvas_name", c->getCanvasName()},
-                    {"admin_user_id", c->getAdminUserId()},
-                    {"active_user_count", c->getActiveUsers().size()},
-                    {"active_users", c->getActiveUsers()}
-                });
-            }
-        }
-        nlohmann::json r = {
-            {"status", "success"},
-            {"count", (int)ids.size()},
-            {"canvases", canvas_list}
-        };
-        res.status = 200;
-        res.set_content(r.dump(), "application/json");
-    });
-
-    // 헬스체크
-    server_.Get("/health", [](const httplib::Request& req, httplib::Response& res) {
-        (void)req;
-        res.status = 200;
-        res.set_content("{\"status\":\"UP\",\"service\":\"Agora C++ Realtime Server\"}", "application/json");
-    });
-
-    server_.Get("/", [](const httplib::Request& req, httplib::Response& res) {
-        (void)req;
-        res.status = 200;
-        res.set_content("{\"status\":\"online\",\"service\":\"Agora C++ Server\"}", "application/json");
-    });
+    for (const auto& api_module : api_modules_) {
+        if (api_module) api_module->registerRoutes(server_);
+    }
 }

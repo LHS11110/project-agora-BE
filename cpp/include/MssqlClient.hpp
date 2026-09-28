@@ -3,6 +3,7 @@
 #include <string>
 #include <utility>
 #include <optional>
+#include "SqlExecutor.hpp"
 
 struct CanvasStorageAssignment {
     bool is_cached{false};
@@ -18,13 +19,18 @@ struct CanvasRedisAllocation {
     bool was_cached{false};
 };
 
-class MssqlClient {
+class MssqlClient : public SqlExecutor {
 public:
     MssqlClient(const std::string& host = "127.0.0.1", int port = 1433,
                 const std::string& user = "",
                 const std::string& pass = "",
                 const std::string& db = "");
     ~MssqlClient();
+
+    // Parameterized schema-level access for feature-specific repositories.
+    // Keep SQL and row-to-domain mapping out of HTTP route modules.
+    std::optional<SqlQueryResult> query(const SqlCommand& command) override;
+    bool execute(const SqlCommand& command) override;
 
     // Register this server to DB (cpp_server table)
     bool registerServer(const std::string& ip, int rest_port, int ws_port);

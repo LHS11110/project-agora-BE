@@ -9,8 +9,9 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include <openssl/ssl.h>
+#include "KeyValueStore.hpp"
 
-class RedisClient {
+class RedisClient : public KeyValueStore {
 public:
     enum class CompareSetResult { Applied, Conflict, Error };
     RedisClient(const std::string& host = "127.0.0.1", int port = 6379,
@@ -21,8 +22,8 @@ public:
     void disconnect();
 
     bool ping();
-    bool set(const std::string& key, const std::string& value);
-    std::optional<std::string> get(const std::string& key);
+    bool set(const std::string& key, const std::string& value) override;
+    std::optional<std::string> get(const std::string& key) override;
     std::optional<std::string> getJsonPath(const std::string& key, const std::string& path);
     bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
     bool appendChatMessage(const std::string& key, const std::string& item_id,
@@ -35,7 +36,7 @@ public:
                             const std::vector<std::pair<std::string, nlohmann::json>>& values,
                             const std::vector<std::string>& deletes = {});
     bool deleteJsonPath(const std::string& key, const std::string& path);
-    bool del(const std::string& key);
+    bool del(const std::string& key) override;
     // Deletes the old cache only if a newer canvas load has not replaced it.
     CompareSetResult deleteIfCacheGenerationMatches(const std::string& key, const std::string& generation);
     bool deletePattern(const std::string& pattern);

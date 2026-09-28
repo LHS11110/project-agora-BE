@@ -22,7 +22,7 @@ std::string envOr(const char* name, const std::string& value) {
 }
 
 bool addRpcTextParameter(DBPROCESS* dbproc, const char* name, const std::string& value) {
-    if (value.size() > SqlCommand::kMaxRpcTextBytes) return false;
+    if (value.size() > SqlCommand::kMaxBoundTextBytes) return false;
     const DBINT byte_length = static_cast<DBINT>(value.size());
     // The login uses UTF-8; SQL parameter declarations below decide whether
     // the server treats each value as VARCHAR or NVARCHAR.
@@ -56,15 +56,21 @@ bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
 
     std::vector<DBINT> int_values;
     int_values.reserve(command.parameters().size());
+    std::vector<DBBIGINT> bigint_values;
+    bigint_values.reserve(command.parameters().size());
     for (const auto& parameter : command.parameters()) {
         if (parameter.type == SqlCommand::ParameterType::Int32) {
             int_values.push_back(static_cast<DBINT>(parameter.int_value));
+        } else if (parameter.type == SqlCommand::ParameterType::Int64) {
+            bigint_values.push_back(static_cast<DBBIGINT>(parameter.int64_value));
         }
     }
 
     std::size_t int_value_index = 0;
+    std::size_t bigint_value_index = 0;
     for (const auto& parameter : command.parameters()) {
-        if (parameter.type != SqlCommand::ParameterType::Int32) {
+        if (parameter.type != SqlCommand::ParameterType::Int32
+                && parameter.type != SqlCommand::ParameterType::Int64) {
             if (!addRpcTextParameter(dbproc, parameter.name.c_str(), parameter.text_value)) {
                 std::cerr << "[MssqlClient] Could not bind sp_executesql text parameter.\n";
                 return false;
@@ -72,11 +78,20 @@ bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
             continue;
         }
 
-        DBINT& value = int_values[int_value_index++];
-        if (dbrpcparam(dbproc, parameter.name.c_str(), 0, SYBINT4, -1, -1,
-                      reinterpret_cast<BYTE*>(&value)) != SUCCEED) {
-            std::cerr << "[MssqlClient] Could not bind sp_executesql integer parameter.\n";
-            return false;
+        if (parameter.type == SqlCommand::ParameterType::Int32) {
+            DBINT& value = int_values[int_value_index++];
+            if (dbrpcparam(dbproc, parameter.name.c_str(), 0, SYBINT4, -1, -1,
+                          reinterpret_cast<BYTE*>(&value)) != SUCCEED) {
+                std::cerr << "[MssqlClient] Could not bind sp_executesql integer parameter.\n";
+                return false;
+            }
+        } else {
+            DBBIGINT& value = bigint_values[bigint_value_index++];
+            if (dbrpcparam(dbproc, parameter.name.c_str(), 0, SYBINT8, -1, -1,
+                          reinterpret_cast<BYTE*>(&value)) != SUCCEED) {
+                std::cerr << "[MssqlClient] Could not bind sp_executesql bigint parameter.\n";
+                return false;
+            }
         }
     }
 
@@ -291,6 +306,123 @@ MssqlClient::MssqlClient(const std::string& host, int port,
 }
 
 MssqlClient::~MssqlClient() {
+}
+
+namespace {
+bool readSqlTextValue(DBPROCESS* dbproc, int column, std::optional<std::string>& value) {
+    BYTE* source = dbdata(dbproc, column);
+    if (!source) {
+        value = std::nullopt;
+        return true;
+    }
+
+    const DBINT source_length = dbdatlen(dbproc, column);
+    if (source_length < 0) return false;
+    if (source_length == 0) {
+        value = std::string{};
+        return true;
+    }
+
+    // Generic repositories are intended for API-sized values. Refuse oversized
+    // cells instead of silently truncating an arbitrary database value.
+    constexpr std::size_t max_cell_bytes = 16 * 1024 * 1024;
+    const auto raw_length = static_cast<std::size_t>(source_length);
+    if (raw_length > max_cell_bytes / 2) return false;
+    const std::size_t capacity = std::max<std::size_t>(256, raw_length * 2 + 32);
+    std::vector<BYTE> converted(capacity);
+    const DBINT converted_length = dbconvert(
+            dbproc, dbcoltype(dbproc, column), source, source_length,
+            SYBVARCHAR, converted.data(), static_cast<DBINT>(converted.size()));
+    if (converted_length < 0 || static_cast<std::size_t>(converted_length) > converted.size()) return false;
+
+    std::size_t text_length = static_cast<std::size_t>(converted_length);
+    if (text_length > 0 && converted[text_length - 1] == '\0') --text_length;
+    value = std::string(reinterpret_cast<const char*>(converted.data()), text_length);
+    return true;
+}
+}
+
+std::optional<SqlQueryResult> MssqlClient::query(const SqlCommand& command) {
+    PooledConnection dbproc;
+    if (!dbproc.get() || user_.empty() || pass_.empty() || db_.empty()) return std::nullopt;
+    if (!executeSql(dbproc, command)) {
+        (void)dbcancel(dbproc);
+        return std::nullopt;
+    }
+
+    SqlQueryResult query_result;
+    bool succeeded = true;
+    RETCODE result_code;
+    while ((result_code = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (result_code == FAIL) {
+            succeeded = false;
+            break;
+        }
+
+        const int column_count = dbnumcols(dbproc);
+        SqlResultSet result_set;
+        result_set.columns.reserve(static_cast<std::size_t>(std::max(column_count, 0)));
+        for (int column = 1; column <= column_count; ++column) {
+            const char* name = dbcolname(dbproc, column);
+            result_set.columns.emplace_back(name ? name : "");
+        }
+
+        RETCODE row_code;
+        while ((row_code = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (row_code == FAIL || row_code == BUF_FULL) {
+                succeeded = false;
+                break;
+            }
+            if (column_count <= 0) continue;
+
+            SqlRow row;
+            row.values.reserve(static_cast<std::size_t>(column_count));
+            for (int column = 1; column <= column_count; ++column) {
+                std::optional<std::string> value;
+                if (!readSqlTextValue(dbproc, column, value)) {
+                    succeeded = false;
+                }
+                row.values.push_back(std::move(value));
+            }
+            result_set.rows.push_back(std::move(row));
+        }
+        if (column_count > 0) query_result.result_sets.push_back(std::move(result_set));
+        if (!succeeded) break;
+    }
+
+    if (!succeeded) {
+        (void)dbcancel(dbproc);
+        return std::nullopt;
+    }
+    return query_result;
+}
+
+bool MssqlClient::execute(const SqlCommand& command) {
+    PooledConnection dbproc;
+    if (!dbproc.get() || user_.empty() || pass_.empty() || db_.empty()) return false;
+    if (!executeSql(dbproc, command)) {
+        (void)dbcancel(dbproc);
+        return false;
+    }
+
+    bool succeeded = true;
+    RETCODE result_code;
+    while ((result_code = dbresults(dbproc)) != NO_MORE_RESULTS) {
+        if (result_code == FAIL) {
+            succeeded = false;
+            break;
+        }
+        RETCODE row_code;
+        while ((row_code = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (row_code == FAIL || row_code == BUF_FULL) {
+                succeeded = false;
+                break;
+            }
+        }
+        if (!succeeded) break;
+    }
+    if (!succeeded) (void)dbcancel(dbproc);
+    return succeeded;
 }
 
 bool MssqlClient::registerServer(const std::string& ip, int rest_port, int ws_port) {

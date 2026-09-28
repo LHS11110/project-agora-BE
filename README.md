@@ -143,7 +143,7 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 
 ## Docker로 백엔드 실행
 
-`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소 루트의 기본 `docker compose up`은 SQL Server·Elasticsearch·Redis Sentinel HA를 시작합니다. 같은 Docker 엔진에서 DB와 백엔드는 `agora-net` 및 `agora-redis-ha` 네트워크 이름으로 연결됩니다. 컨테이너 이름과 네트워크가 준비되면 Docker DNS가 자동으로 이름을 찾으므로, 별도 네트워크 설정 파일을 백엔드에 복사할 필요는 없습니다. DB 환경 파일의 계정·Sentinel 주소가 바뀌면 백엔드 `.env`에도 반영한 뒤 컨테이너를 재생성해야 합니다. 아래 시작 스크립트가 DB 볼륨을 확인하고, 이전 Sentinel Compose 프로젝트에서 전환이 필요한 경우 기존 HA 볼륨을 보존하며 프로젝트를 옮긴 뒤 연결값을 동기화합니다. Elasticsearch가 healthy가 된 뒤 `elasticsearch/.env`의 캔버스·로그 계정과 역할을 동기화하고 Spring을 시작합니다. 최초 DB 스키마·인덱스 설정은 [DB 저장소 안내](../project-agora-DB/README.md)를 먼저 완료하세요.
+`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소 루트의 기본 `docker compose up`은 SQL Server·Elasticsearch·Redis Sentinel HA를 시작합니다. 같은 Docker 엔진에서 DB와 백엔드는 `agora-net` 및 `agora-redis-ha` 네트워크 이름으로 연결됩니다. 두 네트워크는 겹치지 않는 고정 서브넷을 사용합니다. 컨테이너 이름과 네트워크가 준비되면 Docker DNS가 자동으로 이름을 찾으므로, 별도 네트워크 설정 파일을 백엔드에 복사할 필요는 없습니다. DB 환경 파일의 계정·Sentinel 주소가 바뀌면 백엔드 `.env`에도 반영한 뒤 컨테이너를 재생성해야 합니다. 아래 시작 스크립트가 DB 볼륨을 확인하고, 이전 Sentinel Compose 프로젝트에서 전환이 필요한 경우 기존 HA 볼륨을 보존하며 프로젝트를 옮긴 뒤 연결값을 동기화합니다. Elasticsearch가 healthy가 된 뒤 인덱스 또는 로그 alias가 없으면 스키마를 초기화하고, 캔버스·로그 계정과 역할을 동기화한 다음 Spring을 시작합니다.
 
 백엔드 Compose는 프로젝트 루트 `.env`의 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`를 호스트의 CA 파일 경로로 사용해 컨테이너에 읽기 전용으로 마운트합니다. 컨테이너 안에서는 각각 `/run/certs/elasticsearch-ca.crt`, `/run/certs/redis-ca.crt`로 참조합니다. TLS 연결을 위해 Elasticsearch는 HTTPS, Redis/Sentinel은 TLS를 사용하며 `REDIS_SENTINELS`에는 세 Sentinel 주소를 설정해야 합니다. 이미지에는 `.env`나 인증서를 복사하지 않습니다.
 

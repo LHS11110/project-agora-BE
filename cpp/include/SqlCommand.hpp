@@ -11,7 +11,9 @@ public:
     enum class ParameterType {
         Varchar,
         UnicodeText,
-        Int32
+        UnicodeMaxText,
+        Int32,
+        Int64
     };
 
     struct Parameter {
@@ -19,12 +21,18 @@ public:
         ParameterType type;
         std::string text_value;
         std::int32_t int_value = 0;
+        std::int64_t int64_value = 0;
     };
 
     explicit SqlCommand(std::string statement) : statement_(std::move(statement)) {}
 
     SqlCommand& addText(std::string name, std::string value) {
         parameters_.push_back({std::move(name), ParameterType::UnicodeText, std::move(value), 0});
+        return *this;
+    }
+
+    SqlCommand& addMaxText(std::string name, std::string value) {
+        parameters_.push_back({std::move(name), ParameterType::UnicodeMaxText, std::move(value), 0});
         return *this;
     }
 
@@ -35,6 +43,11 @@ public:
 
     SqlCommand& addInt(std::string name, std::int32_t value) {
         parameters_.push_back({std::move(name), ParameterType::Int32, {}, value});
+        return *this;
+    }
+
+    SqlCommand& addInt64(std::string name, std::int64_t value) {
+        parameters_.push_back({std::move(name), ParameterType::Int64, {}, 0, value});
         return *this;
     }
 
@@ -49,7 +62,9 @@ public:
             switch (parameter.type) {
                 case ParameterType::Varchar: declarations += " VARCHAR(4000)"; break;
                 case ParameterType::UnicodeText: declarations += " NVARCHAR(4000)"; break;
+                case ParameterType::UnicodeMaxText: declarations += " NVARCHAR(MAX)"; break;
                 case ParameterType::Int32: declarations += " INT"; break;
+                case ParameterType::Int64: declarations += " BIGINT"; break;
             }
         }
         return declarations;
@@ -60,7 +75,10 @@ public:
         for (std::size_t i = 0; i < parameters_.size(); ++i) {
             const auto& parameter = parameters_[i];
             if (!isValidName(parameter.name)) return false;
-            if (parameter.type != ParameterType::Int32 && parameter.text_value.size() > kMaxRpcTextBytes) return false;
+            if ((parameter.type == ParameterType::Varchar || parameter.type == ParameterType::UnicodeText)
+                    && parameter.text_value.size() > kMaxRpcTextBytes) return false;
+            if (parameter.type == ParameterType::UnicodeMaxText
+                    && parameter.text_value.size() > kMaxBoundTextBytes) return false;
             for (std::size_t j = 0; j < i; ++j) {
                 if (parameters_[j].name == parameter.name) return false;
             }
@@ -70,6 +88,7 @@ public:
     }
 
     static constexpr std::size_t kMaxRpcTextBytes = 4000;
+    static constexpr std::size_t kMaxBoundTextBytes = 1024 * 1024;
 
 private:
     static bool isValidName(const std::string& name) {

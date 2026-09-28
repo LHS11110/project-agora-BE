@@ -20,6 +20,7 @@ die() {
 for required_file in \
     "$DB_DIR/mssql/.env" \
     "$DB_DIR/elasticsearch/.env" \
+    "$DB_DIR/elasticsearch/ensure-elasticsearch-initialized.sh" \
     "$DB_DIR/elasticsearch/sync-elasticsearch-users.sh" \
     "$DB_DIR/redis/.env" \
     "$DB_DIR/docker-compose.yml" \
@@ -68,6 +69,9 @@ docker compose -p project-agora-db -f docker-compose.yml \
 printf 'Starting Elasticsearch and waiting for health...\n'
 docker compose -p project-agora-db -f docker-compose.yml \
     up -d --wait --wait-timeout "$WAIT_SECONDS" elasticsearch
+
+printf 'Checking Elasticsearch index and log schema...\n'
+"$DB_DIR/elasticsearch/ensure-elasticsearch-initialized.sh"
 
 printf 'Synchronizing Elasticsearch application accounts...\n'
 "$DB_DIR/elasticsearch/sync-elasticsearch-users.sh"

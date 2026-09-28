@@ -2,18 +2,22 @@
 
 #include <string>
 #include <optional>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <httplib.h>
 #include "CanvasPool.hpp"
 #include "AuthenticatedUser.hpp"
+#include "HttpApiModule.hpp"
 
 class HttpServer {
 public:
     HttpServer(CanvasPool& canvas_pool, const std::string& host, int port,
                const std::string& advertised_host, const std::string& jwt_secret,
-               const std::string& db_host, int db_port);
+               const std::string& db_host, int db_port,
+               std::vector<std::unique_ptr<HttpApiModule>> api_modules);
     ~HttpServer();
 
     void start();
@@ -27,6 +31,7 @@ private:
     void setupRoutes();
 
     CanvasPool& canvas_pool_;
+    std::vector<std::unique_ptr<HttpApiModule>> api_modules_;
     std::string host_;
     int port_;
     std::string advertised_host_;
