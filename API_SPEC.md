@@ -259,6 +259,12 @@ Nginx는 외부 `/wss/port/...` 요청을 같은 `<wsPort>`의 C++ 서버로 전
 
 `rtc_canvas_connection_id`와 `rtc_canvas_connection_hash`는 해당 캔버스 WebSocket 연결에 묶인 쌍입니다. 해시는 연결별 난수 키로 ID를 HMAC-SHA256 처리한 64자리 16진수 증명값이며, 캔버스 WebSocket 연결마다 새로 생성됩니다.
 
+### 실시간 이벤트 전파 정책
+
+일반 캔버스 WebSocket은 캔버스 전체 주제 구독이나 임의 이벤트 중계를 하지 않습니다. 일반 `item_*`/삭제/전체 `items` 변경은 권한을 검사하고 Redis 저장 큐에 넣지만, 다른 소켓에 변경 이벤트를 보내지 않으며 발신자에게도 성공 응답을 주지 않습니다. 검증·저장 오류는 발신 소켓에 반환됩니다. 이미 연결된 클라이언트는 자동 동기화되지 않으며, 최신 아이템은 재접속 후 `init_items`에서 받습니다. 채팅도 방 참가자에게 자동 전달되지 않습니다. `chat` 요청은 발신 소켓에만 echo를 반환하고, 다른 접속자는 `chat_history`로 저장 내역을 가져옵니다. 알 수 없는 임의 JSON과 JSON이 아닌 일반 캔버스 메시지는 다른 소켓으로 relay하지 않습니다.
+
+브로드캐스트로 남긴 앱 알림은 실제 설정이 변경됐을 때의 `canvas_settings_changed`입니다. 서버는 요청자에게 `canvas_settings_result`를 보내고, 요청자를 제외한 현재 인증된 접속자 중 결과 참여자에게만 비밀번호 해시가 없는 변경 알림을 보냅니다. RTC 피어 입·퇴장 이벤트는 별도 RTC signaling 프로토콜의 상태 전달이며 캔버스 이벤트 채널에는 전파되지 않습니다. `rtc_signal`은 지정된 피어 한 명에게만 전달합니다. 정상 종료의 `server_reconnect`도 전체 주제 브로드캐스트가 아니라 각 인증 연결에 보내는 제어 신호입니다.
+
 ### 일반 이벤트
 
 #### 채팅방과 내역
@@ -437,7 +443,13 @@ RTC 신호 WebSocket은 `rtc_join`, `rtc_list`, `rtc_disconnect`, `rtc_signal` �
 
 ### 종료·재접속
 
-WebSocket close 시 C++ 서버가 사용자 세션을 비활성화합니다. Spring은 C++ 연결 종료 API를 호출하지 않으며, 활성 세션이 있는 회원 탈퇴와 캔버스 삭제는 `409` 오류로 거부합니다. 캔버스 row나 문서는 소켓 close로 삭제하지 않습니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
+`SIGINT` 또는 `SIGTERM`을 받으면 C++는 새 WebSocket 연결 수락을 중단하고 진행 중인 접속·저장 작업이 끝날 때까지 기다립니다. 이어 HTTP 제어 서버를 멈추고 각 로드된 Canvas의 저장 큐를 비운 뒤 Redis 문서를 Elasticsearch에 snapshot으로 저장합니다. snapshot 저장을 시도한 다음 인증된 Canvas/RTC WebSocket마다 다음 신호를 개별 전송하고 close code `1012`로 연결을 닫습니다.
+
+```json
+{"type":"server_reconnect","reason":"server_shutdown","retry_after_ms":1000}
+```
+
+이후 소켓 종료 콜백으로 SQL 세션을 정리하고 비활성 Canvas unload를 시도합니다. Elasticsearch snapshot에 성공한 Canvas만 SQL cache 배정을 해제하고 Redis 문서를 정리할 수 있습니다. 저장 실패가 계속되면 Canvas 할당과 Redis 키를 보존하며 종료 후에도 Redis 키가 남을 수 있습니다. WebSocket close 시 사용자 세션은 비활성화됩니다. Spring은 C++ 연결 종료 API를 호출하지 않으며, 활성 세션이 있는 회원 탈퇴와 캔버스 삭제는 `409` 오류로 거부합니다. 설정 revision 변경으로 기존 토큰이 무효화되면 서버는 close code `1008`로 연결을 종료하고 새 `/access` 토큰을 요구합니다.
 
 ## 6. 시간 복잡도·저장소 접근·동시성
 
@@ -528,6 +540,12 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 `participant_remove`는 event loop에서 대상 socket을 pending 상태로 바꾸고 완료 알림/퇴장을 적용하므로 요청 시작과 완료에 각각 O(S) 순회가 있습니다. 설정 변경 알림은 참여자 소켓에 유지됩니다. 저장소 작업은 worker에서 수행합니다.
 
 일반 아이템·채팅 이벤트를 다른 캔버스 소켓으로 팬아웃하는 경로와 임의 payload relay는 제거했습니다. 유지되는 다중 수신 전송은 설정 변경 알림과 RTC 피어 상태 이벤트이며, 서버 종료 시 재접속 신호도 각 연결에 개별 전달합니다. 설정 변경 알림은 참여자 소켓을 순회하므로 O(S)입니다. RTC 피어 상태 이벤트는 RTC 피어 수에 비례합니다.
+
+### C++ Canvas JSON 문서 LRU 캐시
+
+C++ 프로세스는 `Poco::LRUCache`에 `canvas:<숫자 ID>` 전체 문서를 보관합니다. 기본 용량은 256개이며 `CPP_CANVAS_LRU_CAPACITY`로 조정할 수 있습니다. 0이나 유효하지 않은 값은 기본값을 쓰고, 4096보다 크게 설정하면 4096으로 제한합니다. LRU에서 밀려난 문서는 다음 조회 때 Redis에서 다시 읽습니다.
+
+Canvas JSON 경로를 조회할 때 먼저 LRU 문서를 조회하고, 캐시 미스면 Redis에서 읽어 캐시를 채웁니다. 경로 변경과 채팅 메시지 append는 캐시 문서의 아이템을 먼저 갱신한 뒤 Redis에 기록합니다. Redis 기록에 실패하면 캐시 항목을 제거해 메모리와 저장소의 불일치가 계속 사용되지 않게 합니다. 설정 revision CAS와 채팅 순번·append 원자성은 Redis 연산으로 유지합니다. 이 LRU는 프로세스 내 읽기·쓰기 가속 캐시이며 Elasticsearch를 Redis 조회의 대체 경로로 사용하지 않습니다.
 
 ### Elasticsearch 접근 경로 확인
 

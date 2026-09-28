@@ -37,7 +37,9 @@ flowchart LR
 2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 DB heartbeat 및 C++ `GET /api/canvas/count` 확인을 통과한 서버 중 실시간 활성 캔버스 수가 적은 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
 3. 클라이언트는 응답의 `ws_port`를 사용해 캔버스 WebSocket에 연결합니다. 이 연결 하나가 캔버스 이벤트의 송신과 수신을 모두 처리합니다.
 4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
-5. 항목 이벤트는 권한 그룹에 따라 전달되고 RedisJSON에 저장됩니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
+5. 항목 이벤트는 권한 그룹을 확인한 뒤 RedisJSON에 저장됩니다. 항목 변경은 다른 캔버스 접속자에게 실시간 브로드캐스트하지 않으며, 최신 상태는 재접속 후 `init_items`에서 받습니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
+
+일반 캔버스 이벤트의 전체·그룹 브로드캐스트와 임의 payload relay는 제공하지 않습니다. 설정 변경 알림(`canvas_settings_changed`)은 유지되고, RTC는 별도 신호 채널에서 피어 상태를 알리거나 지정된 피어 한 명에게 신호를 전달합니다. 정상 종료 때는 저장을 마친 뒤 각 연결에 재접속 신호를 보냅니다.
 
 WebRTC를 사용할 때 클라이언트는 별도의 RTC 신호 WebSocket도 엽니다. 캔버스와 RTC 신호 연결은 같은 `ws_port`를 쓰지만 서로 다른 URL 경로와 독립된 WebSocket 연결입니다. 캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`와 `rtc_canvas_connection_hash`를 RTC 신호 연결의 `rtc_join` 이벤트에 함께 보내면 서버가 해시를 검증한 뒤 해당 캔버스 WebSocket과 RTC 피어를 연결합니다. 피어 목록과 신호 대상은 캔버스별로 분리됩니다. 캔버스 WebSocket이 닫히면 그 연결에 묶인 RTC 피어만 즉시 해제하며 RTC 신호 WebSocket은 열린 상태로 남습니다. `rtc_disconnect`도 피어 등록만 해제하고 RTC 신호 WebSocket을 닫지 않습니다. 두 경우 모두 실제 WebRTC 연결을 닫는 것은 클라이언트의 책임입니다. `user_sessions`와 캔버스 활성 상태는 캔버스 WebSocket만 기준으로 갱신됩니다. C++ 서버는 SDP와 ICE 정보만 지정 피어에게 전달하며 실제 WebRTC 미디어·데이터 패킷을 경유시키지 않습니다. 외부 TURN 사용 여부는 클라이언트의 ICE 설정에 달려 있습니다.
 
@@ -128,7 +130,7 @@ chmod 600 .env
 
 `CPP_INTERNAL_API_TOKEN`은 Spring에서 C++ REST 관리 API를 호출할 때 보내는 내부 Bearer 성격의 공유 토큰입니다. 최소 32바이트의 무작위 값을 사용하세요. C++ `/api/**` 경로는 이 값이 맞지 않으면 요청을 거부하며, Docker Compose는 `.env` 전체를 컨테이너에 전달하지 않고 각 서비스가 필요한 환경 변수만 전달합니다.
 
-C++ 서버는 `Poco::LRUCache`를 사용해 최근 캔버스 문서 최대 256개를 프로세스 메모리에 보관합니다. JSON 경로 조회·변경 때 캐시를 먼저 확인하고, 캐시 미스에는 Redis 문서를 읽어 캐시에 넣습니다. 변경은 캐시 문서에 먼저 반영한 뒤 Redis에 기록하며, Redis 쓰기가 실패하면 캐시 항목을 버립니다. 설정 revision의 비교와 갱신은 기존 Redis 원자 연산을 유지합니다. 용량은 `CPP_CANVAS_LRU_CAPACITY`로 조절할 수 있으며 기본값은 256, 최대값은 4096입니다.
+C++ 서버는 프로세스별 `Poco::LRUCache`에 최근 캔버스 문서를 보관합니다. `canvas:<숫자 ID>` 전체 문서를 캐시하며 JSON 경로 조회·변경과 채팅 내역 추가 때 캐시를 먼저 확인합니다. 캐시 미스에는 Redis 문서를 읽어 캐시에 넣고, 변경은 캐시 문서에 먼저 적용한 뒤 Redis에 기록합니다. Redis 쓰기가 실패하면 해당 캐시 항목을 무효화합니다. 설정 revision의 비교와 갱신은 Redis 원자 연산을 유지합니다. 용량은 `CPP_CANVAS_LRU_CAPACITY`로 조절할 수 있으며 기본값은 256, 최대값은 4096입니다.
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
@@ -271,13 +273,13 @@ curl -fsS http://127.0.0.1:8000/health
 ss -ltnp | rg ':(8080|8000|8002)\b'
 ```
 
-터미널에서 실행한 서버를 종료할 때는 해당 서버 터미널에서 `Ctrl+C`를 누릅니다. 코드 변경을 적용하려면 Spring 또는 C++ 프로세스를 종료한 뒤 빌드 명령을 다시 실행하고 해당 서버를 다시 시작합니다. C++ 서버를 재시작하면 DB의 서버 등록과 heartbeat가 다시 수행됩니다. DB Docker 스택은 백엔드만 재시작할 때 중지할 필요가 없습니다.
+터미널에서 실행한 서버를 종료할 때는 해당 서버 터미널에서 `Ctrl+C`를 누릅니다. C++은 `SIGINT`/`SIGTERM`을 받으면 새 접속을 먼저 막고 저장 큐를 처리한 뒤 로드된 캔버스 문서를 Elasticsearch에 저장합니다. 그 다음 인증된 각 WebSocket에 `{"type":"server_reconnect","reason":"server_shutdown","retry_after_ms":1000}`을 보내고 close code `1012`로 닫습니다. Elasticsearch 저장에 실패한 문서는 저장에 성공하기 전까지 Redis에서 삭제하지 않으며, 종료 과정에서 다시 저장을 시도할 수 있습니다. 종료 절차는 저장 실패가 있어도 계속됩니다. 코드 변경을 적용하려면 Spring 또는 C++ 프로세스를 종료한 뒤 빌드 명령을 다시 실행하고 해당 서버를 다시 시작합니다. C++ 서버를 재시작하면 DB의 서버 등록과 heartbeat가 다시 수행됩니다. DB Docker 스택은 백엔드만 재시작할 때 중지할 필요가 없습니다.
 
 터미널을 계속 열어 두기 어렵거나 부팅 후 자동 시작이 필요하면 아래 [systemd 운영 예시](#systemd-운영-예시)를 사용하세요. 임의의 `pkill` 명령으로 Java나 C++ 프로세스를 종료하면 다른 실행 인스턴스까지 영향을 줄 수 있으므로, 로컬 전경 실행은 `Ctrl+C`, systemd 실행은 `systemctl`로 관리합니다.
 
 채팅은 `items[room_id]`의 `chat_room` 아이템으로 관리됩니다. 메시지는 해당 아이템의 `data` 배열에 방별 순번과 함께 저장되며, `{"type":"chat","room_id":"general","text":"test"}` 이벤트로 보냅니다. 서버는 요청한 소켓에만 응답하고 다른 참여자에게 실시간 브로드캐스트하지 않습니다. 각 참여자는 `chat_history` 이벤트의 `limit` 또는 `from_sequence`/`to_sequence`로 저장된 내역을 조회할 수 있습니다. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
 
-캔버스 설정은 비활성 상태에서는 Spring REST API로, 활성 상태에서는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. 활성 캔버스에 Spring 수정 요청을 보내면 `409 CANVAS_006`과 접속 후 설정에서 변경하라는 안내를 반환합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch 문서에서 참여자와 revision을 확인하고, 설정 업데이트에서는 사용자 활성 상태·서버 할당·참여자·`admin-group` 권한을 검사합니다. 성공한 설정 변경은 Redis와 Elasticsearch에 즉시 반영되며, Elasticsearch 업데이트는 설정 필드만 패치해 실시간 아이템을 덮어쓰지 않습니다. 성공하면 `canvas_settings_result`를 보낸 사람에게, 비밀번호 해시를 제외한 `canvas_settings_changed`를 다른 참여자에게 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다.
+캔버스 설정은 비활성 상태에서는 Spring REST API로, 활성 상태에서는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. 활성 캔버스에 Spring 수정 요청을 보내면 `409 CANVAS_006`과 접속 후 설정에서 변경하라는 안내를 반환합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch 문서에서 참여자와 revision을 확인하고, 설정 업데이트에서는 사용자 활성 상태·서버 할당·참여자·`admin-group` 권한을 검사합니다. 성공한 설정 변경은 Redis와 Elasticsearch에 즉시 반영되며, Elasticsearch 업데이트는 설정 필드만 패치해 실시간 아이템을 덮어쓰지 않습니다. 성공하면 요청자에게 `canvas_settings_result`를 보내고, 요청자를 제외한 현재 인증된 참여자에게 비밀번호 해시가 없는 `canvas_settings_changed` 알림을 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다.
 
 ## systemd 운영 예시
 
