@@ -93,6 +93,7 @@ class CanvasServiceTest {
         CanvasInfo savedInfo = new CanvasInfo(101);
         given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(savedInfo);
         given(canvasResourceService.saveRepresentativeImage(eq(101), any())).willReturn("/api/canvases/101/image");
+        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
 
         // when
         CanvasSummaryResponse response = canvasService.createCanvas("Test Canvas", "description", "pass123", null, userDetails);

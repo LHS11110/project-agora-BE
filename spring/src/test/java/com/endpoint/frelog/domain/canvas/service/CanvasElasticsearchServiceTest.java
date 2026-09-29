@@ -162,19 +162,18 @@ class CanvasElasticsearchServiceTest {
     }
 
     @Test
-    @DisplayName("getCanvasDocumentById 시 인덱스 부재(404)인 경우 Optional.empty 반환")
+    @DisplayName("getCanvasDocumentById 시 인덱스 부재는 저장소 오류로 처리")
     void getCanvasDocumentById_IndexNotFound() {
-        var postSpec = mock(RestClient.RequestBodyUriSpec.class);
-        given(restClient.post()).willReturn(postSpec);
-        given(postSpec.uri(eq("/{index}/_search"), eq("canvas"))).willReturn(postSpec);
-        given(postSpec.contentType(any())).willReturn(postSpec);
-        given(postSpec.body(any(Object.class))).willReturn(postSpec);
+        var getSpec = mock(RestClient.RequestHeadersUriSpec.class);
+        given(restClient.get()).willReturn(getSpec);
+        given(getSpec.uri(eq("/{index}/_doc/{id}"), eq("canvas"), eq("100"))).willReturn(getSpec);
 
         String errorBody = "{\"error\":{\"root_cause\":[{\"type\":\"index_not_found_exception\",\"reason\":\"no such index [canvas]\"}],\"type\":\"index_not_found_exception\"},\"status\":404}";
-        given(postSpec.retrieve()).willThrow(HttpClientErrorException.create(HttpStatusCode.valueOf(404), "Not Found", HttpHeaders.EMPTY, errorBody.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
+        given(getSpec.retrieve()).willThrow(HttpClientErrorException.create(HttpStatusCode.valueOf(404), "Not Found", HttpHeaders.EMPTY, errorBody.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8));
 
-        Optional<CanvasDocument> doc = service.getCanvasDocumentById(100);
-        assertThat(doc).isEmpty();
+        assertThatThrownBy(() -> service.getCanvasDocumentById(100))
+                .isInstanceOf(CustomException.class)
+                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ELASTICSEARCH_INDEX_NOT_FOUND);
     }
 
     @Test

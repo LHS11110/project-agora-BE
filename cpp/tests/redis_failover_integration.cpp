@@ -12,6 +12,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <thread>
+#include <unordered_map>
 #include <unistd.h>
 #include <vector>
 
@@ -72,6 +73,67 @@ void writeAll(int socket_fd, const std::string& value) {
 
 std::string bulkString(const std::string& value) {
     return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+}
+
+std::optional<std::vector<std::string>> parseQuotedJsonPath(const std::string& path) {
+    if (path.empty() || path[0] != '$') return std::nullopt;
+    std::vector<std::string> segments;
+    std::size_t position = 1;
+    while (position < path.size()) {
+        if (path[position] != '[' || position + 1 >= path.size() || path[position + 1] != '"') {
+            return std::nullopt;
+        }
+        const std::size_t begin = position + 1;
+        position = begin + 1;
+        bool escaped = false;
+        bool closed = false;
+        for (; position < path.size(); ++position) {
+            const char character = path[position];
+            if (escaped) escaped = false;
+            else if (character == '\\') escaped = true;
+            else if (character == '"') {
+                closed = true;
+                break;
+            }
+        }
+        const std::size_t end = position + 1;
+        if (!closed || end >= path.size() || path[end] != ']') return std::nullopt;
+        try {
+            const auto segment = nlohmann::json::parse(path.substr(begin, end - begin));
+            if (!segment.is_string()) return std::nullopt;
+            segments.push_back(segment.get<std::string>());
+        } catch (...) {
+            return std::nullopt;
+        }
+        position = end + 1;
+    }
+    return segments;
+}
+
+const nlohmann::json* findFakeJsonPath(
+        const nlohmann::json& document, const std::vector<std::string>& segments) {
+    const nlohmann::json* current = &document;
+    for (const auto& segment : segments) {
+        if (!current->is_object() || !current->contains(segment)) return nullptr;
+        current = &(*current)[segment];
+    }
+    return current;
+}
+
+bool setFakeJsonPath(nlohmann::json& document, const std::vector<std::string>& segments,
+                     const nlohmann::json& value) {
+    if (segments.empty()) {
+        document = value;
+        return true;
+    }
+    nlohmann::json* current = &document;
+    for (std::size_t i = 0; i + 1 < segments.size(); ++i) {
+        if (!current->is_object() || !current->contains(segments[i])) return false;
+        current = &(*current)[segments[i]];
+    }
+    if (!current->is_object()) return false;
+    (*current)[segments.back()] = value;
+    return true;
 }
 
 class FakeTcpServer {
@@ -166,6 +228,20 @@ public:
     void becomeReadOnly() { read_only_ = true; }
     void rejectJsonDeleteWithNoAuth() { reject_json_delete_with_noauth_ = true; }
     int pingCount() const { return ping_count_; }
+    int jsonGetCount(const std::string& key, const std::string& path) const {
+        std::lock_guard<std::mutex> lock(document_mutex_);
+        const auto found = json_get_counts_.find(key + "\n" + path);
+        return found == json_get_counts_.end() ? 0 : found->second;
+    }
+    int jsonGetTotalCount(const std::string& key) const {
+        std::lock_guard<std::mutex> lock(document_mutex_);
+        const std::string prefix = key + "\n";
+        int total = 0;
+        for (const auto& [counted_path, count] : json_get_counts_) {
+            if (counted_path.compare(0, prefix.size(), prefix) == 0) total += count;
+        }
+        return total;
+    }
 
 private:
     void handleClient(int socket_fd) override {
@@ -182,6 +258,37 @@ private:
                 ++ping_count_;
                 if (read_only_) writeAll(socket_fd, "-READONLY You can't write against a read only replica.\r\n");
                 else writeAll(socket_fd, "+PONG\r\n");
+            } else if (name == "JSON.GET" && command.size() >= 2) {
+                const std::string path = command.size() >= 3 ? command[2] : "$";
+                std::string response = "$-1\r\n";
+                {
+                    std::lock_guard<std::mutex> lock(document_mutex_);
+                    ++json_get_counts_[command[1] + "\n" + path];
+                    const auto document = documents_.find(command[1]);
+                    const auto segments = parseQuotedJsonPath(path);
+                    if (document != documents_.end() && segments) {
+                        if (const auto* value = findFakeJsonPath(document->second, *segments)) {
+                            response = bulkString(segments->empty()
+                                ? value->dump() : nlohmann::json::array({*value}).dump());
+                        } else {
+                            response = bulkString("[]");
+                        }
+                    }
+                }
+                writeAll(socket_fd, response);
+            } else if (name == "JSON.SET" && command.size() == 4) {
+                const auto segments = parseQuotedJsonPath(command[2]);
+                try {
+                    const auto value = nlohmann::json::parse(command[3]);
+                    std::lock_guard<std::mutex> lock(document_mutex_);
+                    if (segments && setFakeJsonPath(documents_[command[1]], *segments, value)) {
+                        writeAll(socket_fd, "+OK\r\n");
+                    } else {
+                        writeAll(socket_fd, "-ERR unsupported test JSON path\r\n");
+                    }
+                } catch (...) {
+                    writeAll(socket_fd, "-ERR invalid test JSON\r\n");
+                }
             } else if (name == "JSON.DEL" && reject_json_delete_with_noauth_) {
                 writeAll(socket_fd, "-NOAUTH Authentication required.\r\n");
             } else {
@@ -193,6 +300,9 @@ private:
     std::atomic<bool> read_only_{false};
     std::atomic<bool> reject_json_delete_with_noauth_{false};
     std::atomic<int> ping_count_{0};
+    mutable std::mutex document_mutex_;
+    std::unordered_map<std::string, nlohmann::json> documents_;
+    std::unordered_map<std::string, int> json_get_counts_;
 };
 
 class FakeSentinel final : public FakeTcpServer {
@@ -249,11 +359,70 @@ void runRedisSentinelFailover() {
     ::setenv("REDIS_TLS_ENABLED", "false", 1);
     ::unsetenv("REDIS_TLS_CA_CERT");
     ::setenv("ES_LOG_USER_PASSWORD", "", 1);
+    ::setenv("CPP_CANVAS_LRU_CAPACITY", "8", 1);
+    ::setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
 
     {
         RedisClient client("127.0.0.1", primary_a.port(), "", "cpp-test-password");
         AGORA_CHECK(client.connect());
         AGORA_CHECK(client.ping());
+
+        const std::string canvas_a = "canvas:987654320";
+        const std::string hot_path = "$[\"items\"][\"hot\"][\"value\"]";
+        const std::string cold_path = "$[\"items\"][\"cold\"][\"value\"]";
+        const std::string rare_path = "$[\"items\"][\"rare\"][\"value\"]";
+        AGORA_CHECK(client.set(canvas_a, nlohmann::json{
+            {"items", {{"hot", {{"value", 1}}}, {"cold", {{"value", 10}}},
+                       {"rare", {{"value", 99}}}}}
+        }.dump()));
+
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
+        const int hot_reads_before_hit = primary_a.jsonGetCount(canvas_a, hot_path);
+        const int canvas_reads_before_hit = primary_a.jsonGetTotalCount(canvas_a);
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
+        AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == hot_reads_before_hit);
+        AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_hit);
+
+        // A one-off item read uses only its requested Redis path and is not promoted.
+        const int rare_path_reads_before = primary_a.jsonGetCount(canvas_a, rare_path);
+        const int canvas_reads_before_rare = primary_a.jsonGetTotalCount(canvas_a);
+        AGORA_CHECK(client.getJsonPath(canvas_a, rare_path) == std::string("[99]"));
+        AGORA_CHECK(primary_a.jsonGetCount(canvas_a, rare_path) == rare_path_reads_before + 1);
+        AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_rare + 1);
+
+        // Cached edits are written through to Redis before the item can be evicted.
+        AGORA_CHECK(client.setJsonPath(canvas_a, hot_path, 2));
+        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
+        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
+        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
+        const int hot_reads_before_reload = primary_a.jsonGetCount(canvas_a, hot_path);
+        const int canvas_reads_before_reload = primary_a.jsonGetTotalCount(canvas_a);
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
+        AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == hot_reads_before_reload + 1);
+        AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_reload + 1);
+
+        // Each canvas has its own item capacity and does not evict another canvas's cache.
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
+        const std::string canvas_b = "canvas:987654321";
+        const std::string canvas_b_path = "$[\"items\"][\"hot\"][\"value\"]";
+        AGORA_CHECK(client.set(canvas_b, nlohmann::json{
+            {"items", {{"hot", {{"value", 3}}}}}
+        }.dump()));
+        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        const int canvas_a_reads = primary_a.jsonGetCount(canvas_a, hot_path);
+        const int canvas_b_reads = primary_a.jsonGetCount(canvas_b, canvas_b_path);
+        const int canvas_a_total_reads = primary_a.jsonGetTotalCount(canvas_a);
+        const int canvas_b_total_reads = primary_a.jsonGetTotalCount(canvas_b);
+        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
+        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == canvas_a_reads);
+        AGORA_CHECK(primary_a.jsonGetCount(canvas_b, canvas_b_path) == canvas_b_reads);
+        AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_a_total_reads);
+        AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_b) == canvas_b_total_reads);
 
         // The old primary remains reachable but has become a replica.
         primary_a.becomeReadOnly();

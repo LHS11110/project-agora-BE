@@ -112,7 +112,9 @@ public class CanvasController {
                 .orElse(MediaType.APPLICATION_OCTET_STREAM);
         return ResponseEntity.ok()
                 .contentType(contentType)
-                .header(HttpHeaders.CACHE_CONTROL, "private, max-age=300")
+                // The representative image can be replaced while keeping the
+                // same canvas-ID URL. Avoid serving stale bytes from browser caches.
+                .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
                 .header("X-Content-Type-Options", "nosniff")
                 .body(image);
     }

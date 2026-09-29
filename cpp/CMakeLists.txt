@@ -104,7 +104,7 @@ if(BUILD_TESTING)
         src/ElasticsearchBulkLogBuffer.cpp
     )
     target_link_libraries(agora_cpp_redis_failover_integration
-        PRIVATE Threads::Threads ${HTTPLIB_LIBRARIES} crypto ssl)
+        PRIVATE Threads::Threads Poco::Foundation ${HTTPLIB_LIBRARIES} crypto ssl)
     target_compile_options(agora_cpp_redis_failover_integration PRIVATE
         ${HTTPLIB_CFLAGS_OTHER} -Wall -Wextra -O2)
     add_test(NAME agora_cpp_redis_failover_integration

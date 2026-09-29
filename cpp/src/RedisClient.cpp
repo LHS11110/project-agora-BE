@@ -8,6 +8,7 @@
 #include <cctype>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -18,7 +19,6 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <algorithm>
-#include <cctype>
 #include <netdb.h>
 #include <thread>
 #include <chrono>
@@ -27,8 +27,11 @@
 #include <openssl/x509v3.h>
 
 namespace {
-constexpr std::size_t kCanvasDocumentCacheDefaultCapacity = 256;
-constexpr std::size_t kCanvasDocumentCacheMaximumCapacity = 4096;
+constexpr std::size_t kCanvasItemCacheDefaultCapacity = 64;
+constexpr std::size_t kCanvasItemCacheMaximumCapacity = 4096;
+constexpr std::size_t kCanvasCacheDefaultMaximumCanvases = 256;
+constexpr std::size_t kCanvasCacheMaximumCanvases = 4096;
+constexpr std::size_t kMaximumCanvasItemCacheBytes = 256 * 1024;
 constexpr std::size_t kMaximumRedisBulkReplyBytes = 256 * 1024 * 1024;
 constexpr std::size_t kMaximumRedisArrayElements = 1'000'000;
 constexpr char kRedisErrorMarker = '\x01';
@@ -43,54 +46,133 @@ bool isCanvasDocumentKey(const std::string& key) {
     return true;
 }
 
-std::size_t canvasDocumentCacheCapacity() {
-    const char* configured = std::getenv("CPP_CANVAS_LRU_CAPACITY");
-    if (!configured || !*configured) return kCanvasDocumentCacheDefaultCapacity;
+std::size_t configuredCacheCapacity(const char* variable, std::size_t default_capacity,
+                                    std::size_t maximum_capacity, bool allow_zero) {
+    const char* configured = std::getenv(variable);
+    if (!configured || !*configured) return default_capacity;
     for (const char* digit = configured; *digit; ++digit) {
         if (!std::isdigit(static_cast<unsigned char>(*digit))) {
-            return kCanvasDocumentCacheDefaultCapacity;
+            return default_capacity;
         }
     }
     try {
         std::size_t parsed_length = 0;
         const auto parsed = std::stoull(configured, &parsed_length);
-        if (parsed_length != std::string(configured).size() || parsed == 0) {
-            return kCanvasDocumentCacheDefaultCapacity;
+        if (parsed_length != std::string(configured).size() || (!allow_zero && parsed == 0)) {
+            return default_capacity;
         }
-        return std::min<std::size_t>(parsed, kCanvasDocumentCacheMaximumCapacity);
+        return std::min<std::size_t>(parsed, maximum_capacity);
     } catch (...) {
-        return kCanvasDocumentCacheDefaultCapacity;
+        return default_capacity;
     }
 }
 
-class CanvasDocumentCache {
+struct CanvasItemCacheLookup {
+    std::optional<std::string> value;
+    bool admit_on_miss{false};
+};
+
+class CanvasItemLru {
 public:
-    explicit CanvasDocumentCache(std::size_t capacity) : cache_(capacity) {}
+    explicit CanvasItemLru(std::size_t capacity)
+        : capacity_(capacity), entries_(capacity), admission_(capacity) {}
 
-    std::optional<std::string> get(const std::string& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto value = cache_.get(key);
-        if (!value) return std::nullopt;
-        return *value;
+    CanvasItemCacheLookup lookup(const std::string& item_id) {
+        if (capacity_ == 0) return {};
+        if (const auto cached = entries_.get(item_id)) return {*cached, false};
+        if (const auto state = admission_.get(item_id)) {
+            if (*state == kUncacheable) return {};
+            admission_.remove(item_id);
+            return {std::nullopt, true};
+        }
+        admission_.add(item_id, kFirstAccess);
+        return {};
     }
 
-    void add(const std::string& key, const std::string& value) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cache_.add(key, value);
+    std::optional<std::string> get(const std::string& item_id) {
+        if (capacity_ == 0) return std::nullopt;
+        const auto cached = entries_.get(item_id);
+        if (!cached) return std::nullopt;
+        return *cached;
     }
 
-    void remove(const std::string& key) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        cache_.remove(key);
+    void add(const std::string& item_id, const std::string& item_json) {
+        if (capacity_ == 0) return;
+        if (item_json.size() > kMaximumCanvasItemCacheBytes) {
+            entries_.remove(item_id);
+            admission_.add(item_id, kUncacheable);
+            return;
+        }
+        admission_.remove(item_id);
+        entries_.add(item_id, item_json);
+    }
+
+    void remove(const std::string& item_id) {
+        entries_.remove(item_id);
+        admission_.remove(item_id);
     }
 
 private:
-    Poco::LRUCache<std::string, std::string> cache_;
-    std::mutex mutex_;
+    static constexpr int kFirstAccess = 1;
+    static constexpr int kUncacheable = 2;
+    std::size_t capacity_;
+    Poco::LRUCache<std::string, std::string> entries_;
+    Poco::LRUCache<std::string, int> admission_;
 };
 
-CanvasDocumentCache& canvasDocumentCache() {
-    static CanvasDocumentCache cache(canvasDocumentCacheCapacity());
+class CanvasItemCacheManager {
+public:
+    CanvasItemCacheManager(std::size_t maximum_canvases, std::size_t items_per_canvas)
+        : maximum_items_per_canvas_(items_per_canvas), caches_(maximum_canvases) {}
+
+    CanvasItemCacheLookup lookup(const std::string& canvas_key, const std::string& item_id) {
+        if (!isCanvasDocumentKey(canvas_key) || maximum_items_per_canvas_ == 0) return {};
+        return cacheForLookup(canvas_key)->lookup(item_id);
+    }
+
+    std::optional<std::string> get(const std::string& canvas_key, const std::string& item_id) {
+        if (!isCanvasDocumentKey(canvas_key)) return std::nullopt;
+        const auto cache = caches_.get(canvas_key);
+        if (!cache) return std::nullopt;
+        return (*cache)->get(item_id);
+    }
+
+    void add(const std::string& canvas_key, const std::string& item_id, const std::string& item_json) {
+        if (!isCanvasDocumentKey(canvas_key) || maximum_items_per_canvas_ == 0) return;
+        cacheForLookup(canvas_key)->add(item_id, item_json);
+    }
+
+    void removeItem(const std::string& canvas_key, const std::string& item_id) {
+        if (!isCanvasDocumentKey(canvas_key)) return;
+        const auto cache = caches_.get(canvas_key);
+        if (cache) (*cache)->remove(item_id);
+    }
+
+    void removeCanvas(const std::string& canvas_key) {
+        if (isCanvasDocumentKey(canvas_key)) caches_.remove(canvas_key);
+    }
+
+private:
+    std::shared_ptr<CanvasItemLru> cacheForLookup(const std::string& canvas_key) {
+        const auto cache = caches_.get(canvas_key);
+        if (cache) return *cache;
+        auto created = std::make_shared<CanvasItemLru>(maximum_items_per_canvas_);
+        caches_.add(canvas_key, created);
+        return created;
+    }
+
+    std::size_t maximum_items_per_canvas_;
+    Poco::LRUCache<std::string, std::shared_ptr<CanvasItemLru>> caches_;
+};
+
+CanvasItemCacheManager& canvasItemCache() {
+    static CanvasItemCacheManager cache(
+        configuredCacheCapacity("CPP_CANVAS_LRU_CAPACITY",
+                                kCanvasCacheDefaultMaximumCanvases,
+                                kCanvasCacheMaximumCanvases, false),
+        configuredCacheCapacity("CPP_CANVAS_LRU_ITEMS_PER_CANVAS",
+                                kCanvasItemCacheDefaultCapacity,
+                                kCanvasItemCacheMaximumCapacity, true));
     return cache;
 }
 
@@ -134,6 +216,7 @@ bool parseJsonPath(const std::string& path, std::vector<JsonPathSegment>& segmen
             const std::size_t begin = position;
             bool escaped = false;
             bool closed = false;
+            ++position; // Skip the opening quote; the scan looks for the closing quote.
             for (; position < path.size(); ++position) {
                 const char character = path[position];
                 if (escaped) {
@@ -172,6 +255,91 @@ bool parseJsonPath(const std::string& path, std::vector<JsonPathSegment>& segmen
         ++position;
     }
     return true;
+}
+
+struct CanvasItemPath {
+    std::string item_id;
+    std::vector<JsonPathSegment> relative_segments;
+};
+
+bool parseCanvasItemPath(const std::string& path, CanvasItemPath& item_path) {
+    std::vector<JsonPathSegment> segments;
+    if (!parseJsonPath(path, segments) || segments.size() < 2
+        || segments[0].is_array_index || segments[0].key != "items"
+        || segments[1].is_array_index) return false;
+
+    item_path.item_id = segments[1].key;
+    item_path.relative_segments.assign(segments.begin() + 2, segments.end());
+    return true;
+}
+
+std::string canvasItemJsonPath(const std::string& item_id) {
+    return "$[\"items\"][" + nlohmann::json(item_id).dump() + "]";
+}
+
+bool isChatRoomItem(const nlohmann::json& item) {
+    return item.is_object() && item.contains("type") && item["type"].is_string()
+        && item["type"].get<std::string>() == "chat_room";
+}
+
+bool isChatHistoryPath(const CanvasItemPath& item_path) {
+    return !item_path.relative_segments.empty()
+        && !item_path.relative_segments.front().is_array_index
+        && item_path.relative_segments.front().key == "data";
+}
+
+nlohmann::json cacheableCanvasItem(nlohmann::json item) {
+    if (isChatRoomItem(item)) item.erase("data");
+    return item;
+}
+
+bool cachedCanvasItemCanAnswer(const nlohmann::json& item, const CanvasItemPath& path) {
+    if (!isChatRoomItem(item)) return true;
+    // Chat history is variable-size and is always read from Redis. The item
+    // cache retains only room metadata such as its type and next sequence.
+    return !path.relative_segments.empty() && !isChatHistoryPath(path);
+}
+
+bool findJsonPathValue(const nlohmann::json& root, const std::vector<JsonPathSegment>& segments,
+                       const nlohmann::json*& value);
+
+std::string jsonPathResult(const nlohmann::json& item,
+                           const std::vector<JsonPathSegment>& relative_segments) {
+    const nlohmann::json* value = nullptr;
+    if (!findJsonPathValue(item, relative_segments, value)) return "[]";
+    return nlohmann::json::array({*value}).dump();
+}
+
+std::optional<nlohmann::json> getCachedCanvasItem(
+        const std::string& canvas_key, const std::string& item_id) {
+    const auto cached = canvasItemCache().get(canvas_key, item_id);
+    if (!cached) return std::nullopt;
+    try {
+        return nlohmann::json::parse(*cached);
+    } catch (...) {
+        canvasItemCache().removeItem(canvas_key, item_id);
+        return std::nullopt;
+    }
+}
+
+void cacheCanvasItem(const std::string& canvas_key, const std::string& item_id,
+                     const nlohmann::json& item) {
+    canvasItemCache().add(canvas_key, item_id, cacheableCanvasItem(item).dump());
+}
+
+void invalidateCanvasItemCacheForPath(const std::string& canvas_key, const std::string& path) {
+    if (!isCanvasDocumentKey(canvas_key)) return;
+    std::vector<JsonPathSegment> segments;
+    if (!parseJsonPath(path, segments) || segments.empty()) {
+        canvasItemCache().removeCanvas(canvas_key);
+        return;
+    }
+    if (segments.front().is_array_index || segments.front().key != "items") return;
+    if (segments.size() < 2 || segments[1].is_array_index) {
+        canvasItemCache().removeCanvas(canvas_key);
+        return;
+    }
+    canvasItemCache().removeItem(canvas_key, segments[1].key);
 }
 
 bool setJsonPathValue(nlohmann::json& root, const std::vector<JsonPathSegment>& segments,
@@ -243,28 +411,6 @@ bool deleteJsonPathValue(nlohmann::json& root, const std::vector<JsonPathSegment
         parent->erase(target.key);
     }
     return true;
-}
-
-std::optional<std::uint64_t> jsonSequence(const nlohmann::json& value) {
-    try {
-        if (value.is_number_unsigned()) return value.get<std::uint64_t>();
-        if (value.is_number_integer()) {
-            const auto parsed = value.get<long long>();
-            if (parsed >= 0) return static_cast<std::uint64_t>(parsed);
-            return std::nullopt;
-        }
-        if (value.is_string()) {
-            const auto text = value.get<std::string>();
-            if (text.empty()) return std::nullopt;
-            for (const char digit : text) {
-                if (!std::isdigit(static_cast<unsigned char>(digit))) return std::nullopt;
-            }
-            std::size_t parsed_length = 0;
-            const auto parsed = std::stoull(text, &parsed_length);
-            if (parsed_length == text.size()) return parsed;
-        }
-    } catch (...) {}
-    return std::nullopt;
 }
 
 std::string envOr(const char* name, const std::string& value) {
@@ -570,13 +716,18 @@ bool RedisClient::sendCommand(const std::vector<std::string>& args) {
         return false;
     }
 
-    std::ostringstream oss;
-    oss << "*" << args.size() << "\r\n";
+    std::string msg;
+    msg.push_back('*');
+    msg.append(std::to_string(args.size()));
+    msg.append("\r\n");
     for (const auto& arg : args) {
-        oss << "$" << arg.length() << "\r\n" << arg << "\r\n";
+        msg.push_back('$');
+        msg.append(std::to_string(arg.size()));
+        msg.append("\r\n");
+        msg.append(arg);
+        msg.append("\r\n");
     }
 
-    std::string msg = oss.str();
     std::size_t total = 0;
     while (total < msg.size()) {
         ssize_t sent = writeTransport(msg.data() + total, msg.size() - total);
@@ -649,10 +800,10 @@ std::string RedisClient::readResponse() {
         }
         if (parsed_length == -1) return "";
         const auto length = static_cast<std::size_t>(parsed_length);
-        std::vector<char> buf(length);
+        std::string result(length, '\0');
         ssize_t total = 0;
         while (static_cast<std::size_t>(total) < length) {
-            ssize_t r = readTransport(buf.data() + total, length - static_cast<std::size_t>(total));
+            ssize_t r = readTransport(result.data() + total, length - static_cast<std::size_t>(total));
             if (r <= 0) break;
             total += r;
         }
@@ -669,7 +820,7 @@ std::string RedisClient::readResponse() {
             disconnect();
             return "";
         }
-        return std::string(buf.data(), static_cast<std::size_t>(total));
+        return result;
     } else if (type == '*') {
         long long parsed_count = 0;
         if (!parseRespLength(prefix.substr(1), parsed_count)
@@ -699,51 +850,34 @@ bool RedisClient::ping() {
 bool RedisClient::set(const std::string& key, const std::string& value) {
     auto document_lock = lockCanvasDocument(key);
     const bool is_document = isCanvasDocumentKey(key);
-    if (is_document) canvasDocumentCache().add(key, value);
+    if (is_document) canvasItemCache().removeCanvas(key);
     if (!sendCommand({"JSON.SET", key, "$", value})) {
-        if (is_document) canvasDocumentCache().remove(key);
         return false;
     }
     std::string res = readResponse();
     if (isWrongTypeResponse(res)) {
         if (!sendCommand({"DEL", key})) {
-            if (is_document) canvasDocumentCache().remove(key);
             return false;
         }
         const std::string deleted = readResponse();
         try {
             if (std::stoi(deleted) < 0) {
-                if (is_document) canvasDocumentCache().remove(key);
                 return false;
             }
         } catch (...) {
-            if (is_document) canvasDocumentCache().remove(key);
             return false;
         }
         if (!sendCommand({"JSON.SET", key, "$", value})) {
-            if (is_document) canvasDocumentCache().remove(key);
             return false;
         }
         res = readResponse();
     }
-    if (res != "OK") {
-        if (is_document) canvasDocumentCache().remove(key);
-        return false;
-    }
-    if (is_document) canvasDocumentCache().add(key, value);
-    return true;
+    return res == "OK";
 }
 
 std::optional<std::string> RedisClient::get(const std::string& key) {
     auto document_lock = lockCanvasDocument(key);
-    const bool is_document = isCanvasDocumentKey(key);
-    if (is_document) {
-        if (auto cached = canvasDocumentCache().get(key)) return *cached;
-    }
-    auto res = readFromRedis(key);
-    if (!res || res->empty()) return std::nullopt;
-    if (is_document) canvasDocumentCache().add(key, *res);
-    return res;
+    return readFromRedis(key);
 }
 
 std::optional<std::string> RedisClient::readFromRedis(const std::string& key) {
@@ -757,76 +891,97 @@ std::optional<std::string> RedisClient::readFromRedis(const std::string& key) {
     return res;
 }
 
-std::optional<nlohmann::json> RedisClient::loadCanvasDocumentLocked(const std::string& key) {
-    if (!isCanvasDocumentKey(key)) return std::nullopt;
-    auto cached = canvasDocumentCache().get(key);
-    if (cached) {
-        try {
-            auto doc = nlohmann::json::parse(*cached);
-            if (doc.is_object()) return doc;
-        } catch (...) {}
-        canvasDocumentCache().remove(key);
-    }
-
-    auto raw = readFromRedis(key);
-    if (!raw || raw->empty()) return std::nullopt;
-    try {
-        auto doc = nlohmann::json::parse(*raw);
-        if (!doc.is_object()) return std::nullopt;
-        canvasDocumentCache().add(key, *raw);
-        return doc;
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-std::optional<std::string> RedisClient::getJsonPath(const std::string& key, const std::string& path) {
-    auto document_lock = lockCanvasDocument(key);
-    if (isCanvasDocumentKey(key)) {
-        const auto doc = loadCanvasDocumentLocked(key);
-        std::vector<JsonPathSegment> segments;
-        if (doc && parseJsonPath(path, segments)) {
-            const nlohmann::json* value = nullptr;
-            if (!findJsonPathValue(*doc, segments, value)) return std::string("[]");
-            return nlohmann::json::array({*value}).dump();
-        }
-    }
+std::optional<std::string> RedisClient::readJsonPathFromRedis(
+        const std::string& key, const std::string& path) {
     if (!sendCommand({"JSON.GET", key, path})) return std::nullopt;
     const std::string response = readResponse();
     if (response.empty() || isRedisErrorResponse(response)) return std::nullopt;
     return response;
 }
 
+std::optional<std::string> RedisClient::getJsonPath(const std::string& key, const std::string& path) {
+    auto document_lock = lockCanvasDocument(key);
+    CanvasItemPath item_path;
+    if (isCanvasDocumentKey(key) && parseCanvasItemPath(path, item_path)) {
+        const auto lookup = canvasItemCache().lookup(key, item_path.item_id);
+        if (lookup.value) {
+            try {
+                const auto cached_item = nlohmann::json::parse(*lookup.value);
+                if (cachedCanvasItemCanAnswer(cached_item, item_path)) {
+                    const auto result = jsonPathResult(cached_item, item_path.relative_segments);
+                    if (result != "[]" || !isChatRoomItem(cached_item)) return result;
+                }
+            } catch (...) {
+                canvasItemCache().removeItem(key, item_path.item_id);
+            }
+        } else if (lookup.admit_on_miss && isChatHistoryPath(item_path)) {
+            // History can grow without bound, so repeated history reads still
+            // use Redis range/path queries instead of promoting it as an item.
+            return readJsonPathFromRedis(key, path);
+        } else if (lookup.admit_on_miss) {
+            const auto raw_item = readJsonPathFromRedis(key, canvasItemJsonPath(item_path.item_id));
+            if (!raw_item) return std::nullopt;
+            try {
+                const auto matches = nlohmann::json::parse(*raw_item);
+                if (!matches.is_array()) return readJsonPathFromRedis(key, path);
+                if (matches.empty()) return std::string("[]");
+
+                const auto& item = matches.front();
+                cacheCanvasItem(key, item_path.item_id, item);
+                if (cachedCanvasItemCanAnswer(item, item_path)) {
+                    return jsonPathResult(item, item_path.relative_segments);
+                }
+                // A chat-room root read includes history for this response, but
+                // only its small metadata is admitted to the item cache.
+                if (item_path.relative_segments.empty()) return *raw_item;
+                return jsonPathResult(item, item_path.relative_segments);
+            } catch (...) {
+                return readJsonPathFromRedis(key, path);
+            }
+        }
+    }
+    return readJsonPathFromRedis(key, path);
+}
+
 bool RedisClient::setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value) {
     auto document_lock = lockCanvasDocument(key);
     const bool is_document = isCanvasDocumentKey(key);
-    bool cache_updated = false;
+    CanvasItemPath item_path;
+    const bool is_item_path = is_document && parseCanvasItemPath(path, item_path);
+    bool cache_after_write = false;
     if (is_document) {
-        const auto current = loadCanvasDocumentLocked(key);
-        std::vector<JsonPathSegment> segments;
-        if (current && parseJsonPath(path, segments)) {
-            auto updated = *current;
-            cache_updated = setJsonPathValue(updated, segments, value);
-            if (cache_updated) canvasDocumentCache().add(key, updated.dump());
+        if (is_item_path) {
+            auto cached_item = getCachedCanvasItem(key, item_path.item_id);
+            if (cached_item) {
+                if (setJsonPathValue(*cached_item, item_path.relative_segments, value)) {
+                    cacheCanvasItem(key, item_path.item_id, *cached_item);
+                }
+                else canvasItemCache().removeItem(key, item_path.item_id);
+            } else if (!isChatHistoryPath(item_path)) {
+                cache_after_write = canvasItemCache().lookup(key, item_path.item_id).admit_on_miss;
+            }
+        } else {
+            invalidateCanvasItemCacheForPath(key, path);
         }
-        if (!cache_updated) canvasDocumentCache().remove(key);
     }
 
     if (!sendCommand({"JSON.SET", key, path, value.dump()})) {
-        if (is_document) canvasDocumentCache().remove(key);
+        if (is_document) invalidateCanvasItemCacheForPath(key, path);
         return false;
     }
     if (readResponse() != "OK") {
-        if (is_document) canvasDocumentCache().remove(key);
+        if (is_document) invalidateCanvasItemCacheForPath(key, path);
         return false;
     }
-
-    if (is_document && !cache_updated) {
-        const auto latest = readFromRedis(key);
-        if (latest) {
+    if (cache_after_write) {
+        if (item_path.relative_segments.empty()) {
+            cacheCanvasItem(key, item_path.item_id, value);
+        } else if (const auto latest = readJsonPathFromRedis(key, canvasItemJsonPath(item_path.item_id))) {
             try {
-                const auto doc = nlohmann::json::parse(*latest);
-                if (doc.is_object()) canvasDocumentCache().add(key, *latest);
+                const auto matches = nlohmann::json::parse(*latest);
+                if (matches.is_array() && !matches.empty()) {
+                    cacheCanvasItem(key, item_path.item_id, matches.front());
+                }
             } catch (...) {}
         }
     }
@@ -839,55 +994,18 @@ bool RedisClient::appendChatMessage(const std::string& key, const std::string& i
     const bool is_document = isCanvasDocumentKey(key);
     bool cache_updated = false;
     if (is_document) {
-        const auto current = loadCanvasDocumentLocked(key);
-        if (current && current->contains("items") && (*current)["items"].is_object()
-            && (*current)["items"].contains(item_id)
-            && (*current)["items"][item_id].is_object()) {
-            auto updated = *current;
-            auto& room = updated["items"][item_id];
-            const bool is_chat_room = room.contains("type") && room["type"].is_string()
-                && room["type"].get<std::string>() == "chat_room";
-            if (is_chat_room) {
-                if (!room.contains("data")) room["data"] = nlohmann::json::array();
-                if (room["data"].is_array()) {
-                    std::optional<std::uint64_t> next_sequence;
-                    if (room.contains("next_sequence")) {
-                        next_sequence = jsonSequence(room["next_sequence"]);
-                    }
-                    if (!next_sequence) {
-                        std::uint64_t maximum_sequence = 0;
-                        for (const auto& previous : room["data"]) {
-                            if (!previous.is_object() || !previous.contains("sequence")) continue;
-                            const auto previous_sequence = jsonSequence(previous["sequence"]);
-                            if (previous_sequence) maximum_sequence = std::max(maximum_sequence, *previous_sequence);
-                        }
-                        if (maximum_sequence < std::numeric_limits<std::uint64_t>::max()) {
-                            next_sequence = maximum_sequence + 1;
-                        }
-                    }
-                    const auto message_sequence = message.is_object() && message.contains("sequence")
-                        ? jsonSequence(message["sequence"]) : std::nullopt;
-                    if (next_sequence && *next_sequence == sequence && message_sequence
-                        && *message_sequence == sequence
-                        && sequence < std::numeric_limits<std::uint64_t>::max()) {
-                        room["data"].push_back(message);
-                        room["next_sequence"] = sequence + 1;
-                        cache_updated = true;
-                        canvasDocumentCache().add(key, updated.dump());
-                    }
-                }
-            }
+        auto room = getCachedCanvasItem(key, item_id);
+        if (room && isChatRoomItem(*room)
+            && sequence < std::numeric_limits<std::uint64_t>::max()) {
+            (*room)["next_sequence"] = sequence + 1;
+            cacheCanvasItem(key, item_id, *room);
+            cache_updated = true;
+        } else if (room) {
+            canvasItemCache().removeItem(key, item_id);
         }
-        if (!cache_updated) canvasDocumentCache().remove(key);
     }
 
-    std::string escaped_id;
-    escaped_id.reserve(item_id.size());
-    for (char ch : item_id) {
-        if (ch == '\\' || ch == '"') escaped_id.push_back('\\');
-        escaped_id.push_back(ch);
-    }
-    const std::string room_path = "$[\"items\"][\"" + escaped_id + "\"]";
+    const std::string room_path = canvasItemJsonPath(item_id);
     const std::string type_path = room_path + "[\"type\"]";
     const std::string data_path = room_path + "[\"data\"]";
     const std::string sequence_path = room_path + "[\"next_sequence\"]";
@@ -940,19 +1058,16 @@ return 'OK'
 )LUA";
     if (!sendCommand({"EVAL", script, "1", key, type_path, data_path, sequence_path,
                       std::to_string(sequence), message.dump()})) {
-        if (is_document) canvasDocumentCache().remove(key);
+        if (is_document) canvasItemCache().removeItem(key, item_id);
         return false;
     }
     const bool stored = readResponse() == "OK";
-    if (!stored && is_document) canvasDocumentCache().remove(key);
-    if (stored && is_document && !cache_updated) {
-        const auto latest = readFromRedis(key);
-        if (latest) {
-            try {
-                const auto doc = nlohmann::json::parse(*latest);
-                if (doc.is_object()) canvasDocumentCache().add(key, *latest);
-            } catch (...) {}
-        }
+    if ((!stored || !cache_updated) && is_document) canvasItemCache().removeItem(key, item_id);
+    if (stored && is_document && !cache_updated
+        && sequence < std::numeric_limits<std::uint64_t>::max()) {
+        cacheCanvasItem(key, item_id, nlohmann::json{
+            {"type", "chat_room"}, {"next_sequence", sequence + 1}
+        });
     }
     return stored;
 }
@@ -1096,32 +1211,14 @@ RedisClient::CompareSetResult RedisClient::compareAndSetJsonPaths(
     if (values.empty() && deletes.empty()) return CompareSetResult::Error;
     auto document_lock = lockCanvasDocument(key);
     const bool is_document = isCanvasDocumentKey(key);
-    bool cache_updated = false;
-    if (is_document) {
-        const auto current = loadCanvasDocumentLocked(key);
-        if (current) {
-            auto updated = *current;
-            cache_updated = true;
-            for (const auto& [path, value] : values) {
-                std::vector<JsonPathSegment> segments;
-                if (!parseJsonPath(path, segments) || !setJsonPathValue(updated, segments, value)) {
-                    cache_updated = false;
-                    break;
-                }
-            }
-            if (cache_updated) {
-                for (const auto& path : deletes) {
-                    std::vector<JsonPathSegment> segments;
-                    if (!parseJsonPath(path, segments) || !deleteJsonPathValue(updated, segments)) {
-                        cache_updated = false;
-                        break;
-                    }
-                }
-            }
-            if (cache_updated) canvasDocumentCache().add(key, updated.dump());
+    const auto invalidate_changed_paths = [&]() {
+        if (!is_document) return;
+        for (const auto& [path, value] : values) {
+            (void)value;
+            invalidateCanvasItemCacheForPath(key, path);
         }
-        if (!cache_updated) canvasDocumentCache().remove(key);
-    }
+        for (const auto& path : deletes) invalidateCanvasItemCacheForPath(key, path);
+    };
     static const std::string script = R"LUA(
 local raw = redis.call('JSON.GET', KEYS[1], '$["settings-revision"]')
 if redis.call('EXISTS', KEYS[1]) == 0 then return 'MISSING' end
@@ -1152,64 +1249,53 @@ return 'OK'
     command.push_back(std::to_string(deletes.size()));
     for (const auto& path : deletes) command.push_back(path);
     if (!sendCommand(command)) {
-        if (is_document) canvasDocumentCache().remove(key);
+        invalidate_changed_paths();
         return CompareSetResult::Error;
     }
     const std::string result = readResponse();
     if (result == "OK") {
-        if (is_document && !cache_updated) {
-            const auto latest = readFromRedis(key);
-            if (latest) {
-                try {
-                    const auto doc = nlohmann::json::parse(*latest);
-                    if (doc.is_object()) canvasDocumentCache().add(key, *latest);
-                } catch (...) {}
-            }
-        }
+        invalidate_changed_paths();
         return CompareSetResult::Applied;
     }
-    if (is_document) canvasDocumentCache().remove(key);
     if (result == "CONFLICT") return CompareSetResult::Conflict;
+    invalidate_changed_paths();
+    if (is_document && result == "MISSING") canvasItemCache().removeCanvas(key);
     return CompareSetResult::Error;
 }
 
 bool RedisClient::deleteJsonPath(const std::string& key, const std::string& path) {
     auto document_lock = lockCanvasDocument(key);
     const bool is_document = isCanvasDocumentKey(key);
-    bool cache_updated = false;
     if (is_document) {
-        const auto current = loadCanvasDocumentLocked(key);
-        std::vector<JsonPathSegment> segments;
-        if (current && parseJsonPath(path, segments)) {
-            auto updated = *current;
-            cache_updated = deleteJsonPathValue(updated, segments);
-            if (cache_updated) canvasDocumentCache().add(key, updated.dump());
+        CanvasItemPath item_path;
+        if (parseCanvasItemPath(path, item_path)) {
+            if (item_path.relative_segments.empty()) {
+                canvasItemCache().removeItem(key, item_path.item_id);
+            } else if (auto cached_item = getCachedCanvasItem(key, item_path.item_id)) {
+                if (deleteJsonPathValue(*cached_item, item_path.relative_segments)) {
+                    cacheCanvasItem(key, item_path.item_id, *cached_item);
+                } else {
+                    canvasItemCache().removeItem(key, item_path.item_id);
+                }
+            }
+        } else {
+            invalidateCanvasItemCacheForPath(key, path);
         }
-        if (!cache_updated) canvasDocumentCache().remove(key);
     }
 
     if (!sendCommand({"JSON.DEL", key, path})) {
-        if (is_document) canvasDocumentCache().remove(key);
+        if (is_document) invalidateCanvasItemCacheForPath(key, path);
         return false;
     }
     const std::string response = readResponse();
     const bool deleted = !response.empty() && !isRedisErrorResponse(response);
-    if (!deleted && is_document) canvasDocumentCache().remove(key);
-    if (deleted && is_document && !cache_updated) {
-        const auto latest = readFromRedis(key);
-        if (latest) {
-            try {
-                const auto doc = nlohmann::json::parse(*latest);
-                if (doc.is_object()) canvasDocumentCache().add(key, *latest);
-            } catch (...) {}
-        }
-    }
+    if (!deleted && is_document) invalidateCanvasItemCacheForPath(key, path);
     return deleted;
 }
 
 bool RedisClient::del(const std::string& key) {
     auto document_lock = lockCanvasDocument(key);
-    if (isCanvasDocumentKey(key)) canvasDocumentCache().remove(key);
+    if (isCanvasDocumentKey(key)) canvasItemCache().removeCanvas(key);
     if (!sendCommand({"DEL", key})) return false;
     const std::string response = readResponse();
     try { return std::stoi(response) >= 0; } catch (...) { return false; }
@@ -1218,7 +1304,7 @@ bool RedisClient::del(const std::string& key) {
 RedisClient::CompareSetResult RedisClient::deleteIfCacheGenerationMatches(
         const std::string& key, const std::string& generation) {
     auto document_lock = lockCanvasDocument(key);
-    if (isCanvasDocumentKey(key)) canvasDocumentCache().remove(key);
+    if (isCanvasDocumentKey(key)) canvasItemCache().removeCanvas(key);
     static const std::string script = R"LUA(
 local value = redis.call('JSON.GET', KEYS[1], '$["_cache_generation"]')
 if not value then return 'CONFLICT' end
@@ -1250,7 +1336,7 @@ bool RedisClient::deletePattern(const std::string& pattern) {
     std::string key;
     std::vector<std::string> del_args = {"DEL"};
     while (iss >> key) {
-        if (isCanvasDocumentKey(key)) canvasDocumentCache().remove(key);
+        if (isCanvasDocumentKey(key)) canvasItemCache().removeCanvas(key);
         del_args.push_back(key);
     }
     if (del_args.size() > 1) {

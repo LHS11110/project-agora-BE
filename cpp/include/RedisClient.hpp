@@ -60,7 +60,7 @@ private:
     SSL* ssl_;
 
     std::optional<std::string> readFromRedis(const std::string& key);
-    std::optional<nlohmann::json> loadCanvasDocumentLocked(const std::string& key);
+    std::optional<std::string> readJsonPathFromRedis(const std::string& key, const std::string& path);
     bool connectTo(const std::string& host, int port, int timeout_ms);
     ssize_t readTransport(void* buffer, std::size_t size);
     ssize_t writeTransport(const void* buffer, std::size_t size);
