@@ -1,11 +1,14 @@
 #include "WebSocketServer.hpp"
 #include "RedisClient.hpp"
 #include "CanvasPassword.hpp"
+#include "ElasticsearchBulkLogBuffer.hpp"
+#include "RequestLogContext.hpp"
 #include <ctime>
 #include <chrono>
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cctype>
 #include <cstdlib>
 #include <httplib.h>
 #include <iostream>
@@ -17,10 +20,114 @@
 #include <random>
 #include <sstream>
 #include <vector>
+#include <string_view>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
+
+class WebSocketRequestLogScope {
+public:
+    WebSocketRequestLogScope(int canvas_id, int user_id, const std::string& parent_request_id)
+        : scope_(agora::logging::generateRequestId(), "websocket.message", parent_request_id),
+          canvas_id_(canvas_id), user_id_(user_id), started_at_(std::chrono::steady_clock::now()) {}
+
+    void setRequestId(const std::string& supplied) {
+        if (!supplied.empty() && agora::logging::isValidRequestId(supplied)) {
+            agora::logging::currentRequestLogContext().request_id = supplied;
+        }
+    }
+
+    void setOperation(const std::string& type) {
+        std::string safe_type;
+        safe_type.reserve(std::min<std::size_t>(type.size(), 64));
+        for (unsigned char character : type) {
+            if (safe_type.size() >= 64) break;
+            if (std::isalnum(character) || character == '_' || character == '-') safe_type.push_back(character);
+        }
+        if (!safe_type.empty()) agora::logging::currentRequestLogContext().operation = "websocket." + safe_type;
+    }
+
+    void disable() { enabled_ = false; }
+
+    ~WebSocketRequestLogScope() {
+        if (!enabled_) return;
+        const auto& context = agora::logging::currentRequestLogContext();
+        const std::string outcome = context.outcome.empty() || context.outcome == "in_progress"
+            ? "success" : context.outcome;
+        const std::string level = outcome == "failure" ? "ERROR" : outcome == "rejected" ? "WARN" : "INFO";
+        const auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started_at_).count();
+        ElasticsearchBulkLogBuffer::instance().record(
+            "websocket", "websocket_request", level, "WebSocket operation completed",
+            {{"canvas_id", canvas_id_}, {"user_id", user_id_}, {"duration_ms", duration_ms}},
+            outcome, context.error_code);
+    }
+
+private:
+    agora::logging::RequestLogContextScope scope_;
+    int canvas_id_;
+    int user_id_;
+    std::chrono::steady_clock::time_point started_at_;
+    bool enabled_{true};
+};
+
+template <typename SocketType>
+static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS::OpCode opcode) {
+    std::string outgoing(payload);
+    const auto& context = agora::logging::currentRequestLogContext();
+    if (!context.request_id.empty()) {
+        try {
+            auto message = nlohmann::json::parse(outgoing);
+            if (message.is_object()) {
+                const std::string type = message.value("type", "");
+                const bool failed = type == "error"
+                    || (message.contains("ok") && message["ok"].is_boolean() && !message["ok"].get<bool>());
+                if (failed) {
+                    const std::string error_code = message.contains("code") && message["code"].is_string()
+                        ? message["code"].get<std::string>() : "WEBSOCKET_REQUEST_REJECTED";
+                    agora::logging::markCurrentRequestRejected(error_code);
+                }
+                const bool correlated_response = failed
+                    || (type.size() >= 7 && type.compare(type.size() - 7, 7, "_result") == 0)
+                    || type == "chat_history" || type == "chat" || type == "pong" || type == "rtc_ready"
+                    || type == "rtc_disconnected" || type == "rtc_peers";
+                const bool valid_response_id = message.contains("request_id")
+                    && message["request_id"].is_string()
+                    && agora::logging::isValidRequestId(message["request_id"].get<std::string>());
+                if (correlated_response && !valid_response_id) {
+                    message["request_id"] = context.request_id;
+                    outgoing = message.dump();
+                }
+            }
+        } catch (...) {
+        }
+    }
+    return ws->send(outgoing, opcode);
+}
+
+static void recordWebSocketHandshake(const std::string& request_id,
+                                    const std::string& parent_request_id,
+                                    int canvas_id, bool rtc_only, int http_status,
+                                    const std::string& level, const std::string& outcome,
+                                    const std::string& error_code, const std::string& message,
+                                    long long duration_ms) {
+    agora::logging::RequestLogContextScope request_context(
+        request_id, "websocket.handshake", parent_request_id);
+    nlohmann::json details = {
+        {"channel", rtc_only ? "rtc" : "canvas"},
+        {"http_status", http_status},
+        {"duration_ms", duration_ms}
+    };
+    if (canvas_id > 0) details["canvas_id"] = canvas_id;
+    ElasticsearchBulkLogBuffer::instance().record(
+        "websocket", "websocket_handshake", level, message, details, outcome, error_code);
+}
+
+static long long elapsedMilliseconds(std::chrono::steady_clock::time_point started_at) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started_at).count();
+}
 
 static std::string_view normalizeProxyIp(std::string_view ip) {
     constexpr std::string_view ipv4MappedPrefix = "::ffff:";
@@ -305,7 +412,13 @@ static bool hasCanvasPersistenceTarget(const nlohmann::json& event) {
 static void drainCanvasPersistenceQueue(const std::shared_ptr<Canvas>& canvas) {
     nlohmann::json event;
     std::uint64_t ticket = 0;
-    while (canvas && canvas->nextPersistence(event, ticket)) {
+    std::string request_id;
+    std::string parent_request_id;
+    while (canvas && canvas->nextPersistence(event, ticket, &request_id, &parent_request_id)) {
+        const std::string event_type = event.is_object() ? event.value("type", "unknown") : "unknown";
+        agora::logging::RequestLogContextScope request_context(
+            request_id.empty() ? agora::logging::generateRequestId() : request_id,
+            "canvas.persistence." + event_type, parent_request_id);
         bool succeeded = false;
         try {
             succeeded = persistCanvasEvent(canvas, event);
@@ -318,6 +431,11 @@ static void drainCanvasPersistenceQueue(const std::shared_ptr<Canvas>& canvas) {
             std::cerr << "[uWebSockets] Canvas #" << canvas->getCanvasId()
                       << " Redis write failed; preventing Elasticsearch snapshot\n";
         }
+        ElasticsearchBulkLogBuffer::instance().record(
+            "canvas_persistence", "canvas_persistence", succeeded ? "INFO" : "ERROR",
+            succeeded ? "Canvas event persisted to Redis" : "Canvas event persistence failed",
+            {{"canvas_id", canvas->getCanvasId()}, {"event_type", event_type}, {"ticket", ticket}},
+            succeeded ? "success" : "failure", succeeded ? "" : "REDIS_WRITE_FAILED");
         canvas->endPersistence(ticket, succeeded);
     }
 }
@@ -934,7 +1052,7 @@ void WebSocketServer::stop(bool send_reconnect_signal) {
                     if (send_reconnect_signal && data->access_authorized && !data->closing) {
                         static constexpr char reconnect_signal[] =
                             R"({"type":"server_reconnect","reason":"server_shutdown","retry_after_ms":1000})";
-                        if (ws->send(reconnect_signal, uWS::OpCode::TEXT) == Socket::DROPPED) {
+                        if (sendWithRequestContext(ws, reconnect_signal, uWS::OpCode::TEXT) == Socket::DROPPED) {
                             std::cerr << "[uWebSockets] Could not queue reconnect signal for User #"
                                       << data->user_id << " on Canvas #" << data->canvas_id << "\n";
                         }
@@ -1002,7 +1120,7 @@ void WebSocketServer::sendToUser(int canvas_id, int user_id, const nlohmann::jso
         for (Socket* ws : it->second) {
             if (ws->getUserData()->access_authorized && !ws->getUserData()->closing
                 && ws->getUserData()->user_id == user_id) {
-                ws->send(payload, uWS::OpCode::TEXT);
+                sendWithRequestContext(ws, payload, uWS::OpCode::TEXT);
             }
         }
     });
@@ -1165,7 +1283,7 @@ void WebSocketServer::detachRtcPeer(Socket* ws) {
         const auto* other_data = other->getUserData();
         if (other != ws && other_data->canvas_id == data->canvas_id
             && other_data->access_authorized && !other_data->closing) {
-            other->send(payload, uWS::OpCode::TEXT);
+            sendWithRequestContext(other, payload, uWS::OpCode::TEXT);
         }
     }
 }
@@ -1183,7 +1301,7 @@ void WebSocketServer::detachRtcPeersForCanvasSocket(std::uint64_t canvas_connect
             detachRtcPeer(rtc_ws);
             if (Socket* current = findSocketByConnectionId(connection_id);
                 current && !current->getUserData()->closing) {
-                current->send("{\"type\":\"rtc_disconnected\",\"reason\":\"canvas_socket_closed\"}",
+                sendWithRequestContext(current, "{\"type\":\"rtc_disconnected\",\"reason\":\"canvas_socket_closed\"}",
                               uWS::OpCode::TEXT);
             }
         }
@@ -1206,7 +1324,7 @@ bool WebSocketServer::sendRtcPeerList(Socket* ws) {
             }
         }
     }
-    return ws->send(nlohmann::json{{"type", "rtc_peers"},
+    return sendWithRequestContext(ws, nlohmann::json{{"type", "rtc_peers"},
         {"self_peer_id", data->rtc_peer_id}, {"peers", std::move(peers)}}.dump(),
         uWS::OpCode::TEXT) != Socket::DROPPED;
 }
@@ -1215,25 +1333,25 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     auto* data = ws->getUserData();
     if (!data->rtc_signaling_only || !data->access_authorized || data->closing) return;
     if (!event.contains("canvas_connection_id")) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_REQUIRED\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_REQUIRED\"}", uWS::OpCode::TEXT);
         return;
     }
     if (!event.contains("canvas_connection_hash")) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_REQUIRED\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_REQUIRED\"}", uWS::OpCode::TEXT);
         return;
     }
     if (!event["canvas_connection_id"].is_string()) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
         return;
     }
     if (!event["canvas_connection_hash"].is_string()) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
         return;
     }
 
     const std::string requested_hash = event["canvas_connection_hash"].get<std::string>();
     if (requested_hash.size() != 64) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
         return;
     }
 
@@ -1242,7 +1360,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     const auto parsed_id = std::from_chars(requested_id.data(), requested_id.data() + requested_id.size(), id);
     if (requested_id.empty() || parsed_id.ec != std::errc{} || parsed_id.ptr != requested_id.data() + requested_id.size()
         || id == 0) {
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_INVALID\"}", uWS::OpCode::TEXT);
         return;
     }
 
@@ -1254,7 +1372,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
             && candidate_data->user_id == data->user_id && candidate_data->access_authorized
             && !candidate_data->closing) {
             if (!secureHashEquals(candidate_data->rtc_canvas_connection_hash, requested_hash)) {
-                ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
+                sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_HASH_INVALID\"}", uWS::OpCode::TEXT);
                 return;
             }
             canvas_ws = candidate;
@@ -1262,7 +1380,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     }
     if (!canvas_ws) {
         if (data->rtc_peer_id.empty()) detachRtcPeer(ws);
-        ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}",
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}",
                  uWS::OpCode::TEXT);
         return;
     }
@@ -1270,11 +1388,11 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
         Socket* existing_canvas_ws = findBoundCanvasSocket(data);
         if (!existing_canvas_ws) {
             detachRtcPeer(ws);
-            ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}", uWS::OpCode::TEXT);
+            sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_SOCKET_REQUIRED\"}", uWS::OpCode::TEXT);
             return;
         }
         if (existing_canvas_ws != canvas_ws) {
-            ws->send("{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_MISMATCH\"}", uWS::OpCode::TEXT);
+            sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_CANVAS_CONNECTION_MISMATCH\"}", uWS::OpCode::TEXT);
             return;
         }
     }
@@ -1313,7 +1431,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
         const auto* other_data = other->getUserData();
         if (other != ws && other_data->canvas_id == data->canvas_id
             && other_data->access_authorized && !other_data->closing) {
-            other->send(joined, uWS::OpCode::TEXT);
+            sendWithRequestContext(other, joined, uWS::OpCode::TEXT);
         }
     }
 }
@@ -1321,7 +1439,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
 void WebSocketServer::handleRtcSignal(Socket* ws, const nlohmann::json& event) {
     const auto* data = ws->getUserData();
     auto reject = [ws](const char* code) {
-        ws->send(nlohmann::json{{"type", "error"}, {"code", code}}.dump(), uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", code}}.dump(), uWS::OpCode::TEXT);
     };
     if (data->rtc_peer_id.empty()) return reject("RTC_NOT_JOINED");
     if (!findBoundCanvasSocket(data)) {
@@ -1403,7 +1521,7 @@ void WebSocketServer::handleRtcSignal(Socket* ws, const nlohmann::json& event) {
         return reject("RTC_PEER_NOT_FOUND");
     }
     const nlohmann::json source = publicRtcPeer(data);
-    target->send(nlohmann::json{
+    sendWithRequestContext(target, nlohmann::json{
         {"type", "rtc_signal"}, {"action", action},
         {"from_peer_id", data->rtc_peer_id},
         {"from_nickname", source["nickname"]}, {"from_tag_number", source["tag_number"]},
@@ -1429,12 +1547,13 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
     const PerSocketData identity = *ws->getUserData();
     const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
         ? event["request_id"].get<std::string>().substr(0, 64) : "";
+    const std::string parent_request_id = identity.parent_request_id;
     const int canvas_id = identity.canvas_id;
     const int user_id = identity.user_id;
     const std::uint64_t connection_id = identity.connection_id;
     auto canvas = pool_.getCanvas(canvas_id);
     if (!canvas) {
-        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+        sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
                                 {"request_id", request_id}, {"code", "CANVAS_NOT_READY"}}.dump(),
                  uWS::OpCode::TEXT);
         return;
@@ -1457,7 +1576,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
         } catch (...) {}
     }
     if (!beginBlockingWorker()) {
-        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+        sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
                                 {"request_id", request_id}, {"code", "SERVER_BUSY"}}.dump(),
                  uWS::OpCode::TEXT);
         return;
@@ -1479,9 +1598,12 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
 
     try {
         std::thread([this, connection_id, canvas, canvas_id, user_id, nickname = identity.nickname,
-                     tag_number = identity.tag_number, event, request_id,
+                     tag_number = identity.tag_number, event, request_id, parent_request_id,
                      pending_participant_removal, pending_removal_nickname, pending_removal_tag]() mutable {
             pthread_setname_np(pthread_self(), "agora-settings");
+            agora::logging::RequestLogContextScope request_context(
+                request_id.empty() ? agora::logging::generateRequestId() : request_id,
+                "websocket.canvas_settings", parent_request_id);
             CanvasSettingsTaskResult result;
             std::unique_lock<std::mutex> settings_lock(canvas->settings_mutex);
             if (canvas->unloading) {
@@ -1513,6 +1635,18 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                 response_payload = "{\"type\":\"canvas_settings_result\",\"ok\":false,\"code\":\"SETTINGS_STORAGE_ERROR\"}";
             }
 
+            const bool succeeded = result.response.is_object()
+                && result.response.value("ok", false);
+            const std::string error_code = result.response.is_object()
+                ? result.response.value("code", std::string()) : "SETTINGS_STORAGE_ERROR";
+            const bool storage_failure = error_code == "SETTINGS_STORAGE_ERROR";
+            const std::string outcome = succeeded ? "success" : storage_failure ? "failure" : "rejected";
+            ElasticsearchBulkLogBuffer::instance().record(
+                "websocket", "websocket_operation", succeeded ? "INFO" : storage_failure ? "ERROR" : "WARN",
+                succeeded ? "Canvas settings operation completed" : "Canvas settings operation failed",
+                {{"canvas_id", canvas_id}, {"user_id", user_id}, {"error_code", error_code}},
+                outcome, error_code);
+
             bool deferred = false;
             {
                 std::lock_guard<std::mutex> loop_lock(loop_mutex_);
@@ -1520,8 +1654,13 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                     loop_->defer([this, connection_id, canvas, canvas_id, user_id,
                                   result = std::move(result), response_payload = std::move(response_payload),
                                   notification_payload = std::move(notification_payload),
+                                  request_id,
+                                  parent_request_id,
                                   pending_participant_removal,
                                   pending_removal_nickname, pending_removal_tag]() mutable {
+                        agora::logging::RequestLogContextScope response_context(
+                            request_id.empty() ? agora::logging::generateRequestId() : request_id,
+                            "websocket.canvas_settings.response", parent_request_id);
                         if (result.canvas_name_changed) canvas->setCanvasName(result.canvas_name);
                         Socket* sender = findSocketByConnectionId(connection_id);
                         const auto sender_sockets = sockets_by_canvas_.find(canvas_id);
@@ -1532,7 +1671,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                             && !sender->getUserData()->closing
                             && sender->getUserData()->user_id == user_id;
                         if (sender_authorized) {
-                            sender->send(response_payload, uWS::OpCode::TEXT);
+                            sendWithRequestContext(sender, response_payload, uWS::OpCode::TEXT);
                         }
                         auto sockets = sockets_by_canvas_.find(canvas_id);
                         if (pending_participant_removal && sockets != sockets_by_canvas_.end()) {
@@ -1581,7 +1720,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
                                     if (target != sender && target_data->access_authorized
                                         && !target_data->closing
                                         && result.participant_ids.count(target_data->user_id) > 0) {
-                                        target->send(notification_payload, uWS::OpCode::TEXT);
+                                        sendWithRequestContext(target, notification_payload, uWS::OpCode::TEXT);
                                     }
                                 }
                             }
@@ -1611,7 +1750,7 @@ void WebSocketServer::handleCanvasSettings(Socket* ws, const nlohmann::json& eve
             }
         }
         endBlockingWorker();
-        ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+        sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
                                 {"request_id", request_id}, {"code", "SERVER_BUSY"}}.dump(),
                  uWS::OpCode::TEXT);
     }
@@ -1622,7 +1761,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
         ? event["request_id"].get<std::string>().substr(0, 64) : "";
     auto reject = [&](const char* code) {
-        ws->send(nlohmann::json{{"type", "error"}, {"code", code},
+        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", code},
                                 {"request_id", request_id}}.dump(), uWS::OpCode::TEXT);
     };
 
@@ -1679,7 +1818,9 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
 
     auto canvas = pool_.getCanvas(identity->canvas_id);
     bool start_worker = false;
-    if (!canvas || !canvas->enqueuePersistence(event, start_worker)) {
+    if (!canvas || !canvas->enqueuePersistence(event, start_worker,
+            agora::logging::currentRequestLogContext().request_id,
+            agora::logging::currentRequestLogContext().parent_request_id)) {
         if (create_room) {
             permissions.erase(room_id);
             rooms.erase(room_id);
@@ -1689,6 +1830,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
         }
         return reject("CHAT_STORAGE_UNAVAILABLE");
     }
+    agora::logging::setCurrentRequestOutcome("accepted");
     if (start_worker) {
         try {
             std::thread([canvas]() {
@@ -1719,7 +1861,7 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
             {"item_id", room_id}, {"item", item}
         }.dump();
         if (identity->access_authorized && !identity->closing) {
-            ws->send(created_item, uWS::OpCode::TEXT);
+            sendWithRequestContext(ws, created_item, uWS::OpCode::TEXT);
         }
     }
 
@@ -1729,17 +1871,18 @@ void WebSocketServer::handleChatEvent(Socket* ws, nlohmann::json event) {
     event.erase("sender_user_id");
     const std::string payload = event.dump();
     if (identity->access_authorized && !identity->closing) {
-        ws->send(payload, uWS::OpCode::TEXT);
+        sendWithRequestContext(ws, payload, uWS::OpCode::TEXT);
     }
 }
 
 void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json& event) {
     const PerSocketData identity = *ws->getUserData();
     const std::uint64_t connection_id = identity.connection_id;
+    const std::string parent_request_id = identity.parent_request_id;
     const std::string request_id = event.contains("request_id") && event["request_id"].is_string()
         ? event["request_id"].get<std::string>().substr(0, 64) : "";
     auto reject = [&](const char* code) {
-        ws->send(nlohmann::json{{"type", "error"}, {"code", code},
+        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", code},
                                 {"request_id", request_id}}.dump(), uWS::OpCode::TEXT);
     };
     if (!event.contains("room_id") || !event["room_id"].is_string()) return reject("CHAT_INVALID_ROOM");
@@ -1791,9 +1934,13 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
 
     try {
         std::thread([this, connection_id, canvas, canvas_id, user_id, room_id, request_id,
+                     parent_request_id,
                      authorization_epoch, persistence_barrier, has_from, has_to,
                      from_sequence, to_sequence, limit]() {
             pthread_setname_np(pthread_self(), "agora-history");
+            agora::logging::RequestLogContextScope request_context(
+                request_id.empty() ? agora::logging::generateRequestId() : request_id,
+                "websocket.chat_history", parent_request_id);
             std::string response_payload;
             auto errorPayload = [&request_id](const char* code) {
                 return nlohmann::json{{"type", "error"}, {"code", code},
@@ -1862,15 +2009,37 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
                 std::cerr << "[uWebSockets] Chat history worker failed: " << e.what() << "\n";
                 response_payload = errorPayload("CHAT_HISTORY_UNAVAILABLE");
             } catch (...) {
+                agora::logging::markCurrentRequestFailure("CHAT_HISTORY_UNAVAILABLE");
                 response_payload = errorPayload("CHAT_HISTORY_UNAVAILABLE");
             }
+
+            std::string response_error_code;
+            try {
+                const auto response = nlohmann::json::parse(response_payload);
+                if (response.value("type", "") == "error") {
+                    response_error_code = response.value("code", std::string("CHAT_HISTORY_UNAVAILABLE"));
+                }
+            } catch (...) {
+                response_error_code = "CHAT_HISTORY_UNAVAILABLE";
+            }
+            const bool succeeded = response_error_code.empty();
+            ElasticsearchBulkLogBuffer::instance().record(
+                "websocket", "websocket_operation", succeeded ? "INFO" : "WARN",
+                succeeded ? "Chat history request completed" : "Chat history request failed",
+                {{"canvas_id", canvas_id}, {"user_id", user_id}, {"room_id", room_id},
+                 {"error_code", response_error_code}},
+                succeeded ? "success" : "rejected", response_error_code);
 
             bool deferred = false;
             {
                 std::lock_guard<std::mutex> loop_lock(loop_mutex_);
                 if (running_ && loop_) {
-                    loop_->defer([this, connection_id, canvas_id, user_id, request_id, authorization_epoch,
+                    loop_->defer([this, connection_id, canvas_id, user_id, request_id, parent_request_id,
+                                  authorization_epoch,
                                   response_payload = std::move(response_payload)]() {
+                        agora::logging::RequestLogContextScope response_context(
+                            request_id.empty() ? agora::logging::generateRequestId() : request_id,
+                            "websocket.chat_history.response", parent_request_id);
                         Socket* requester = findSocketByConnectionId(connection_id);
                         const auto sockets = sockets_by_canvas_.find(canvas_id);
                         const auto current_epoch = authorization_epochs_by_canvas_.find(canvas_id);
@@ -1883,9 +2052,9 @@ void WebSocketServer::handleChatHistoryRequest(Socket* ws, const nlohmann::json&
                             && !requester->getUserData()->permission_update_pending
                             && requester->getUserData()->user_id == user_id) {
                             if (current_value == authorization_epoch) {
-                                requester->send(response_payload, uWS::OpCode::TEXT);
+                                sendWithRequestContext(requester, response_payload, uWS::OpCode::TEXT);
                             } else {
-                                requester->send(nlohmann::json{{"type", "error"},
+                                sendWithRequestContext(requester, nlohmann::json{{"type", "error"},
                                     {"code", "ITEM_ACCESS_DENIED"},
                                     {"request_id", request_id}}.dump(), uWS::OpCode::TEXT);
                             }
@@ -1932,7 +2101,17 @@ void WebSocketServer::runServer() {
             .sendPingsAutomatically = true,
 
         .upgrade = [this, rtc_only](auto* res, auto* req, auto* context) {
+            const std::string handshake_request_id = agora::logging::acceptedRequestId(
+                req->getHeader("x-request-id"));
+            const auto handshake_started_at = std::chrono::steady_clock::now();
+            res->writeHeader("X-Request-ID", handshake_request_id);
+            agora::logging::RequestLogContextScope request_context(
+                handshake_request_id, "websocket.handshake");
             if (!accepting_) {
+                recordWebSocketHandshake(handshake_request_id, {}, 0, rtc_only, 503,
+                    "ERROR", "failure", "WS_SERVER_SHUTTING_DOWN",
+                    "WebSocket handshake rejected while server is shutting down",
+                    elapsedMilliseconds(handshake_started_at));
                 res->writeStatus("503 Service Unavailable")->end("Server is shutting down");
                 return;
             }
@@ -1953,6 +2132,11 @@ void WebSocketServer::runServer() {
             }
 
             if (canvas_id <= 0) {
+                agora::logging::markCurrentRequestRejected("WS_CANVAS_ID_REQUIRED");
+                recordWebSocketHandshake(handshake_request_id, {}, 0, rtc_only, 400,
+                    "WARN", "rejected", "WS_CANVAS_ID_REQUIRED",
+                    "WebSocket handshake rejected because canvas_id is missing or invalid",
+                    elapsedMilliseconds(handshake_started_at));
                 std::cout << "[uWebSockets] Upgrade rejected: 400 Bad Request (canvas_id is required)" << std::endl;
                 res->writeStatus("400 Bad Request")->end("canvas_id is required");
                 return;
@@ -1968,6 +2152,11 @@ void WebSocketServer::runServer() {
             }
 
             if (!beginBlockingWorker()) {
+                agora::logging::markCurrentRequestFailure("WS_AUTH_WORKERS_BUSY");
+                recordWebSocketHandshake(handshake_request_id, {}, canvas_id, rtc_only, 503,
+                    "ERROR", "failure", "WS_AUTH_WORKERS_BUSY",
+                    "WebSocket authentication worker capacity is exhausted",
+                    elapsedMilliseconds(handshake_started_at));
                 res->writeStatus("503 Service Unavailable")->end("Authentication workers are busy");
                 return;
             }
@@ -1984,9 +2173,12 @@ void WebSocketServer::runServer() {
 
             try {
                 std::thread([this, response, websocket_context, request_active, canvas_id, rtc_only,
+                             handshake_request_id, handshake_started_at,
                              token = std::move(token), client_ip = std::move(client_ip),
                              websocket_key, websocket_protocol, websocket_extensions]() mutable {
                     pthread_setname_np(pthread_self(), "agora-auth");
+                    agora::logging::RequestLogContextScope auth_context(
+                        handshake_request_id, "websocket.handshake.auth");
                     std::optional<AuthenticatedUser> authenticated_user;
                     try {
                         if (token_validator_ && !token.empty()) {
@@ -1995,19 +2187,35 @@ void WebSocketServer::runServer() {
                     } catch (const std::exception& e) {
                         std::cerr << "[uWebSockets] WebSocket authentication failed: " << e.what() << "\n";
                     } catch (...) {}
+                    const std::string parent_request_id = authenticated_user
+                        ? authenticated_user->request_id : std::string{};
+                    agora::logging::currentRequestLogContext().parent_request_id = parent_request_id;
 
                     bool deferred = false;
                     {
                         std::lock_guard<std::mutex> loop_lock(loop_mutex_);
                         if (running_ && loop_) {
                             loop_->defer([this, response, websocket_context, request_active, canvas_id, rtc_only,
+                                          handshake_request_id, handshake_started_at,
                                           websocket_key, websocket_protocol, websocket_extensions,
                                           authenticated_user = std::move(authenticated_user)]() mutable {
                                 if (!request_active->load()) {
+                                    recordWebSocketHandshake(handshake_request_id,
+                                        authenticated_user ? authenticated_user->request_id : std::string{},
+                                        canvas_id, rtc_only, 499, "WARN", "rejected",
+                                        "WS_HANDSHAKE_CLIENT_ABORTED",
+                                        "Client closed the WebSocket handshake before authentication completed",
+                                        elapsedMilliseconds(handshake_started_at));
                                     endBlockingWorker();
                                     return;
                                 }
                                 if (!accepting_) {
+                                    recordWebSocketHandshake(handshake_request_id,
+                                        authenticated_user ? authenticated_user->request_id : std::string{},
+                                        canvas_id, rtc_only, 503, "ERROR", "failure",
+                                        "WS_SERVER_SHUTTING_DOWN",
+                                        "WebSocket handshake could not complete because the server is shutting down",
+                                        elapsedMilliseconds(handshake_started_at));
                                     response->resume();
                                     response->writeStatus("503 Service Unavailable")
                                         ->end("Server is shutting down");
@@ -2020,6 +2228,10 @@ void WebSocketServer::runServer() {
                                 response->resume();
                                 if (!authenticated_user || authenticated_user->user_id <= 0
                                     || authenticated_user->tag_number < 0) {
+                                    recordWebSocketHandshake(handshake_request_id, {}, canvas_id, rtc_only,
+                                        401, "WARN", "rejected", "WS_AUTH_401",
+                                        "WebSocket authentication rejected the supplied token or canvas access",
+                                        elapsedMilliseconds(handshake_started_at));
                                     std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid, missing, or unauthorized JWT token for canvas #"
                                               << canvas_id << ")" << std::endl;
                                     response->writeStatus("401 Unauthorized")
@@ -2047,12 +2259,21 @@ void WebSocketServer::runServer() {
                                     0,
                                     {},
                                     false,
-                                    false
+                                    false,
+                                    {},
+                                    {}
                                 };
+                                socket_data.parent_request_id = authenticated_user->request_id;
+                                socket_data.connection_request_id = handshake_request_id;
                                 socket_data.rtc_signaling_only = rtc_only;
                                 if (!rtc_only) {
                                     const auto connection_hash = createCanvasConnectionHash(connection_id);
                                     if (!connection_hash) {
+                                        recordWebSocketHandshake(handshake_request_id,
+                                            authenticated_user->request_id, canvas_id, rtc_only, 503,
+                                            "ERROR", "failure", "WS_CONNECTION_PROOF_FAILED",
+                                            "WebSocket canvas connection proof could not be created",
+                                            elapsedMilliseconds(handshake_started_at));
                                         response->writeStatus("503 Service Unavailable")
                                             ->end("Canvas connection proof could not be created");
                                         endBlockingWorker();
@@ -2063,16 +2284,31 @@ void WebSocketServer::runServer() {
                                 response->template upgrade<PerSocketData>(
                                     std::move(socket_data), websocket_key, websocket_protocol,
                                     websocket_extensions, websocket_context);
+                                recordWebSocketHandshake(handshake_request_id,
+                                    authenticated_user->request_id, canvas_id, rtc_only, 101,
+                                    "INFO", "success", {}, "WebSocket handshake completed",
+                                    elapsedMilliseconds(handshake_started_at));
                                 endBlockingWorker();
                             });
                             deferred = true;
                         }
                     }
-                    if (!deferred) endBlockingWorker();
+                    if (!deferred) {
+                        recordWebSocketHandshake(handshake_request_id, parent_request_id,
+                            canvas_id, rtc_only, 503, "ERROR", "failure",
+                            "WS_EVENT_LOOP_UNAVAILABLE",
+                            "WebSocket event loop was unavailable after authentication",
+                            elapsedMilliseconds(handshake_started_at));
+                        endBlockingWorker();
+                    }
                 }).detach();
             } catch (...) {
                 endBlockingWorker();
                 request_active->store(false);
+                recordWebSocketHandshake(handshake_request_id, {}, canvas_id, rtc_only, 503,
+                    "ERROR", "failure", "WS_AUTH_WORKER_START_FAILED",
+                    "WebSocket authentication worker could not be started",
+                    elapsedMilliseconds(handshake_started_at));
                 response->resume();
                 response->writeStatus("503 Service Unavailable")
                     ->end("Authentication worker could not be started");
@@ -2081,6 +2317,15 @@ void WebSocketServer::runServer() {
 
         .open = [this](auto* ws) {
             PerSocketData* data = ws->getUserData();
+            const std::string connection_request_id = data->connection_request_id.empty()
+                ? agora::logging::generateRequestId() : data->connection_request_id;
+            agora::logging::RequestLogContextScope request_context(
+                connection_request_id, "websocket.connect", data->parent_request_id);
+            ElasticsearchBulkLogBuffer::instance().record(
+                "websocket", "websocket_connection", "INFO", "WebSocket connection established",
+                {{"canvas_id", data->canvas_id}, {"user_id", data->user_id},
+                 {"connection_id", data->connection_id}, {"channel", data->rtc_signaling_only ? "rtc" : "canvas"}},
+                "success");
             std::cout << "[uWebSockets] " << (data->rtc_signaling_only ? "RTC signaling" : "Canvas")
                       << " WebSocket client connected: User #" << data->user_id
                       << " to Canvas #" << data->canvas_id << std::endl;
@@ -2096,7 +2341,7 @@ void WebSocketServer::runServer() {
                 // Canvas or reserves a user session; rtc_join requires a live
                 // canvas WebSocket belonging to this user.
                 data->access_authorized = true;
-                if (ws->send("{\"type\":\"rtc_ready\"}", uWS::OpCode::TEXT)
+                if (sendWithRequestContext(ws, "{\"type\":\"rtc_ready\"}", uWS::OpCode::TEXT)
                     == Socket::DROPPED) {
                     closeSocketSession(ws, 1013, "RTC signaling state could not be delivered");
                 }
@@ -2281,7 +2526,7 @@ void WebSocketServer::runServer() {
 
                     ws->getUserData()->session_generation = session_generation;
                     refreshUserSessionGeneration(canvas_id, user_id, session_generation);
-                    const auto init_send_status = ws->send(init_payload, uWS::OpCode::TEXT);
+                    const auto init_send_status = sendWithRequestContext(ws, init_payload, uWS::OpCode::TEXT);
                     if (init_send_status == Socket::DROPPED) {
                         std::cerr << "[uWebSockets] Dropped init_items for User #" << user_id
                                   << " on Canvas #" << canvas_id << " (bytes=" << init_payload.size() << ")\n";
@@ -2309,11 +2554,9 @@ void WebSocketServer::runServer() {
                 return;
             }
             if (shutdown_preparing_) return;
-            if (data->permission_update_pending) {
-                ws->send(nlohmann::json{{"type", "error"},
-                    {"code", "SETTINGS_UPDATE_PENDING"}}.dump(), uWS::OpCode::TEXT);
-                return;
-            }
+
+            WebSocketRequestLogScope request_log(data->canvas_id, data->user_id,
+                                                   data->parent_request_id);
             
             long long current_time = std::time(nullptr);
             if (current_time != data->last_reset_time) {
@@ -2323,7 +2566,8 @@ void WebSocketServer::runServer() {
             data->message_count++;
             
             if (data->message_count > 100) {
-                return; // Rate limit exceeded, drop message
+                agora::logging::markCurrentRequestRejected("RATE_LIMITED");
+                return;
             }
 
             if (opCode == uWS::OpCode::TEXT) {
@@ -2331,34 +2575,54 @@ void WebSocketServer::runServer() {
                 try {
                     auto event = nlohmann::json::parse(message);
                     parsed_json = true;
-                    if (event.value("type", "") == "ping") {
+                    const std::string event_type = event.is_object() && event.contains("type")
+                        && event["type"].is_string() ? event["type"].get<std::string>() : "unknown";
+                    request_log.setOperation(event_type);
+                    const bool has_valid_request_id = event.is_object() && event.contains("request_id")
+                        && event["request_id"].is_string()
+                        && agora::logging::isValidRequestId(event["request_id"].get<std::string>());
+                    if (has_valid_request_id) request_log.setRequestId(event["request_id"].get<std::string>());
+                    const bool request_id_response_type = event_type == "chat_history"
+                        || (event_type.rfind("canvas_settings_", 0) == 0);
+                    if ((request_id_response_type || (event_type == "chat"
+                            && event.contains("request_id") && event["request_id"].is_string()))
+                        && event.is_object() && !has_valid_request_id) {
+                        event["request_id"] = agora::logging::currentRequestLogContext().request_id;
+                    }
+                    if (event_type == "ping") {
+                        request_log.disable();
                         nlohmann::json pong = {
                             {"type", "pong"},
                             {"canvas_id", data->canvas_id},
                             {"timestamp", static_cast<long long>(time(nullptr))}
                         };
-                        ws->send(pong.dump(), uWS::OpCode::TEXT);
+                        sendWithRequestContext(ws, pong.dump(), uWS::OpCode::TEXT);
+                        return;
+                    }
+                    if (data->permission_update_pending) {
+                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
+                            {"code", "SETTINGS_UPDATE_PENDING"}}.dump(), uWS::OpCode::TEXT);
                         return;
                     }
 
                     if (data->rtc_signaling_only) {
                         if (!event.is_object() || !event.contains("type") || !event["type"].is_string()) {
-                            ws->send("{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
+                            sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
                             return;
                         }
                         const std::string rtc_type = event["type"].get<std::string>();
                         if (rtc_type == "rtc_join") announceRtcPeer(ws, event);
                         else if (rtc_type == "rtc_disconnect") {
                             detachRtcPeer(ws);
-                            ws->send("{\"type\":\"rtc_disconnected\"}", uWS::OpCode::TEXT);
+                            sendWithRequestContext(ws, "{\"type\":\"rtc_disconnected\"}", uWS::OpCode::TEXT);
                         } else if (rtc_type == "rtc_list") {
                             if (data->rtc_peer_id.empty()) {
-                                ws->send("{\"type\":\"error\",\"code\":\"RTC_NOT_JOINED\"}", uWS::OpCode::TEXT);
+                                sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_NOT_JOINED\"}", uWS::OpCode::TEXT);
                             } else if (!sendRtcPeerList(ws)) {
                                 closeSocketSession(ws, 1013, "RTC peer list could not be delivered");
                             }
                         } else if (rtc_type == "rtc_signal") handleRtcSignal(ws, event);
-                        else ws->send("{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
+                        else sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
                         return;
                     }
 
@@ -2368,7 +2632,7 @@ void WebSocketServer::runServer() {
                             handleCanvasSettings(ws, event);
                         } catch (const std::exception& e) {
                             std::cerr << "[uWebSockets] Canvas settings event rejected: " << e.what() << "\n";
-                            ws->send(nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                            sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
                                                     {"code", "SETTINGS_INVALID_INPUT"}}.dump(), uWS::OpCode::TEXT);
                         }
                         return;
@@ -2396,11 +2660,11 @@ void WebSocketServer::runServer() {
                         }
                         const std::string event_type = event.value("type", "");
                         if (event_type.rfind("rtc_", 0) == 0) {
-                            ws->send(nlohmann::json{{"type", "error"}, {"code", "RTC_SEPARATE_CHANNEL_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                            sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "RTC_SEPARATE_CHANNEL_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                             return;
                         }
                         if (event_type == "item_crdt_change") {
-                            ws->send(nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                            sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                             return;
                         }
                         nlohmann::json* collaborative_payload = nullptr;
@@ -2413,7 +2677,7 @@ void WebSocketServer::runServer() {
                                 || collaborative_payload->contains("text") || collaborative_payload->contains("code")
                                 || collaborative_payload->contains("automerge_snapshot")
                                 || collaborative_payload->contains("automerge_changes")) {
-                                ws->send(nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                                 return;
                             }
                         }
@@ -2430,7 +2694,7 @@ void WebSocketServer::runServer() {
                                 || !(*collaborative_payload)["automerge_changes"].is_array()
                                 || (*collaborative_payload)["automerge_changes"].size() > 100000
                                 || serialized_item_save_size > 12582912) {
-                                ws->send(nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
+                                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
                                 return;
                             }
                             const std::string expected_field = item_kind == "code" ? "code" : "text";
@@ -2440,7 +2704,7 @@ void WebSocketServer::runServer() {
                                     || !change.contains("change") || !change["change"].is_string()
                                     || change["change"].get<std::string>().empty()
                                     || change["change"].get<std::string>().size() > 1048576) {
-                                    ws->send(nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
+                                    sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
                                     return;
                                 }
                             }
@@ -2461,7 +2725,7 @@ void WebSocketServer::runServer() {
                                 if (bulk_kind == "text" || bulk_kind == "note" || bulk_kind == "code"
                                     || (bulk_item.is_object() && (bulk_item.contains("text") || bulk_item.contains("code")
                                         || bulk_item.contains("automerge_snapshot") || bulk_item.contains("automerge_changes")))) {
-                                    ws->send(nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                                    sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                                     return;
                                 }
                             }
@@ -2575,17 +2839,20 @@ void WebSocketServer::runServer() {
 
                         if (item_event && !item_allowed) {
                             nlohmann::json denied = {{"type", "error"}, {"code", "ITEM_ACCESS_DENIED"}};
-                            ws->send(denied.dump(), uWS::OpCode::TEXT);
+                            sendWithRequestContext(ws, denied.dump(), uWS::OpCode::TEXT);
                             return;
                         }
                         if (hasCanvasPersistenceTarget(event)) {
                             auto canvas = pool_.getCanvas(data->canvas_id);
                             bool start_worker = false;
-                            if (!canvas || !canvas->enqueuePersistence(event, start_worker)) {
+                            if (!canvas || !canvas->enqueuePersistence(event, start_worker,
+                                    agora::logging::currentRequestLogContext().request_id,
+                                    agora::logging::currentRequestLogContext().parent_request_id)) {
                                 restoreItemPermissions();
                                 closeSocketSession(ws, 1012, "Canvas is closing");
                                 return;
                             }
+                            agora::logging::setCurrentRequestOutcome("accepted");
                             if (start_worker) {
                                 try {
                                     std::thread([canvas]() {
@@ -2635,16 +2902,22 @@ void WebSocketServer::runServer() {
                     }
                 } catch (...) {
                     if (parsed_json) {
-                        ws->send(nlohmann::json{{"type", "error"}, {"code", "INVALID_EVENT"}}.dump(),
+                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "INVALID_EVENT"}}.dump(),
                                  uWS::OpCode::TEXT);
                         return;
                     }
                     // Opaque text payloads are ignored; general-purpose relay is disabled.
+                    agora::logging::markCurrentRequestRejected("INVALID_JSON");
                 }
             }
 
+            if (opCode != uWS::OpCode::TEXT) {
+                request_log.setOperation("websocket.binary_message");
+                agora::logging::markCurrentRequestRejected("UNSUPPORTED_FRAME");
+            }
+
             if (data->rtc_signaling_only) {
-                ws->send(nlohmann::json{{"type", "error"}, {"code", "INVALID_EVENT"}}.dump(),
+                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "INVALID_EVENT"}}.dump(),
                          uWS::OpCode::TEXT);
                 return;
             }
@@ -2657,6 +2930,14 @@ void WebSocketServer::runServer() {
             PerSocketData* data = ws->getUserData();
             int canvas_id = data->canvas_id;
             int user_id = data->user_id;
+            const std::string connection_request_id = data->connection_request_id.empty()
+                ? agora::logging::generateRequestId() : data->connection_request_id;
+            agora::logging::RequestLogContextScope request_context(
+                connection_request_id, "websocket.disconnect", data->parent_request_id);
+            ElasticsearchBulkLogBuffer::instance().record(
+                "websocket", "websocket_connection", "INFO", "WebSocket connection closed",
+                {{"canvas_id", canvas_id}, {"user_id", user_id},
+                 {"connection_id", data->connection_id}, {"close_code", code}}, "success");
             const std::string peer_id = data->rtc_peer_id;
             const bool access_authorized = data->access_authorized;
             const std::uint64_t session_generation = data->session_generation;

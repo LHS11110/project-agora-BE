@@ -40,6 +40,8 @@ struct PerSocketData {
     std::string rtc_canvas_connection_hash;
     bool closing{false};
     bool rtc_signaling_only{false};
+    std::string parent_request_id;
+    std::string connection_request_id;
 };
 
 class WebSocketServer {

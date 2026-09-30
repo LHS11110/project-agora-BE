@@ -1,6 +1,7 @@
 #include "ElasticsearchBulkLogBuffer.hpp"
 #include "ElasticsearchHttpClient.hpp"
 #include "Environment.hpp"
+#include "RequestLogContext.hpp"
 
 #include <httplib.h>
 #include <openssl/rand.h>
@@ -17,6 +18,10 @@
 
 namespace {
 constexpr std::size_t MAX_QUEUE_SIZE = 10'000;
+
+#ifndef AGORA_BUILD_VERSION
+#define AGORA_BUILD_VERSION "unknown"
+#endif
 
 void writeDiagnostic(const std::string& message) {
     std::size_t offset = 0;
@@ -129,10 +134,14 @@ ElasticsearchBulkLogBuffer::~ElasticsearchBulkLogBuffer() {
 
 void ElasticsearchBulkLogBuffer::record(const std::string& component, const std::string& event,
                                         const std::string& level, const std::string& message,
-                                        const nlohmann::json& details) {
+                                        const nlohmann::json& details,
+                                        const std::string& outcome, const std::string& error_code) {
     if (!configured_) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    enqueueLocked(component, event, level, message, details);
+    const auto& context = agora::logging::currentRequestLogContext();
+    enqueueLocked(component, event, level, message, details,
+                  outcome.empty() ? context.outcome : outcome,
+                  error_code.empty() ? context.error_code : error_code);
 }
 
 bool ElasticsearchBulkLogBuffer::reportAvailability(const std::string& component, bool healthy,
@@ -178,7 +187,9 @@ bool ElasticsearchBulkLogBuffer::reportPrimaryChange(const std::string& componen
 
 void ElasticsearchBulkLogBuffer::enqueueLocked(const std::string& component, const std::string& event,
                                                  const std::string& level, const std::string& message,
-                                                 const nlohmann::json& details) {
+                                                 const nlohmann::json& details,
+                                                 const std::string& outcome,
+                                                 const std::string& error_code) {
     if (queue_.size() >= MAX_QUEUE_SIZE) {
         if (!overflow_warned_) {
             writeDiagnostic("[ElasticsearchBulkLogBuffer] Queue is full; application logs are being dropped\n");
@@ -193,11 +204,25 @@ void ElasticsearchBulkLogBuffer::enqueueLocked(const std::string& component, con
         {"event_id", id},
         {"service", "agora-cpp"},
         {"instance", envOr("HOSTNAME", "unknown")},
+        {"environment", envOr("APP_ENV", "local")},
+        {"version", AGORA_BUILD_VERSION},
         {"component", component},
         {"event", event},
         {"level", level},
         {"message", message}
     };
+    const auto& context = agora::logging::currentRequestLogContext();
+    if (!context.request_id.empty()) document["request_id"] = context.request_id;
+    if (!context.parent_request_id.empty()) document["parent_request_id"] = context.parent_request_id;
+    if (!context.operation.empty()) document["operation"] = context.operation;
+    if (!outcome.empty()) document["outcome"] = outcome;
+    if (!error_code.empty()) document["error_code"] = error_code;
+    if (details.is_object()) {
+        for (const char* field : {"http_method", "path", "http_status", "duration_ms", "error_type",
+                                  "canvas_id", "user_id", "connection_id", "event_type", "close_code"}) {
+            if (details.contains(field)) document[field] = details[field];
+        }
+    }
     if (!details.is_null() && !details.empty()) document["details"] = details;
     queue_.push_back({id, std::move(document)});
     cv_.notify_one();
@@ -331,8 +356,10 @@ void ElasticsearchLogStreamCapture::CaptureBuffer::emitLine(std::string line) {
     std::string level = error_stream_ ? "ERROR" : "INFO";
     if (error_stream_ && (line.find("WARN") != std::string::npos
                           || line.find("Warning") != std::string::npos)) level = "WARN";
+    const std::string outcome = level == "ERROR" ? "failure" : level == "WARN" ? "rejected" : "";
+    if (level == "ERROR") agora::logging::markCurrentRequestFailure();
     sink_.record(component, "application_log", level, line,
-                 {{"stream", stream_name_}});
+                 {{"stream", stream_name_}}, outcome);
 }
 
 void ElasticsearchLogStreamCapture::CaptureBuffer::flushPending() {

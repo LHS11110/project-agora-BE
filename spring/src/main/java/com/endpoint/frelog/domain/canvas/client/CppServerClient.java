@@ -6,12 +6,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import com.endpoint.frelog.global.logging.RequestCorrelationFilter;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.UUID;
 
 /** Reads live active-canvas load from a C++ realtime server. */
 @Component
@@ -42,9 +45,12 @@ public class CppServerClient {
         try {
             String host = serverIp == null || serverIp.isBlank() ? "127.0.0.1" : serverIp.trim();
             String port = serverPort == null || serverPort.isBlank() ? "8000" : serverPort.trim();
+            String requestId = MDC.get("request_id");
+            if (requestId == null || requestId.isBlank()) requestId = UUID.randomUUID().toString();
             String body = restClient.get()
                     .uri(URI.create("http://" + host + ":" + port + "/api/canvas/count"))
                     .header("X-Agora-Internal-Token", internalApiToken)
+                    .header(RequestCorrelationFilter.HEADER, requestId)
                     .retrieve()
                     .body(String.class);
 

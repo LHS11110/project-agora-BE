@@ -102,15 +102,26 @@ public:
     // readers wait only for writes already accepted before their request.
     // Unload marks the canvas as closing and waits for all reserved Redis
     // writes before taking the final Redis -> Elasticsearch snapshot.
-    bool enqueuePersistence(const nlohmann::json& event, bool& start_worker);
+    bool enqueuePersistence(const nlohmann::json& event, bool& start_worker,
+                            const std::string& request_id = {},
+                            const std::string& parent_request_id = {});
     std::uint64_t persistenceBarrier();
-    bool nextPersistence(nlohmann::json& event, std::uint64_t& ticket);
+    bool nextPersistence(nlohmann::json& event, std::uint64_t& ticket,
+                         std::string* request_id = nullptr,
+                         std::string* parent_request_id = nullptr);
     void cancelPersistenceQueue();
     void endPersistence(std::uint64_t ticket, bool succeeded);
     void waitForPersistenceThrough(std::uint64_t ticket);
     bool waitForPendingPersistence(std::unique_lock<std::mutex>& lock);
 
 private:
+    struct PersistenceEntry {
+        std::uint64_t ticket;
+        nlohmann::json event;
+        std::string request_id;
+        std::string parent_request_id;
+    };
+
     mutable std::mutex metadata_mutex_;
     long long settings_revision_{0};
     std::mutex canvas_mutex;
@@ -119,7 +130,7 @@ private:
     std::size_t pending_persistence_{0};
     std::uint64_t last_enqueued_persistence_{0};
     std::uint64_t last_completed_persistence_{0};
-    std::deque<std::pair<std::uint64_t, nlohmann::json>> persistence_queue_;
+    std::deque<PersistenceEntry> persistence_queue_;
     bool persistence_worker_running_{false};
     bool persistence_failed_{false};
     WebSocketCallbacks web_socket_callbacks_;

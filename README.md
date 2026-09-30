@@ -130,7 +130,7 @@ chmod 600 .env
 
 `CPP_INTERNAL_API_TOKEN`은 Spring에서 C++ REST 관리 API를 호출할 때 보내는 내부 Bearer 성격의 공유 토큰입니다. 최소 32바이트의 무작위 값을 사용하세요. C++ `/api/**` 경로는 이 값이 맞지 않으면 요청을 거부하며, Docker Compose는 `.env` 전체를 컨테이너에 전달하지 않고 각 서비스가 필요한 환경 변수만 전달합니다.
 
-C++ 캐시는 캔버스별 `Poco::LRUCache`에 아이템 문서를 저장합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 보관할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0으로 설정하면 아이템 캐시를 끕니다. 기존 `CPP_CANVAS_LRU_CAPACITY`는 프로세스가 유지할 캔버스별 캐시 수이며 기본값은 256, 최대값은 4096입니다. 아직 캐시에 없는 아이템은 첫 조회에서 요청한 JSON 경로만 Redis로 읽고, 반복 조회·변경된 아이템만 전체 문서를 캐시에 올립니다. 최근 자주 읽거나 변경한 아이템은 LRU에서 유지되고, 덜 쓰이는 아이템은 밀려나 다음 요청 때 Redis에서 읽습니다. 한 아이템이 256 KiB를 넘으면 캐시하지 않으며, 채팅 기록 배열도 크기 변동이 커 Redis에서 직접 읽습니다. 변경된 캐시 사본은 Redis에 동기식으로 기록하며, 저장 실패나 결과가 불확실하면 영향을 받은 항목을 무효화합니다. LRU에서 항목이 밀려나도 이미 Redis에 반영된 데이터는 그대로 유지되며, 할당 해제 때 Redis에 별도 쓰기는 하지 않습니다.
+C++ 캐시는 캔버스별 `Poco::LRUCache`에 아이템 문서를 저장합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 보관할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0으로 설정하면 아이템 캐시를 끕니다. `CPP_CANVAS_LRU_CAPACITY`는 프로세스가 유지할 캔버스별 캐시 수이며 기본값은 256, 최대값은 4096입니다. 새 아이템은 Redis에 먼저 만들며 생성 요청에서 바로 캐시하지 않습니다. 첫 조회는 요청된 경로만 Redis에서 읽고, 반복 조회로 자주 사용되는 아이템만 전체 문서로 LRU에 승격합니다. LRU에 들어 있는 아이템은 조회와 변경을 캐시 사본 기준으로 수행합니다. 변경 사본은 dirty 상태로 보관하며 LRU에서 밀려나거나 명시적으로 동기화하거나 캔버스를 반환·종료할 때 전체 아이템을 Redis에 기록해 Redis의 이전 값을 덮어씁니다. 동기화 실패 시 dirty 사본을 버리지 않고 캔버스 반환을 중단합니다. 삭제는 Redis에 반영된 뒤 LRU에서도 제거합니다. 전체 캔버스 조회는 dirty LRU 사본을 Redis 문서에 합쳐 최신 데이터를 반환합니다. 한 아이템이 256 KiB를 넘으면 캐시에 두지 않으며, 채팅 기록 배열도 크기 변동이 커 Redis에서 직접 읽습니다. 채팅방 메타데이터를 flush할 때는 Redis의 기록 배열을 보존합니다.
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
@@ -138,7 +138,11 @@ C++ 캐시는 캔버스별 `Poco::LRUCache`에 아이템 문서를 저장합니�
 
 Redis Sentinel 전환 중 Spring의 캔버스 접근 확인은 최신 RedisJSON 문서를 읽을 때까지 제한된 재탐색을 수행하고, 읽지 못하면 fail-closed로 재시도를 요청합니다. C++도 기본적으로 실패한 Redis 쓰기를 자동 재전송하지 않아 중복 저장을 방지합니다. Redis 복제는 비동기이므로 failover 직전의 확인된 쓰기가 새 primary에 없을 수 있습니다. 캔버스 캐시 키가 사라졌거나 DB의 캐시 상태와 맞지 않으면 Elasticsearch 내용을 자동으로 복구해 진행하지 않고 요청을 실패시킵니다.
 
-Spring Boot의 SLF4J/Logback 애플리케이션 로그와 C++ 서버의 stdout/stderr 로그를 별도 `ES_LOG_INDEX`에 저장합니다. 여기에 SQL listener 연결 끊김·복구와 primary 인스턴스 변경, Redis 연결 불가·복구와 Sentinel primary 변경 이벤트도 구조화해 추가합니다. 두 서버는 쓰기 전용 로그 계정으로 문서를 `create` 방식으로 추가하며 로그 조회나 기존 문서 수정은 하지 않습니다. Spring과 C++은 각각 최대 100건 또는 1초 주기로 로그를 모아 Elasticsearch `_bulk` 요청 한 번으로 전송합니다. 조정에는 `ES_LOG_BATCH_SIZE`와 `ES_LOG_FLUSH_INTERVAL_MS`를 사용하고, Spring SQL 상태 점검 주기는 `HA_FAILOVER_MONITOR_INTERVAL_MS`로 설정합니다. Elasticsearch에 연결할 수 없는 동안 큐는 최대 10,000건이며, 초과한 새 로그는 버려지고 로컬 로그에 경고가 남습니다.
+Spring Boot의 SLF4J/Logback 애플리케이션 로그와 C++ 서버의 stdout/stderr 로그를 별도 `ES_LOG_INDEX`에 저장합니다. 여기에 SQL listener 연결 끊김·복구와 primary 인스턴스 변경, Redis 연결 불가·복구와 Sentinel primary 변경 이벤트도 구조화해 추가합니다. 각 문서는 `@timestamp`, 레코드별 `event_id`, `service`, `instance`, `environment`, `version`, `component`, `event`, `level`, `message`를 가집니다. 요청 흐름에는 공통 `request_id`, 처리 작업 `operation`, 결과 `outcome`, HTTP 상태 또는 `error_code`/`error_type`이 추가됩니다. HTTP 로그에는 메서드·경로·상태·처리 시간, WebSocket 로그에는 캔버스·사용자·메시지 유형이 들어갑니다. 경로는 query string을 제외해 JWT와 토큰이 로그에 남지 않습니다.
+
+Spring과 C++ REST는 `X-Request-ID`를 전달하며, 누락되거나 안전한 형식이 아니면 서버가 새 ID를 생성해 응답 헤더에도 반환합니다. Spring 캔버스 접근 요청 ID는 서명된 접속 JWT의 `requestId` claim으로 C++ WebSocket 연결 로그에 이어집니다. WebSocket 클라이언트는 각 메시지에 `request_id`를 포함하며, 비동기 Redis 저장 로그에도 같은 ID가 유지되고 오류·결과 응답은 가능한 경우 같은 ID를 돌려줍니다. 접속 요청에서 시작한 메시지는 `parent_request_id`로도 묶입니다. 로그 수준은 Spring Logback 수준과 HTTP/WebSocket 결과에 따라 `INFO`, `WARN`, `ERROR`로 기록합니다.
+
+두 서버는 쓰기 전용 로그 계정으로 문서를 `create` 방식으로 추가하며 로그 조회나 기존 문서 수정은 하지 않습니다. Spring과 C++은 각각 최대 100건 또는 1초 주기로 로그를 모아 Elasticsearch `_bulk` 요청 한 번으로 전송합니다. 조정에는 `ES_LOG_BATCH_SIZE`와 `ES_LOG_FLUSH_INTERVAL_MS`를 사용하고, Spring SQL 상태 점검 주기는 `HA_FAILOVER_MONITOR_INTERVAL_MS`로 설정합니다. Elasticsearch에 연결할 수 없는 동안 큐는 최대 10,000건이며, 초과한 새 로그는 버려지고 로컬 로그에 경고가 남습니다.
 
 Spring JDBC는 기본적으로 TLS 인증서 검증을 사용합니다. C++ FreeTDS는 `DB_FREETDS_CONF`에 `encryption = strict`, CA 파일, 호스트명 검증을 설정해야 합니다. 검증 가능한 인증서를 구성할 수 없는 개발 환경에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 지정하고 운영에서는 설정하지 마세요.
 

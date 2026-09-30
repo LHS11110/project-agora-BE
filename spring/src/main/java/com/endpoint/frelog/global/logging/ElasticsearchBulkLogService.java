@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -43,6 +44,12 @@ public class ElasticsearchBulkLogService {
     private final String instance;
     private final boolean enabled;
 
+    @Value("${app.environment:local}")
+    private String environment;
+
+    @Value("${app.version:unknown}")
+    private String buildVersion;
+
     public ElasticsearchBulkLogService(
             @Qualifier("elasticsearchLogRestClient") RestClient restClient,
             ElasticsearchProperties properties,
@@ -68,10 +75,25 @@ public class ElasticsearchBulkLogService {
         document.put("event_id", UUID.randomUUID().toString());
         document.put("service", "agora-spring");
         document.put("instance", instance);
+        document.put("environment", nonBlankOr(environment, "local"));
+        document.put("version", nonBlankOr(buildVersion, "unknown"));
         document.put("component", component);
         document.put("event", event);
         document.put("level", level);
         document.put("message", message);
+        putIfPresent(document, "request_id", MDC.get("request_id"));
+        putIfPresent(document, "parent_request_id", MDC.get("parent_request_id"));
+        putIfPresent(document, "operation", MDC.get("operation"));
+        putIfPresent(document, "outcome", MDC.get("outcome"));
+        putIfPresent(document, "error_code", MDC.get("error_code"));
+        putIfPresent(document, "http_status", MDC.get("http_status"));
+        putIfPresent(document, "duration_ms", MDC.get("duration_ms"));
+        if (details != null) {
+            for (String field : List.of("error_code", "error_type", "http_status", "duration_ms")) {
+                Object value = details.get(field);
+                if (value != null) document.putIfAbsent(field, value);
+            }
+        }
         if (details != null && !details.isEmpty()) document.put("details", details);
         LogEvent item = new LogEvent((String) document.get("event_id"), document);
         if (!queue.offerLast(item)) {
@@ -79,6 +101,14 @@ public class ElasticsearchBulkLogService {
                 log.error("Elasticsearch log queue is full; new operational events are being dropped");
             }
         }
+    }
+
+    private static String nonBlankOr(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static void putIfPresent(Map<String, Object> document, String key, String value) {
+        if (value != null && !value.isBlank()) document.put(key, value);
     }
 
     public void reportAvailability(String component, boolean healthy, Map<String, ?> details) {

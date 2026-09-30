@@ -13,6 +13,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.http.MediaType;
+import com.endpoint.frelog.global.exception.ErrorCode;
+import com.endpoint.frelog.global.logging.RequestLogAttributes;
 
 import java.io.IOException;
 
@@ -39,6 +41,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             String currentIp = request.getRemoteAddr();
 
             if (tokenIp != null && !tokenIp.equals(currentIp)) {
+                RequestLogAttributes.markFailure(request, ErrorCode.INVALID_TOKEN.getCode(),
+                        new SecurityException("Token client IP mismatch"));
                 response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "IP address mismatch. Token stolen or environment changed.");
                 return;
             }
@@ -51,6 +55,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 // after a database reset. Treat it as stale authentication instead
                 // of allowing the lookup exception to become an HTTP 500.
                 SecurityContextHolder.clearContext();
+                RequestLogAttributes.markFailure(request, ErrorCode.INVALID_TOKEN.getCode(), ex);
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.setCharacterEncoding("UTF-8");

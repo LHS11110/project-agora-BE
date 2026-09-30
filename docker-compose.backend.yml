@@ -34,6 +34,7 @@ services:
     cap_drop:
       - ALL
     environment:
+      APP_ENV: ${APP_ENV:-production}
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: "8080"
       DB_NAME: ${DB_NAME:-agora_db}
@@ -105,6 +106,7 @@ services:
     cap_drop:
       - ALL
     environment:
+      APP_ENV: ${APP_ENV:-production}
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
       CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-127.0.0.1,::1}

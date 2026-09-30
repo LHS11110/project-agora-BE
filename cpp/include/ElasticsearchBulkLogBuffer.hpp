@@ -20,7 +20,8 @@ public:
 
     void record(const std::string& component, const std::string& event,
                 const std::string& level, const std::string& message,
-                const nlohmann::json& details = nlohmann::json::object());
+                const nlohmann::json& details = nlohmann::json::object(),
+                const std::string& outcome = {}, const std::string& error_code = {});
     bool reportAvailability(const std::string& component, bool healthy,
                             const nlohmann::json& details = nlohmann::json::object());
     bool reportPrimaryChange(const std::string& component, const std::string& primary);
@@ -34,7 +35,8 @@ private:
     ElasticsearchBulkLogBuffer();
     void enqueueLocked(const std::string& component, const std::string& event,
                        const std::string& level, const std::string& message,
-                       const nlohmann::json& details);
+                       const nlohmann::json& details, const std::string& outcome = {},
+                       const std::string& error_code = {});
     void run();
     bool sendBatch(const std::vector<LogEvent>& batch);
 

@@ -18,12 +18,14 @@ Canvas::~Canvas() {
     web_socket_callbacks_ = {};
 }
 
-bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker) {
+bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker,
+                                const std::string& request_id,
+                                const std::string& parent_request_id) {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (unloading.load() || persistence_failed_) return false;
     if (last_enqueued_persistence_ == std::numeric_limits<std::uint64_t>::max()) return false;
     const auto ticket = ++last_enqueued_persistence_;
-    persistence_queue_.emplace_back(ticket, event);
+    persistence_queue_.push_back({ticket, event, request_id, parent_request_id});
     ++pending_persistence_;
     start_worker = !persistence_worker_running_;
     persistence_worker_running_ = true;
@@ -35,14 +37,17 @@ std::uint64_t Canvas::persistenceBarrier() {
     return last_enqueued_persistence_;
 }
 
-bool Canvas::nextPersistence(nlohmann::json& event, std::uint64_t& ticket) {
+bool Canvas::nextPersistence(nlohmann::json& event, std::uint64_t& ticket,
+                             std::string* request_id, std::string* parent_request_id) {
     std::lock_guard<std::mutex> lock(persistence_mutex_);
     if (persistence_queue_.empty()) {
         persistence_worker_running_ = false;
         return false;
     }
-    ticket = persistence_queue_.front().first;
-    event = std::move(persistence_queue_.front().second);
+    ticket = persistence_queue_.front().ticket;
+    event = std::move(persistence_queue_.front().event);
+    if (request_id) *request_id = std::move(persistence_queue_.front().request_id);
+    if (parent_request_id) *parent_request_id = std::move(persistence_queue_.front().parent_request_id);
     persistence_queue_.pop_front();
     return true;
 }

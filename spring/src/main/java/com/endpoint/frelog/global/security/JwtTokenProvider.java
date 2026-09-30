@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.slf4j.MDC;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -57,7 +58,7 @@ public class JwtTokenProvider {
         // 캔버스 접속 토큰은 비교적 짧은 유효시간(예: 5분)을 가질 수 있지만 여기서는 편의상 동일하게 부여
         Date validity = new Date(now.getTime() + expirationMs);
 
-        return Jwts.builder()
+        var builder = Jwts.builder()
                 .subject("canvas-access")
                 .claim("nickname", nickname)
                 .claim("tagNumber", tagNumber)
@@ -66,9 +67,12 @@ public class JwtTokenProvider {
                 .claim("serverHash", serverHash)
                 .claim("settingsRevision", settingsRevision)
                 .issuedAt(now)
-                .expiration(validity)
-                .signWith(key, Jwts.SIG.HS256)
-                .compact();
+                .expiration(validity);
+        String requestId = MDC.get("request_id");
+        if (requestId != null && requestId.matches("[A-Za-z0-9._:-]{1,64}")) {
+            builder.claim("requestId", requestId);
+        }
+        return builder.signWith(key, Jwts.SIG.HS256).compact();
     }
 
     public String createCanvasPasswordGrant(Long userId, Integer canvasId, long settingsRevision) {

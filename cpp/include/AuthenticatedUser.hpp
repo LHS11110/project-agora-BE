@@ -8,4 +8,5 @@ struct AuthenticatedUser {
     int tag_number;
     std::string nickname;
     long long settings_revision{0};
+    std::string request_id;
 };

@@ -51,12 +51,16 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint((request, response, authException) -> {
+                            com.endpoint.frelog.global.logging.RequestLogAttributes.markFailure(
+                                    request, "AUTH_005", authException);
                             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.setCharacterEncoding("UTF-8");
                             response.getWriter().write("{\"status\":401,\"error\":\"UNAUTHORIZED\",\"code\":\"AUTH_005\",\"message\":\"인증이 필요한 요청입니다.\"}");
                         })
                         .accessDeniedHandler((request, response, accessDeniedException) -> {
+                            com.endpoint.frelog.global.logging.RequestLogAttributes.markFailure(
+                                    request, "AUTH_006", accessDeniedException);
                             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                             response.setCharacterEncoding("UTF-8");
@@ -104,6 +108,7 @@ public class SecurityConfig {
         configuration.setAllowedOrigins(allowedCorsOrigins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
+        configuration.setExposedHeaders(List.of("X-Request-ID"));
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

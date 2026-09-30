@@ -46,7 +46,7 @@ file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src
 add_executable(agora_cpp_server ${CPP_SOURCES})
 
 # Target compile definitions
-target_compile_definitions(agora_cpp_server PRIVATE LIBUS_NO_SSL)
+target_compile_definitions(agora_cpp_server PRIVATE LIBUS_NO_SSL AGORA_BUILD_VERSION=\"${PROJECT_VERSION}\")
 
 # Target link libraries
 target_link_libraries(agora_cpp_server

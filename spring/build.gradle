@@ -7,6 +7,24 @@ plugins {
 group = 'com.endpoint'
 version = '0.0.1-SNAPSHOT'
 
+def generatedBuildInfoDir = layout.buildDirectory.dir('generated/build-info-resources')
+def generatedBuildInfoFile = generatedBuildInfoDir.map { it.file('build-info.properties') }
+
+tasks.register('generateBuildInfoProperties') {
+	inputs.property('projectVersion', project.version)
+	outputs.file(generatedBuildInfoFile)
+	doLast {
+		def output = generatedBuildInfoFile.get().asFile
+		output.parentFile.mkdirs()
+		output.text = "app.build.version=${project.version}\n"
+	}
+}
+
+sourceSets.main.resources.srcDir(generatedBuildInfoDir)
+tasks.named('processResources') {
+	dependsOn(tasks.named('generateBuildInfoProperties'))
+}
+
 java {
 	toolchain {
 		languageVersion = JavaLanguageVersion.of(26)

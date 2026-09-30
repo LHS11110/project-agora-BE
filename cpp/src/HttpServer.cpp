@@ -1,4 +1,6 @@
 #include "HttpServer.hpp"
+#include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -10,6 +12,8 @@
 #include <nlohmann/json.hpp>
 #include "MssqlClient.hpp"
 #include "Environment.hpp"
+#include "ElasticsearchBulkLogBuffer.hpp"
+#include "RequestLogContext.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
@@ -159,7 +163,13 @@ std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const st
             return std::nullopt;
         }
 
-        return AuthenticatedUser{user_id, static_cast<int>(tag_number), nickname, settings_revision};
+        std::string request_id;
+        if (decoded.has_payload_claim("requestId")) {
+            const auto supplied_request_id = decoded.get_payload_claim("requestId").as_string();
+            if (agora::logging::isValidRequestId(supplied_request_id)) request_id = supplied_request_id;
+        }
+        return AuthenticatedUser{user_id, static_cast<int>(tag_number), nickname,
+                                 settings_revision, request_id};
     } catch (const std::exception& e) {
         std::cerr << "[HttpServer] JWT verification failed: " << e.what() << "\n";
         return std::nullopt;
@@ -168,6 +178,13 @@ std::optional<AuthenticatedUser> HttpServer::authenticateTokenForCanvas(const st
 
 void HttpServer::setupRoutes() {
     server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
+        const std::string request_id = agora::logging::acceptedRequestId(req.get_header_value("X-Request-ID"));
+        const std::string operation = req.method + " " + req.path;
+        agora::logging::setCurrentRequestLogContext({
+            request_id, operation, "in_progress", {}, std::chrono::steady_clock::now(), {}
+        });
+        res.set_header("X-Request-ID", request_id);
+
         const bool api_path = req.path == "/api" || req.path.rfind("/api/", 0) == 0;
         if (!api_path || req.method == "OPTIONS") return httplib::Server::HandlerResponse::Unhandled;
 
@@ -182,6 +199,67 @@ void HttpServer::setupRoutes() {
             return httplib::Server::HandlerResponse::Handled;
         }
         return httplib::Server::HandlerResponse::Unhandled;
+    });
+
+    server_.set_exception_handler([](const httplib::Request&, httplib::Response& res,
+                                     std::exception_ptr exception) {
+        std::string error_type = "unknown";
+        std::string error_message = "REST handler raised an exception";
+        try {
+            if (exception) std::rethrow_exception(exception);
+        } catch (const std::exception& error) {
+            error_type = typeid(error).name();
+            error_message = error.what();
+        } catch (...) {
+            error_type = "unknown";
+        }
+        if (error_message.size() > 500) error_message.resize(500);
+        res.status = 500;
+        res.set_content(R"({"status":500,"error":"INTERNAL_SERVER_ERROR"})",
+                        "application/json; charset=utf-8");
+        agora::logging::markCurrentRequestFailure("HTTP_500");
+        ElasticsearchBulkLogBuffer::instance().record(
+            "http", "http_request_exception", "ERROR", "REST handler raised an exception",
+            {{"error_type", error_type}, {"error_message", error_message}}, "failure", "HTTP_500");
+    });
+
+    server_.set_logger([](const httplib::Request& req, const httplib::Response& res) {
+        const int status = res.status > 0 ? res.status : 500;
+        const std::string outcome = status >= 500 ? "failure" : status >= 400 ? "rejected" : "success";
+        const std::string level = status >= 500 ? "ERROR" : status >= 400 ? "WARN" : "INFO";
+        std::string error_code = status >= 400 ? "HTTP_" + std::to_string(status) : "";
+        if (status >= 400 && res.body.size() <= 16 * 1024) {
+            try {
+                const auto body = nlohmann::json::parse(res.body);
+                if (body.is_object()) {
+                    for (const char* field : {"error_code", "code", "error"}) {
+                        if (!body.contains(field) || !body[field].is_string()) continue;
+                        const std::string candidate = body[field].get<std::string>();
+                        const bool safe_code = !candidate.empty() && candidate.size() <= 64
+                            && std::all_of(candidate.begin(), candidate.end(), [](unsigned char character) {
+                                return std::isalnum(character) || character == '_' || character == '.'
+                                    || character == ':' || character == '-';
+                            });
+                        if (safe_code) {
+                            error_code = candidate;
+                            break;
+                        }
+                    }
+                }
+            } catch (...) {
+            }
+        }
+        const auto& context = agora::logging::currentRequestLogContext();
+        const auto duration_ms = context.started_at.time_since_epoch().count() == 0
+            ? 0LL
+            : std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - context.started_at).count();
+        ElasticsearchBulkLogBuffer::instance().record(
+            "http", "http_request", level,
+            status >= 400 ? "REST request completed with failure" : "REST request completed",
+            {{"http_method", req.method}, {"path", req.path}, {"http_status", status},
+             {"duration_ms", duration_ms}}, outcome, error_code);
+        agora::logging::clearCurrentRequestLogContext();
     });
 
     // CORS is transport-wide; endpoint implementations live in API modules.

@@ -9,7 +9,11 @@
 - 모든 JSON 요청과 응답은 `Content-Type: application/json`을 사용합니다.
 - 보호된 Spring API는 `Authorization: Bearer <accessToken>`이 필요합니다.
 - 로그인 JWT와 캔버스 접속 JWT는 용도가 다릅니다. WebSocket에는 `/access` 응답의 `canvas_access_token`만 사용합니다.
+- `/api/**` 요청은 선택적으로 `X-Request-ID`를 받을 수 있습니다. 서버는 안전한 형식(최대 64자)의 값을 유지하고, 누락·잘못된 값이면 새 ID를 생성합니다. 응답에는 `X-Request-ID`가 포함되며, Spring이 C++ REST를 호출할 때도 같은 ID를 전달합니다.
+- 캔버스 접근 API의 요청 ID는 서명된 캔버스 접속 토큰에 포함되어 C++ WebSocket 연결 로그까지 이어집니다. WebSocket 메시지도 `request_id`를 포함해야 하며, 클라이언트는 요청별 ID를 생성합니다. 서버가 만든 실패·결과 응답은 가능한 경우 해당 ID를 반환합니다.
 - 응답의 사용자 공개 식별자는 `nickname`과 `tag_number` 조합입니다. 내부 `user_id`는 권한·세션 처리에만 사용합니다.
+
+운영 로그는 `ES_LOG_INDEX`에 구조화해 저장됩니다. 공통 필드는 `@timestamp`, `event_id`, `service`, `instance`, `environment`, `version`, `component`, `event`, `level`, `message`이며, 요청 로그에는 `request_id`, `operation`, `outcome`이 추가됩니다. 실패에는 HTTP 상태 또는 `error_code`와 `error_type`이 기록됩니다. 캔버스 WebSocket 메시지와 비동기 Redis 저장은 같은 `request_id`를 사용하고, 접속 요청 ID는 `parent_request_id`로 이어집니다. 경로 로그는 query string을 생략합니다.
 
 ### 오류 응답
 
@@ -543,9 +547,9 @@ JPA의 단건 키 조회가 실제로 O(1)인지 O(log D)인지는 스키마 인
 
 ### C++ Canvas JSON 문서 LRU 캐시
 
-C++ 프로세스는 캔버스별 `Poco::LRUCache`에 아이템 문서를 보관합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 캐시할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0은 아이템 캐시 비활성화이고, 유효하지 않은 값은 기본값을 사용합니다. 한 아이템이 256 KiB보다 크면 캐시에 넣지 않습니다. 기존 `CPP_CANVAS_LRU_CAPACITY`는 프로세스 내 캔버스 캐시 수를 제한하며 기본값은 256, 최대값은 4096입니다. 처음 보는 아이템은 요청된 경로만 Redis에서 읽습니다. 같은 아이템을 다시 읽거나 변경할 때 전체 아이템을 캐시에 올려, 최근 자주 접근한 아이템을 유지하고 LRU에서 밀린 아이템은 Redis에서 다시 가져옵니다. 채팅 기록 배열과 전체 캔버스 문서는 이 아이템 캐시에서 제외하고 Redis에서 읽습니다.
+C++ 프로세스는 캔버스별 `Poco::LRUCache`에 아이템 문서를 보관합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 캐시할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0은 아이템 캐시 비활성화이고, 유효하지 않은 값은 기본값을 사용합니다. 한 아이템이 256 KiB보다 크면 캐시에 넣지 않습니다. `CPP_CANVAS_LRU_CAPACITY`는 프로세스 내 캔버스별 캐시 수를 제한하며 기본값은 256, 최대값은 4096입니다. 새 캔버스 아이템은 먼저 Redis에 기록하며 생성 요청만으로는 LRU에 넣지 않습니다. 첫 조회는 요청한 JSON 경로를 Redis에서 읽고, 반복 조회로 자주 쓰이는 아이템만 전체 문서 형태로 LRU에 승격합니다. 캐시에 있는 아이템의 조회와 변경은 LRU 사본을 기준으로 처리합니다. 변경된 사본은 dirty 상태로 유지하고, 아이템이 LRU에서 밀려나거나 `flushCanvasItemCache` 또는 캔버스 반환·종료 동기화를 수행할 때 전체 아이템을 `JSON.SET`으로 Redis에 기록해 Redis 값을 LRU 사본으로 덮어씁니다. 캐시 동기화가 실패하면 dirty 항목을 버리거나 캔버스 반환을 완료하지 않습니다. 아이템 삭제는 Redis 삭제가 성공한 뒤 해당 LRU 항목도 제거하고, 캔버스 전체 아이템 또는 문서 삭제는 두 저장소에서 모두 무효화합니다. 전체 캔버스와 `$.items` 조회는 dirty LRU 사본을 Redis 문서에 합쳐 반환합니다. 채팅 기록 배열은 크기 변동이 커 계속 Redis에서 읽고, 채팅방 메타데이터 flush 시 Redis의 `data` 기록 배열을 보존합니다.
 
-Canvas 아이템 경로를 조회할 때 캐시 hit이면 해당 아이템을 사용하고, miss이면 Redis에서 읽습니다. 첫 miss는 요청된 경로만 읽으며 두 번째 miss부터 전체 아이템을 캐시에 넣습니다. 설정 revision CAS와 채팅 순번·append 원자성은 Redis 연산으로 유지합니다. 변경된 캐시 사본은 Redis에 동기식으로 기록하며, 실패하거나 결과가 불확실하면 해당 항목을 무효화합니다. LRU 퇴출은 이미 Redis에 동기 기록된 사본만 메모리에서 해제하므로 Redis에 추가 write-back하지 않습니다. Elasticsearch는 Redis 조회 대체 경로로 사용하지 않습니다.
+아이템 캐시의 첫 miss는 요청 경로만 Redis에서 읽고, 다음 miss에서 전체 아이템을 Redis에서 읽어 LRU에 승격합니다. 새 아이템 생성은 Redis에만 기록합니다. 캐시에 있는 아이템 변경은 dirty LRU 사본에 반영하고, LRU 퇴출·명시적 flush·캔버스 반환 및 프로세스 종료 동기화 때 Redis 전체 아이템을 덮어씁니다. dirty 값의 Redis 기록이 실패하면 캐시 퇴출을 취소하고, 캔버스 반환도 중단합니다. 삭제 연산은 Redis 성공 후 LRU 사본을 제거하며, dirty 캐시에 있는 중첩 필드 삭제는 변경 사본을 Redis에 동기화한 뒤 성공 처리합니다. 설정 revision CAS는 관련 dirty 아이템을 먼저 flush한 뒤 Redis에서 원자적으로 수행합니다. 채팅 기록 배열과 append는 Redis에서 직접 처리하고, 동기화하는 채팅방 메타데이터에서 기록 배열은 보존합니다. Elasticsearch는 Redis 조회 대체 경로로 사용하지 않습니다.
 
 ### Elasticsearch 접근 경로 확인
 

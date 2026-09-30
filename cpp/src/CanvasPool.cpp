@@ -308,6 +308,11 @@ bool CanvasPool::saveCanvasSnapshotToElasticsearch(
     nlohmann::json final_doc;
     try {
         RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
+        if (!redis.flushCanvasItemCache("canvas:" + std::to_string(canvas_id))) {
+            std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id
+                      << " assigned because its LRU items could not be synchronized to Redis\n";
+            return false;
+        }
         auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
         if (!cached_str || cached_str->empty()) {
             std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id

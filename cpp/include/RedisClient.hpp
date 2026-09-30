@@ -24,6 +24,7 @@ public:
     bool ping();
     bool set(const std::string& key, const std::string& value) override;
     std::optional<std::string> get(const std::string& key) override;
+    bool flushCanvasItemCache(const std::string& key);
     std::optional<std::string> getJsonPath(const std::string& key, const std::string& path);
     bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
     bool appendChatMessage(const std::string& key, const std::string& item_id,
@@ -61,6 +62,9 @@ private:
 
     std::optional<std::string> readFromRedis(const std::string& key);
     std::optional<std::string> readJsonPathFromRedis(const std::string& key, const std::string& path);
+    bool writeBackCanvasItem(const std::string& key, const std::string& item_id,
+                             const std::string& item_json);
+    bool flushCanvasItemCacheLocked(const std::string& key);
     bool connectTo(const std::string& host, int port, int timeout_ms);
     ssize_t readTransport(void* buffer, std::size_t size);
     ssize_t writeTransport(const void* buffer, std::size_t size);
