@@ -16,6 +16,22 @@
 #include <chrono>
 
 namespace {
+thread_local DBINT lastSqlServerMessageNumber = 0;
+thread_local int lastSqlServerMessageSeverity = 0;
+thread_local int lastSqlServerMessageState = 0;
+thread_local int lastSqlServerMessageLine = 0;
+
+int captureSqlServerMessage(DBPROCESS*, DBINT message_number, int message_state,
+                            int severity, char*, char*, char*, int line) {
+    if (severity >= 11 && lastSqlServerMessageNumber == 0) {
+        lastSqlServerMessageNumber = message_number;
+        lastSqlServerMessageSeverity = severity;
+        lastSqlServerMessageState = message_state;
+        lastSqlServerMessageLine = line;
+    }
+    return 0;
+}
+
 std::string envOr(const char* name, const std::string& value) {
     if (!value.empty()) return value;
     return environmentValue(name);
@@ -33,10 +49,22 @@ bool addRpcTextParameter(DBPROCESS* dbproc, const char* name, const std::string&
                       reinterpret_cast<BYTE*>(const_cast<char*>(value.data()))) == SUCCEED;
 }
 
+bool addRpcUnicodeParameter(DBPROCESS* dbproc, const char* name, const std::string& value) {
+    if (value.size() > SqlCommand::kMaxStatementBytes) return false;
+    const DBINT byte_length = static_cast<DBINT>(value.size());
+    // SQL Server accepts NTEXT for sp_executesql's Unicode statement and
+    // declaration parameters. This also supports statements longer than the
+    // 4,000-character NVARCHAR limit.
+    return dbrpcparam(dbproc, name, 0, SYBNTEXT, -1, byte_length,
+                      reinterpret_cast<BYTE*>(const_cast<char*>(value.data()))) == SUCCEED;
+}
+
 bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
     if (!dbproc) return false;
-    if (!command.isValid()) {
-        std::cerr << "[MssqlClient] Rejected invalid parameterized SQL command.\n";
+    const std::string validation_error = command.validationError();
+    if (!validation_error.empty()) {
+        std::cerr << "[MssqlClient] Rejected invalid parameterized SQL command: "
+                  << validation_error << ".\n";
         return false;
     }
     if (dbrpcinit(dbproc, "sp_executesql", 0) != SUCCEED) {
@@ -45,11 +73,11 @@ bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
     }
 
     const std::string declarations = command.parameterDeclarations();
-    if (!addRpcTextParameter(dbproc, "@stmt", command.statement())) {
+    if (!addRpcUnicodeParameter(dbproc, "@stmt", command.statement())) {
         std::cerr << "[MssqlClient] Could not bind sp_executesql statement parameter.\n";
         return false;
     }
-    if (!addRpcTextParameter(dbproc, "@params", declarations)) {
+    if (!addRpcUnicodeParameter(dbproc, "@params", declarations)) {
         std::cerr << "[MssqlClient] Could not bind sp_executesql declaration parameter.\n";
         return false;
     }
@@ -167,6 +195,7 @@ public:
                 setenv("FREETDSCONF", freetds_config.c_str(), 1);
             }
             dbinit();
+            dbmsghandle(captureSqlServerMessage);
             // Authentication runs on the uWebSockets event-loop thread.  Bound
             // DB waits prevent a database/network fault from stalling every
             // WebSocket handshake indefinitely.
@@ -529,14 +558,37 @@ bool MssqlClient::setServerInactive(const std::string& ip, int rest_port) {
 
 CanvasRedisAllocation MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
 
+    const auto failedAllocation = [] {
+        CanvasRedisAllocation allocation;
+        allocation.redis_ip = "ERROR";
+        return allocation;
+    };
+    const auto recordFailure = [canvasId](const std::string& message, const std::string& errorCode) {
+        ElasticsearchBulkLogBuffer::instance().record(
+            "redis-load-balancer", "canvas_redis_allocation", "ERROR", message,
+            {{"canvas_id", canvasId}}, "failure", errorCode);
+        std::cerr << "[MssqlClient][RedisLB] Canvas #" << canvasId << " allocation failed: "
+                  << message << " (" << errorCode << ")\n";
+    };
+
     PooledConnection dbproc;
-    if (!dbproc.get()) return {"ERROR", 0, false};
+    if (!dbproc.get()) {
+        recordFailure("Could not acquire a SQL connection", "DB_CONNECTION_UNAVAILABLE");
+        return failedAllocation();
+    }
+    lastSqlServerMessageNumber = 0;
+    lastSqlServerMessageSeverity = 0;
+    lastSqlServerMessageState = 0;
+    lastSqlServerMessageLine = 0;
 
     SqlCommand sql(
         "BEGIN TRAN; "
         "BEGIN TRY "
         "  DECLARE @is_cached BIT = NULL, @was_cached BIT = 0, @redis_ip NVARCHAR(50), @redis_port NVARCHAR(10), @assigned_cpp_id INT; "
-        "  SELECT @is_cached = is_cached, @was_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = r.redis_port, @assigned_cpp_id = c.cpp_server_id "
+        "  DECLARE @allocation_strategy NVARCHAR(16) = N'NONE', @candidate_count INT = 0, @selected_canvas_count BIGINT = NULL; "
+        "  DECLARE @candidate1_ip NVARCHAR(50), @candidate1_port NVARCHAR(10), @candidate1_count BIGINT; "
+        "  DECLARE @candidate2_ip NVARCHAR(50), @candidate2_port NVARCHAR(10), @candidate2_count BIGINT; "
+        "  SELECT @is_cached = is_cached, @was_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = CONVERT(NVARCHAR(10), r.redis_port), @assigned_cpp_id = c.cpp_server_id "
         "    FROM canvas_info c WITH (UPDLOCK, ROWLOCK) "
         "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id AND r.is_activated = 1 "
         "    WHERE c.canvas_id = @canvas_id; "
@@ -544,30 +596,49 @@ CanvasRedisAllocation MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, 
         "  SELECT @my_cpp_id = server_id FROM cpp_server WHERE server_ip = @cpp_ip AND server_port = @cpp_port AND is_activated = 1; "
         "  IF @my_cpp_id IS NULL THROW 50001, 'C++ server is not registered or active', 1; "
         "  IF @is_cached IS NULL "
-        "  BEGIN "
-        "    SELECT 'NOT_FOUND' AS redis_ip, '0' AS redis_port, '0' AS was_cached; "
-        "  END "
+        "  BEGIN SET @redis_ip = N'NOT_FOUND'; SET @redis_port = N'0'; END "
         "  ELSE IF @is_cached = 1 AND @assigned_cpp_id IS NOT NULL AND @assigned_cpp_id != @my_cpp_id "
-        "  BEGIN "
-        "    SELECT 'WRONG_SERVER' AS redis_ip, '0' AS redis_port, '0' AS was_cached; "
-        "  END "
+        "  BEGIN SET @redis_ip = N'WRONG_SERVER'; SET @redis_port = N'0'; END "
         "  ELSE IF @is_cached = 1 AND @redis_ip IS NULL "
-        "  BEGIN "
-        "    SELECT 'ERROR' AS redis_ip, '0' AS redis_port, '1' AS was_cached; "
-        "  END "
+        "  BEGIN SET @redis_ip = N'ERROR'; SET @redis_port = N'0'; END "
         "  ELSE "
         "  BEGIN "
         "    IF @redis_ip IS NULL "
         "    BEGIN "
         "      DECLARE @new_redis_id INT; "
-        "      SELECT TOP 1 @new_redis_id = redis_id, @redis_ip = redis_ip, @redis_port = redis_port FROM redis_server WHERE is_activated = 1 ORDER BY NEWID(); "
-        "      IF @new_redis_id IS NULL THROW 50002, 'No active Redis server is available', 1; "
+        "      DECLARE @redis_candidates TABLE (candidate_order INT IDENTITY(1,1) NOT NULL PRIMARY KEY, redis_id INT NOT NULL, redis_ip NVARCHAR(50) NOT NULL, redis_port NVARCHAR(10) NOT NULL, cached_canvas_count BIGINT NOT NULL); "
+        "      INSERT INTO @redis_candidates (redis_id, redis_ip, redis_port, cached_canvas_count) "
+        "      SELECT candidate.redis_id, candidate.redis_ip, CONVERT(NVARCHAR(10), candidate.redis_port), "
+        // The load count is a balancing estimate, so avoid shared locks on other
+        // canvases while this transaction already holds the target row for update.
+        "             (SELECT COUNT_BIG(*) FROM canvas_info ci WITH (NOLOCK) WHERE ci.redis_id = candidate.redis_id AND ci.is_cached = 1) "
+        "      FROM (SELECT TOP (2) redis_id, redis_ip, redis_port FROM redis_server WHERE is_activated = 1 ORDER BY NEWID()) AS candidate; "
+        "      SELECT @candidate_count = COUNT(*) FROM @redis_candidates; "
+        "      IF @candidate_count = 0 THROW 50002, 'No active Redis server is available', 1; "
+        "      SELECT TOP (1) @new_redis_id = redis_id, @redis_ip = redis_ip, @redis_port = redis_port, @selected_canvas_count = cached_canvas_count "
+        "      FROM @redis_candidates ORDER BY cached_canvas_count ASC, NEWID(); "
+        "      SELECT @candidate1_ip = MAX(CASE WHEN candidate_order = 1 THEN redis_ip END), "
+        "             @candidate1_port = MAX(CASE WHEN candidate_order = 1 THEN redis_port END), "
+        "             @candidate1_count = MAX(CASE WHEN candidate_order = 1 THEN cached_canvas_count END), "
+        "             @candidate2_ip = MAX(CASE WHEN candidate_order = 2 THEN redis_ip END), "
+        "             @candidate2_port = MAX(CASE WHEN candidate_order = 2 THEN redis_port END), "
+        "             @candidate2_count = MAX(CASE WHEN candidate_order = 2 THEN cached_canvas_count END) "
+        "      FROM @redis_candidates; "
+        "      SET @allocation_strategy = CASE WHEN @candidate_count = 1 THEN N'SINGLE' ELSE N'P2C' END; "
         "      UPDATE canvas_info SET redis_id = @new_redis_id WHERE canvas_id = @canvas_id; "
         "    END "
+        "    ELSE SET @allocation_strategy = N'EXISTING'; "
         "    UPDATE canvas_info SET is_cached = 1, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = @canvas_id; "
-        "    SELECT @redis_ip AS redis_ip, @redis_port AS redis_port, CONVERT(VARCHAR(5), @was_cached) AS was_cached; "
         "  END "
-        "COMMIT TRAN; "
+        "  COMMIT TRAN; "
+        "  SELECT COALESCE(@redis_ip, N'') AS redis_ip, COALESCE(@redis_port, N'') AS redis_port, "
+        "         CONVERT(VARCHAR(5), @was_cached) AS was_cached, @allocation_strategy AS allocation_strategy, "
+        "         CONVERT(VARCHAR(10), @candidate_count) AS candidate_count, "
+        "         COALESCE(@candidate1_ip, N'') AS candidate1_ip, COALESCE(@candidate1_port, N'') AS candidate1_port, "
+        "         COALESCE(CONVERT(VARCHAR(20), @candidate1_count), '') AS candidate1_count, "
+        "         COALESCE(@candidate2_ip, N'') AS candidate2_ip, COALESCE(@candidate2_port, N'') AS candidate2_port, "
+        "         COALESCE(CONVERT(VARCHAR(20), @candidate2_count), '') AS candidate2_count, "
+        "         COALESCE(CONVERT(VARCHAR(20), @selected_canvas_count), '') AS selected_canvas_count; "
         "END TRY "
         "BEGIN CATCH "
         "IF @@TRANCOUNT > 0 ROLLBACK TRAN; "
@@ -577,47 +648,189 @@ CanvasRedisAllocation MssqlClient::getOrAllocateRedisAndSetCached(int canvasId, 
        .addVarchar("@cpp_port", std::to_string(cppServerPort));
 
     if (!executeSql(dbproc, sql)) {
-        return {"ERROR", 0, false};
+        recordFailure("Could not execute the Redis allocation transaction", "DB_QUERY_FAILED");
+        return failedAllocation();
     }
 
-    char redis_ip_buf[64] = {0};
+    char redis_ip_buf[128] = {0};
     char redis_port_buf[32] = {0};
     char was_cached_buf[16] = {0};
+    char strategy_buf[32] = {0};
+    char candidate_count_buf[16] = {0};
+    char candidate1_ip_buf[128] = {0};
+    char candidate1_port_buf[32] = {0};
+    char candidate1_count_buf[32] = {0};
+    char candidate2_ip_buf[128] = {0};
+    char candidate2_port_buf[32] = {0};
+    char candidate2_count_buf[32] = {0};
+    char selected_count_buf[32] = {0};
+    const auto bindText = [&dbproc](int column, std::size_t size, BYTE* buffer) {
+        return dbbind(dbproc.get(), column, NTBSTRINGBIND, static_cast<DBINT>(size), buffer) == SUCCEED;
+    };
+
     std::string found_ip;
+    std::string allocation_strategy;
     int found_port = 0;
     bool was_cached = false;
-
+    std::int64_t selected_cached_canvas_count = -1;
+    std::vector<RedisAllocationCandidate> candidates;
+    bool result_failed = false;
+    bool bind_failed = false;
+    std::string result_failure_stage;
     RETCODE ret;
     while ((ret = dbresults(dbproc)) != NO_MORE_RESULTS) {
-        if (ret == FAIL) break;
-        if (DBROWS(dbproc)) {
-            dbbind(dbproc, 1, NTBSTRINGBIND, 0, (BYTE*)redis_ip_buf);
-            dbbind(dbproc, 2, NTBSTRINGBIND, 0, (BYTE*)redis_port_buf);
-            dbbind(dbproc, 3, NTBSTRINGBIND, sizeof(was_cached_buf), (BYTE*)was_cached_buf);
+        if (ret == FAIL) {
+            result_failed = true;
+            result_failure_stage = "dbresults returned FAIL";
+            break;
+        }
+        if (!DBROWS(dbproc)) continue;
 
-            while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
-                if (ret == FAIL) break;
-                if (strlen(redis_ip_buf) > 0) {
-                    found_ip = redis_ip_buf;
+        if (!bindText(1, sizeof(redis_ip_buf), reinterpret_cast<BYTE*>(redis_ip_buf))
+                || !bindText(2, sizeof(redis_port_buf), reinterpret_cast<BYTE*>(redis_port_buf))
+                || !bindText(3, sizeof(was_cached_buf), reinterpret_cast<BYTE*>(was_cached_buf))
+                || !bindText(4, sizeof(strategy_buf), reinterpret_cast<BYTE*>(strategy_buf))
+                || !bindText(5, sizeof(candidate_count_buf), reinterpret_cast<BYTE*>(candidate_count_buf))
+                || !bindText(6, sizeof(candidate1_ip_buf), reinterpret_cast<BYTE*>(candidate1_ip_buf))
+                || !bindText(7, sizeof(candidate1_port_buf), reinterpret_cast<BYTE*>(candidate1_port_buf))
+                || !bindText(8, sizeof(candidate1_count_buf), reinterpret_cast<BYTE*>(candidate1_count_buf))
+                || !bindText(9, sizeof(candidate2_ip_buf), reinterpret_cast<BYTE*>(candidate2_ip_buf))
+                || !bindText(10, sizeof(candidate2_port_buf), reinterpret_cast<BYTE*>(candidate2_port_buf))
+                || !bindText(11, sizeof(candidate2_count_buf), reinterpret_cast<BYTE*>(candidate2_count_buf))
+                || !bindText(12, sizeof(selected_count_buf), reinterpret_cast<BYTE*>(selected_count_buf))) {
+            bind_failed = true;
+            break;
+        }
+
+        while ((ret = dbnextrow(dbproc)) != NO_MORE_ROWS) {
+            if (ret == FAIL) {
+                result_failed = true;
+                result_failure_stage = "dbnextrow returned FAIL";
+                break;
+            }
+            found_ip = redis_ip_buf;
+            allocation_strategy = strategy_buf;
+            try { found_port = redis_port_buf[0] ? std::stoi(redis_port_buf) : 0; }
+            catch (...) { found_port = 0; }
+            was_cached = std::string(was_cached_buf) == "1";
+            try {
+                if (selected_count_buf[0]) selected_cached_canvas_count = std::stoll(selected_count_buf);
+                const int candidate_count = candidate_count_buf[0] ? std::stoi(candidate_count_buf) : 0;
+                if (candidate_count >= 1 && candidate1_ip_buf[0] && candidate1_port_buf[0] && candidate1_count_buf[0]) {
+                    candidates.push_back({candidate1_ip_buf, std::stoi(candidate1_port_buf), std::stoll(candidate1_count_buf)});
                 }
-                if (strlen(redis_port_buf) > 0) {
-                    try {
-                        found_port = std::stoi(redis_port_buf);
-                    } catch (...) {
-                        found_port = 0;
-                    }
+                if (candidate_count >= 2 && candidate2_ip_buf[0] && candidate2_port_buf[0] && candidate2_count_buf[0]) {
+                    candidates.push_back({candidate2_ip_buf, std::stoi(candidate2_port_buf), std::stoll(candidate2_count_buf)});
                 }
-                was_cached = std::string(was_cached_buf) == "1";
+            } catch (const std::exception&) {
+                result_failed = true;
+                result_failure_stage = "allocation result contains an invalid numeric value";
+                break;
+            } catch (...) {
+                result_failed = true;
+                result_failure_stage = "allocation result parsing failed";
+                break;
             }
         }
+        if (result_failed) break;
+    }
+
+    if (bind_failed) {
+        dbcancel(dbproc.get());
+        recordFailure("Could not read Redis allocation result columns", "DB_RESULT_BIND_FAILED");
+        return failedAllocation();
+    }
+    if (result_failed) {
+        dbcancel(dbproc.get());
+        std::string failure_detail = result_failure_stage.empty()
+                ? "unknown result processing failure" : result_failure_stage;
+        if (lastSqlServerMessageNumber != 0) {
+            failure_detail += "; SQL Server error " + std::to_string(lastSqlServerMessageNumber)
+                    + " (severity " + std::to_string(lastSqlServerMessageSeverity)
+                    + ", state " + std::to_string(lastSqlServerMessageState)
+                    + ", line " + std::to_string(lastSqlServerMessageLine) + ")";
+        }
+        recordFailure("Redis allocation result processing failed: " + failure_detail,
+                      "DB_ALLOCATION_RESULT_FAILED");
+        return failedAllocation();
+    }
+
+    if (found_ip == "NOT_FOUND" || found_ip == "WRONG_SERVER" || found_ip == "ERROR") {
+        const bool is_error = found_ip == "ERROR";
+        const std::string message = found_ip == "NOT_FOUND"
+                ? "Canvas does not exist in the allocation table"
+                : found_ip == "WRONG_SERVER"
+                    ? "Canvas is already allocated to another C++ server"
+                    : "Canvas is marked cached but has no active Redis assignment";
+        ElasticsearchBulkLogBuffer::instance().record(
+            "redis-load-balancer", "canvas_redis_allocation", is_error ? "ERROR" : "WARN", message,
+            {{"canvas_id", canvasId}, {"allocation_strategy", allocation_strategy}},
+            is_error ? "failure" : "rejected", found_ip);
+        std::cerr << "[MssqlClient][RedisLB] Canvas #" << canvasId << " allocation "
+                  << (is_error ? "failed" : "rejected") << ": " << message << "\n";
+        auto allocation = failedAllocation();
+        allocation.redis_ip = found_ip;
+        allocation.was_cached = was_cached;
+        allocation.allocation_strategy = allocation_strategy;
+        return allocation;
     }
 
     if (found_ip.empty() || found_port <= 0) {
-        std::cerr << "[MssqlClient] Canvas #" << canvasId << " allocation returned no usable Redis endpoint\n";
-        return {"ERROR", 0, was_cached};
+        recordFailure("Allocation returned no usable Redis endpoint", "DB_INVALID_REDIS_ENDPOINT");
+        auto allocation = failedAllocation();
+        allocation.was_cached = was_cached;
+        return allocation;
     }
-    std::cout << "[MssqlClient] Canvas #" << canvasId << " assigned Redis from DB: " << found_ip << ":" << found_port << "\n";
-    return {found_ip, found_port, was_cached};
+
+    nlohmann::json candidate_details = nlohmann::json::array();
+    for (const auto& candidate : candidates) {
+        candidate_details.push_back({
+            {"redis_ip", candidate.redis_ip},
+            {"redis_port", candidate.redis_port},
+            {"cached_canvas_count", candidate.cached_canvas_count}
+        });
+    }
+    const nlohmann::json selected_load = selected_cached_canvas_count >= 0
+            ? nlohmann::json(selected_cached_canvas_count)
+            : nlohmann::json(nullptr);
+    const nlohmann::json allocation_details = {
+        {"canvas_id", canvasId},
+        {"strategy", allocation_strategy},
+        {"candidates", candidate_details},
+        {"selected_redis_ip", found_ip},
+        {"selected_redis_port", found_port},
+        {"selected_cached_canvas_count", selected_load},
+        {"was_cached", was_cached}
+    };
+    ElasticsearchBulkLogBuffer::instance().record(
+        "redis-load-balancer", "canvas_redis_allocation", "INFO",
+        "Selected Redis service for canvas allocation", allocation_details, "success");
+
+    std::cout << "[MssqlClient][RedisLB] Canvas #" << canvasId << " strategy="
+              << allocation_strategy << " candidates=";
+    if (candidates.empty()) {
+        std::cout << "existing-assignment";
+    } else {
+        for (std::size_t i = 0; i < candidates.size(); ++i) {
+            if (i) std::cout << ',';
+            std::cout << candidates[i].redis_ip << ':' << candidates[i].redis_port
+                      << "(cached_canvases=" << candidates[i].cached_canvas_count << ')';
+        }
+    }
+    std::cout << " selected=" << found_ip << ':' << found_port;
+    if (selected_cached_canvas_count >= 0) {
+        std::cout << "(cached_canvases=" << selected_cached_canvas_count << ')';
+    }
+    std::cout << "\n";
+
+    CanvasRedisAllocation allocation;
+    allocation.redis_ip = found_ip;
+    allocation.redis_port = found_port;
+    allocation.was_cached = was_cached;
+    allocation.allocation_strategy = allocation_strategy;
+    allocation.candidates = std::move(candidates);
+    allocation.selected_cached_canvas_count = selected_cached_canvas_count;
+    return allocation;
 }
 
 bool MssqlClient::updateCanvasUncached(int canvasId, const std::string& cppServerIp, int cppServerPort) {

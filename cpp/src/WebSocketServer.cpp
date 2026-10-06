@@ -72,6 +72,14 @@ private:
     bool enabled_{true};
 };
 
+struct ActiveWebSocketResponseTracker {
+    const void* socket{nullptr};
+    bool responded{false};
+    bool send_dropped{false};
+};
+
+thread_local ActiveWebSocketResponseTracker* active_websocket_response_tracker = nullptr;
+
 template <typename SocketType>
 static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS::OpCode opcode) {
     std::string outgoing(payload);
@@ -91,7 +99,7 @@ static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS
                 const bool correlated_response = failed
                     || (type.size() >= 7 && type.compare(type.size() - 7, 7, "_result") == 0)
                     || type == "chat_history" || type == "chat" || type == "pong" || type == "rtc_ready"
-                    || type == "rtc_disconnected" || type == "rtc_peers";
+                    || type == "rtc_disconnected" || type == "rtc_peers" || type == "request_ack";
                 const bool valid_response_id = message.contains("request_id")
                     && message["request_id"].is_string()
                     && agora::logging::isValidRequestId(message["request_id"].get<std::string>());
@@ -103,8 +111,68 @@ static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS
         } catch (...) {
         }
     }
-    return ws->send(outgoing, opcode);
+    const auto status = ws->send(outgoing, opcode);
+    if (active_websocket_response_tracker
+        && active_websocket_response_tracker->socket == static_cast<const void*>(ws)) {
+        if (status == WebSocketServer::Socket::DROPPED) {
+            active_websocket_response_tracker->send_dropped = true;
+        } else {
+            active_websocket_response_tracker->responded = true;
+        }
+    }
+    return status;
 }
+
+class WebSocketMessageResponseScope {
+public:
+    explicit WebSocketMessageResponseScope(WebSocketServer::Socket* socket)
+        : socket_(socket), previous_(active_websocket_response_tracker), tracker_{socket, false} {
+        active_websocket_response_tracker = &tracker_;
+    }
+
+    WebSocketMessageResponseScope(const WebSocketMessageResponseScope&) = delete;
+    WebSocketMessageResponseScope& operator=(const WebSocketMessageResponseScope&) = delete;
+
+    void acknowledge(const std::string& request_type) {
+        std::string safe_type;
+        safe_type.reserve(std::min<std::size_t>(request_type.size(), 64));
+        for (unsigned char character : request_type) {
+            if (safe_type.size() >= 64) break;
+            if (std::isalnum(character) || character == '_' || character == '-') safe_type.push_back(character);
+        }
+        fallback_ = nlohmann::json{{"type", "request_ack"}, {"status", "accepted"}};
+        if (!safe_type.empty()) fallback_["request_type"] = std::move(safe_type);
+    }
+
+    void reject(const std::string& code) {
+        fallback_ = nlohmann::json{{"type", "error"}, {"code", code}};
+    }
+
+    void ignore() { tracker_.responded = true; }
+
+    ~WebSocketMessageResponseScope() {
+        if (!tracker_.responded && socket_ && !socket_->getUserData()->closing) {
+            try {
+                const nlohmann::json fallback = tracker_.send_dropped
+                    ? nlohmann::json{{"type", "error"}, {"code", "RESPONSE_BACKPRESSURE"}}
+                    : fallback_;
+                const auto status = sendWithRequestContext(socket_, fallback.dump(), uWS::OpCode::TEXT);
+                if (status == WebSocketServer::Socket::DROPPED) {
+                    socket_->end(1013, "Request response could not be delivered");
+                }
+            } catch (...) {
+                socket_->end(1013, "Request response could not be delivered");
+            }
+        }
+        active_websocket_response_tracker = previous_;
+    }
+
+private:
+    WebSocketServer::Socket* socket_;
+    ActiveWebSocketResponseTracker* previous_;
+    ActiveWebSocketResponseTracker tracker_;
+    nlohmann::json fallback_{{"type", "error"}, {"code", "INVALID_EVENT"}};
+};
 
 static void recordWebSocketHandshake(const std::string& request_id,
                                     const std::string& parent_request_id,
@@ -2104,7 +2172,6 @@ void WebSocketServer::runServer() {
             const std::string handshake_request_id = agora::logging::acceptedRequestId(
                 req->getHeader("x-request-id"));
             const auto handshake_started_at = std::chrono::steady_clock::now();
-            res->writeHeader("X-Request-ID", handshake_request_id);
             agora::logging::RequestLogContextScope request_context(
                 handshake_request_id, "websocket.handshake");
             if (!accepting_) {
@@ -2112,7 +2179,9 @@ void WebSocketServer::runServer() {
                     "ERROR", "failure", "WS_SERVER_SHUTTING_DOWN",
                     "WebSocket handshake rejected while server is shutting down",
                     elapsedMilliseconds(handshake_started_at));
-                res->writeStatus("503 Service Unavailable")->end("Server is shutting down");
+                res->writeStatus("503 Service Unavailable")
+                    ->writeHeader("X-Request-ID", handshake_request_id)
+                    ->end("Server is shutting down");
                 return;
             }
             int canvas_id = 0;
@@ -2138,7 +2207,9 @@ void WebSocketServer::runServer() {
                     "WebSocket handshake rejected because canvas_id is missing or invalid",
                     elapsedMilliseconds(handshake_started_at));
                 std::cout << "[uWebSockets] Upgrade rejected: 400 Bad Request (canvas_id is required)" << std::endl;
-                res->writeStatus("400 Bad Request")->end("canvas_id is required");
+                res->writeStatus("400 Bad Request")
+                    ->writeHeader("X-Request-ID", handshake_request_id)
+                    ->end("canvas_id is required");
                 return;
             }
 
@@ -2157,7 +2228,9 @@ void WebSocketServer::runServer() {
                     "ERROR", "failure", "WS_AUTH_WORKERS_BUSY",
                     "WebSocket authentication worker capacity is exhausted",
                     elapsedMilliseconds(handshake_started_at));
-                res->writeStatus("503 Service Unavailable")->end("Authentication workers are busy");
+                res->writeStatus("503 Service Unavailable")
+                    ->writeHeader("X-Request-ID", handshake_request_id)
+                    ->end("Authentication workers are busy");
                 return;
             }
             auto request_active = std::make_shared<std::atomic<bool>>(true);
@@ -2218,6 +2291,7 @@ void WebSocketServer::runServer() {
                                         elapsedMilliseconds(handshake_started_at));
                                     response->resume();
                                     response->writeStatus("503 Service Unavailable")
+                                        ->writeHeader("X-Request-ID", handshake_request_id)
                                         ->end("Server is shutting down");
                                     endBlockingWorker();
                                     return;
@@ -2235,6 +2309,7 @@ void WebSocketServer::runServer() {
                                     std::cout << "[uWebSockets] Upgrade rejected: 401 Unauthorized (Invalid, missing, or unauthorized JWT token for canvas #"
                                               << canvas_id << ")" << std::endl;
                                     response->writeStatus("401 Unauthorized")
+                                        ->writeHeader("X-Request-ID", handshake_request_id)
                                         ->end("Invalid, missing, or unauthorized JWT token");
                                     endBlockingWorker();
                                     return;
@@ -2275,6 +2350,7 @@ void WebSocketServer::runServer() {
                                             "WebSocket canvas connection proof could not be created",
                                             elapsedMilliseconds(handshake_started_at));
                                         response->writeStatus("503 Service Unavailable")
+                                            ->writeHeader("X-Request-ID", handshake_request_id)
                                             ->end("Canvas connection proof could not be created");
                                         endBlockingWorker();
                                         return;
@@ -2311,6 +2387,7 @@ void WebSocketServer::runServer() {
                     elapsedMilliseconds(handshake_started_at));
                 response->resume();
                 response->writeStatus("503 Service Unavailable")
+                    ->writeHeader("X-Request-ID", handshake_request_id)
                     ->end("Authentication worker could not be started");
             }
         },
@@ -2549,14 +2626,19 @@ void WebSocketServer::runServer() {
         .message = [this](auto* ws, std::string_view message, uWS::OpCode opCode) {
             PerSocketData* data = ws->getUserData();
             if (data->closing) return;
+            WebSocketRequestLogScope request_log(data->canvas_id, data->user_id,
+                                                   data->parent_request_id);
+            WebSocketMessageResponseScope response(ws);
             if (!data->access_authorized) {
+                sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
+                    {"code", "CANVAS_ACCESS_UNAUTHORIZED"}}.dump(), uWS::OpCode::TEXT);
                 closeSocketSession(ws, 1008, "Canvas access is not authorized");
                 return;
             }
-            if (shutdown_preparing_) return;
-
-            WebSocketRequestLogScope request_log(data->canvas_id, data->user_id,
-                                                   data->parent_request_id);
+            if (shutdown_preparing_) {
+                response.reject("SERVER_RESTARTING");
+                return;
+            }
             
             long long current_time = std::time(nullptr);
             if (current_time != data->last_reset_time) {
@@ -2567,338 +2649,411 @@ void WebSocketServer::runServer() {
             
             if (data->message_count > 100) {
                 agora::logging::markCurrentRequestRejected("RATE_LIMITED");
+                response.reject("RATE_LIMITED");
                 return;
             }
 
-            if (opCode == uWS::OpCode::TEXT) {
+            if (opCode != uWS::OpCode::TEXT) {
+                request_log.setOperation("websocket.binary_message");
+                agora::logging::markCurrentRequestRejected("UNSUPPORTED_FRAME");
+                response.reject("UNSUPPORTED_FRAME");
+                return;
+            }
+
+            {
                 bool parsed_json = false;
                 try {
                     auto event = nlohmann::json::parse(message);
                     parsed_json = true;
-                    const std::string event_type = event.is_object() && event.contains("type")
-                        && event["type"].is_string() ? event["type"].get<std::string>() : "unknown";
-                    request_log.setOperation(event_type);
-                    const bool has_valid_request_id = event.is_object() && event.contains("request_id")
-                        && event["request_id"].is_string()
-                        && agora::logging::isValidRequestId(event["request_id"].get<std::string>());
-                    if (has_valid_request_id) request_log.setRequestId(event["request_id"].get<std::string>());
-                    const bool request_id_response_type = event_type == "chat_history"
-                        || (event_type.rfind("canvas_settings_", 0) == 0);
-                    if ((request_id_response_type || (event_type == "chat"
-                            && event.contains("request_id") && event["request_id"].is_string()))
-                        && event.is_object() && !has_valid_request_id) {
-                        event["request_id"] = agora::logging::currentRequestLogContext().request_id;
-                    }
-                    if (event_type == "ping") {
-                        request_log.disable();
-                        nlohmann::json pong = {
-                            {"type", "pong"},
-                            {"canvas_id", data->canvas_id},
-                            {"timestamp", static_cast<long long>(time(nullptr))}
-                        };
-                        sendWithRequestContext(ws, pong.dump(), uWS::OpCode::TEXT);
-                        return;
-                    }
-                    if (data->permission_update_pending) {
-                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
-                            {"code", "SETTINGS_UPDATE_PENDING"}}.dump(), uWS::OpCode::TEXT);
-                        return;
-                    }
-
-                    if (data->rtc_signaling_only) {
-                        if (!event.is_object() || !event.contains("type") || !event["type"].is_string()) {
-                            sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
+                    auto processEvent = [&](nlohmann::json event) {
+                        WebSocketRequestLogScope request_log(data->canvas_id, data->user_id, data->parent_request_id);
+                        WebSocketMessageResponseScope response(ws);
+                        if (data->closing) { response.reject("CANVAS_PERSISTENCE_UNAVAILABLE"); return; }
+                        const std::string event_type = event.is_object() && event.contains("type")
+                            && event["type"].is_string() ? event["type"].get<std::string>() : "unknown";
+                        request_log.setOperation(event_type);
+                        const bool has_valid_request_id = event.is_object() && event.contains("request_id")
+                            && event["request_id"].is_string()
+                            && agora::logging::isValidRequestId(event["request_id"].get<std::string>());
+                        if (has_valid_request_id) request_log.setRequestId(event["request_id"].get<std::string>());
+                        const bool request_id_response_type = event_type == "chat_history"
+                            || (event_type.rfind("canvas_settings_", 0) == 0);
+                        if ((request_id_response_type || (event_type == "chat"
+                                && event.contains("request_id") && event["request_id"].is_string()))
+                            && event.is_object() && !has_valid_request_id) {
+                            event["request_id"] = agora::logging::currentRequestLogContext().request_id;
+                        }
+                        if (event_type == "pong") {
+                            request_log.disable();
+                            response.ignore();
                             return;
                         }
-                        const std::string rtc_type = event["type"].get<std::string>();
-                        if (rtc_type == "rtc_join") announceRtcPeer(ws, event);
-                        else if (rtc_type == "rtc_disconnect") {
-                            detachRtcPeer(ws);
-                            sendWithRequestContext(ws, "{\"type\":\"rtc_disconnected\"}", uWS::OpCode::TEXT);
-                        } else if (rtc_type == "rtc_list") {
-                            if (data->rtc_peer_id.empty()) {
-                                sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_NOT_JOINED\"}", uWS::OpCode::TEXT);
-                            } else if (!sendRtcPeerList(ws)) {
-                                closeSocketSession(ws, 1013, "RTC peer list could not be delivered");
+                        if (event_type == "ping") {
+                            request_log.disable();
+                            nlohmann::json pong = {
+                                {"type", "pong"},
+                                {"canvas_id", data->canvas_id},
+                                {"timestamp", static_cast<long long>(time(nullptr))}
+                            };
+                            sendWithRequestContext(ws, pong.dump(), uWS::OpCode::TEXT);
+                            return;
+                        }
+                        if (data->permission_update_pending) {
+                            sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
+                                {"code", "SETTINGS_UPDATE_PENDING"}}.dump(), uWS::OpCode::TEXT);
+                            return;
+                        }
+
+                        if (data->rtc_signaling_only) {
+                            if (!event.is_object() || !event.contains("type") || !event["type"].is_string()) {
+                                sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
+                                return;
                             }
-                        } else if (rtc_type == "rtc_signal") handleRtcSignal(ws, event);
-                        else sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
-                        return;
-                    }
-
-                    if (event.is_object() && event.contains("type") && event["type"].is_string()
-                        && event["type"].get<std::string>().rfind("canvas_settings_", 0) == 0) {
-                        try {
-                            handleCanvasSettings(ws, event);
-                        } catch (const std::exception& e) {
-                            std::cerr << "[uWebSockets] Canvas settings event rejected: " << e.what() << "\n";
-                            sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
-                                                    {"code", "SETTINGS_INVALID_INPUT"}}.dump(), uWS::OpCode::TEXT);
-                        }
-                        return;
-                    }
-
-                    if (event.is_object()) {
-                        // Socket metadata is authoritative; clients cannot spoof identities or canvas.
-                        event["canvas_id"] = data->canvas_id;
-                        // Internal database identities never cross the WebSocket boundary.
-                        event.erase("user_id");
-                        event.erase("userId");
-                        event.erase("sender_id");
-                        event.erase("senderId");
-                        event.erase("sender_user_id");
-                        event.erase("self_user_id");
-                        if (event.value("type", "") == "chat") {
-                            // Public chat payloads use the nickname/tag pair,
-                            // while internal authorization keeps the DB user ID.
-                            event.erase("tagNumber");
-                            event["sender"] = data->nickname;
-                            event["tag_number"] = data->tag_number;
-                        } else {
-                            // Keep database identity server-side. Public events use
-                            // canvas/item fields only and never expose user IDs.
-                        }
-                        const std::string event_type = event.value("type", "");
-                        if (event_type.rfind("rtc_", 0) == 0) {
-                            sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "RTC_SEPARATE_CHANNEL_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                            const std::string rtc_type = event["type"].get<std::string>();
+                            response.acknowledge(rtc_type);
+                            if (rtc_type == "rtc_join") announceRtcPeer(ws, event);
+                            else if (rtc_type == "rtc_disconnect") {
+                                detachRtcPeer(ws);
+                                sendWithRequestContext(ws, "{\"type\":\"rtc_disconnected\"}", uWS::OpCode::TEXT);
+                            } else if (rtc_type == "rtc_list") {
+                                if (data->rtc_peer_id.empty()) {
+                                    sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_NOT_JOINED\"}", uWS::OpCode::TEXT);
+                                } else if (!sendRtcPeerList(ws)) {
+                                    closeSocketSession(ws, 1013, "RTC peer list could not be delivered");
+                                }
+                            } else if (rtc_type == "rtc_signal") handleRtcSignal(ws, event);
+                            else sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"RTC_SIGNAL_INVALID\"}", uWS::OpCode::TEXT);
                             return;
                         }
-                        if (event_type == "item_crdt_change") {
-                            sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+
+                        if (event.is_object() && event.contains("type") && event["type"].is_string()
+                            && event["type"].get<std::string>().rfind("canvas_settings_", 0) == 0) {
+                            response.acknowledge(event_type);
+                            try {
+                                handleCanvasSettings(ws, event);
+                            } catch (const std::exception& e) {
+                                std::cerr << "[uWebSockets] Canvas settings event rejected: " << e.what() << "\n";
+                                sendWithRequestContext(ws, nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
+                                                        {"code", "SETTINGS_INVALID_INPUT"}}.dump(), uWS::OpCode::TEXT);
+                            }
                             return;
                         }
-                        nlohmann::json* collaborative_payload = nullptr;
-                        if (event.contains("item") && event["item"].is_object()) collaborative_payload = &event["item"];
-                        else if (event.contains("data") && event["data"].is_object()) collaborative_payload = &event["data"];
-                        if (collaborative_payload && event_type != "item_save"
-                            && event_type != "item_delete" && event_type != "delete_item") {
-                            const std::string item_kind = collaborative_payload->value("kind", "");
-                            if (item_kind == "text" || item_kind == "note" || item_kind == "code"
-                                || collaborative_payload->contains("text") || collaborative_payload->contains("code")
-                                || collaborative_payload->contains("automerge_snapshot")
-                                || collaborative_payload->contains("automerge_changes")) {
+
+                        if (event.is_object()) {
+                            // Socket metadata is authoritative; clients cannot spoof identities or canvas.
+                            event["canvas_id"] = data->canvas_id;
+                            // Internal database identities never cross the WebSocket boundary.
+                            event.erase("user_id");
+                            event.erase("userId");
+                            event.erase("sender_id");
+                            event.erase("senderId");
+                            event.erase("sender_user_id");
+                            event.erase("self_user_id");
+                            if (event.value("type", "") == "chat") {
+                                // Public chat payloads use the nickname/tag pair,
+                                // while internal authorization keeps the DB user ID.
+                                event.erase("tagNumber");
+                                event["sender"] = data->nickname;
+                                event["tag_number"] = data->tag_number;
+                            } else {
+                                // Keep database identity server-side. Public events use
+                                // canvas/item fields only and never expose user IDs.
+                            }
+                            const std::string event_type = event.value("type", "");
+                            if (event_type.rfind("rtc_", 0) == 0) {
+                                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "RTC_SEPARATE_CHANNEL_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                                return;
+                            }
+                            if (event_type == "item_crdt_change") {
                                 sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                                 return;
                             }
-                        }
-                        if (event_type == "item_save") {
-                            const std::size_t serialized_item_save_size = event.dump().size();
-                            const std::string item_kind = collaborative_payload
-                                ? collaborative_payload->value("kind", "") : "";
-                            if (!collaborative_payload
-                                || (item_kind != "text" && item_kind != "note" && item_kind != "code")
-                                || !collaborative_payload->contains("automerge_snapshot")
-                                || !(*collaborative_payload)["automerge_snapshot"].is_string()
-                                || (*collaborative_payload)["automerge_snapshot"].get<std::string>().size() > 12582912
-                                || !collaborative_payload->contains("automerge_changes")
-                                || !(*collaborative_payload)["automerge_changes"].is_array()
-                                || (*collaborative_payload)["automerge_changes"].size() > 100000
-                                || serialized_item_save_size > 12582912) {
-                                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
-                                return;
-                            }
-                            const std::string expected_field = item_kind == "code" ? "code" : "text";
-                            for (const auto& change : (*collaborative_payload)["automerge_changes"]) {
-                                if (!change.is_object() || !change.contains("field") || !change["field"].is_string()
-                                    || change["field"].get<std::string>() != expected_field
-                                    || !change.contains("change") || !change["change"].is_string()
-                                    || change["change"].get<std::string>().empty()
-                                    || change["change"].get<std::string>().size() > 1048576) {
-                                    sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
-                                    return;
-                                }
-                            }
-                        }
-                        if (event_type == "chat") {
-                            handleChatEvent(ws, std::move(event));
-                            return;
-                        }
-                        if (event_type == "chat_history") {
-                            handleChatHistoryRequest(ws, event);
-                            return;
-                        }
-                        const bool bulk_items = event.contains("items") && event["items"].is_object();
-                        if (bulk_items) {
-                            for (const auto& [bulk_id, bulk_item] : event["items"].items()) {
-                                (void)bulk_id;
-                                const std::string bulk_kind = bulk_item.is_object() ? bulk_item.value("kind", "") : "";
-                                if (bulk_kind == "text" || bulk_kind == "note" || bulk_kind == "code"
-                                    || (bulk_item.is_object() && (bulk_item.contains("text") || bulk_item.contains("code")
-                                        || bulk_item.contains("automerge_snapshot") || bulk_item.contains("automerge_changes")))) {
+                            nlohmann::json* collaborative_payload = nullptr;
+                            if (event.contains("item") && event["item"].is_object()) collaborative_payload = &event["item"];
+                            else if (event.contains("data") && event["data"].is_object()) collaborative_payload = &event["data"];
+                            if (collaborative_payload && event_type != "item_save"
+                                && event_type != "item_delete" && event_type != "delete_item") {
+                                const std::string item_kind = collaborative_payload->value("kind", "");
+                                if (item_kind == "text" || item_kind == "note" || item_kind == "code"
+                                    || collaborative_payload->contains("text") || collaborative_payload->contains("code")
+                                    || collaborative_payload->contains("automerge_snapshot")
+                                    || collaborative_payload->contains("automerge_changes")) {
                                     sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
                                     return;
                                 }
                             }
-                        }
-                        const std::string item_key = eventItemKey(event);
-                        const bool delete_item = event_type == "item_delete" || event_type == "delete_item";
-                        const bool item_mutation = event_type.rfind("item_", 0) == 0
-                            || event_type == "delete_item" || event.contains("item")
-                            || event.contains("data") || event.contains("permission")
-                            || event.contains("items");
-                        const bool malformed_item_event = !bulk_items && item_key.empty() && item_mutation;
-                        const bool item_event = bulk_items || !item_key.empty() || malformed_item_event;
-                        std::unordered_set<std::string> incoming_groups;
-                        const bool permission_payload_valid = !malformed_item_event
-                            && (bulk_items || delete_item || item_key.empty()
-                                || normalizeItemEventPermission(event, incoming_groups));
-                        if (!bulk_items) {
-                            nlohmann::json* item_payload = nullptr;
-                            if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
-                            else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
-                            if (item_payload) normalizeChatRoomItem(*item_payload);
-                        } else {
-                            for (auto& [id, item] : event["items"].items()) {
-                                (void)id;
-                                if (isChatRoomItem(item) && !item.contains("data")) {
-                                    item["data"] = nlohmann::json::array();
+                            if (event_type == "item_save") {
+                                const std::size_t serialized_item_save_size = event.dump().size();
+                                const std::string item_kind = collaborative_payload
+                                    ? collaborative_payload->value("kind", "") : "";
+                                if (!collaborative_payload
+                                    || (item_kind != "text" && item_kind != "note" && item_kind != "code")
+                                    || !collaborative_payload->contains("automerge_snapshot")
+                                    || !(*collaborative_payload)["automerge_snapshot"].is_string()
+                                    || (*collaborative_payload)["automerge_snapshot"].get<std::string>().size() > 12582912
+                                    || !collaborative_payload->contains("automerge_changes")
+                                    || !(*collaborative_payload)["automerge_changes"].is_array()
+                                    || (*collaborative_payload)["automerge_changes"].size() > 100000
+                                    || serialized_item_save_size > 12582912) {
+                                    sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
+                                    return;
                                 }
-                                normalizeChatRoomItem(item);
-                            }
-                        }
-                        std::unordered_set<std::string> previous_groups;
-                        bool had_previous_item = false;
-                        std::unordered_map<std::string, std::unordered_set<std::string>> previous_canvas_permissions;
-                        auto restoreItemPermissions = [&]() {
-                            auto& permissions = item_permissions_by_canvas_[data->canvas_id];
-                            if (bulk_items) {
-                                permissions = previous_canvas_permissions;
-                            } else if (!item_key.empty()) {
-                                if (had_previous_item) permissions[item_key] = previous_groups;
-                                else permissions.erase(item_key);
-                            }
-                        };
-
-                        bool item_allowed = permission_payload_valid;
-                        if (bulk_items) {
-                            item_allowed = data->is_admin;
-                            if (item_allowed) {
-                                auto& permissions = item_permissions_by_canvas_[data->canvas_id];
-                                previous_canvas_permissions = permissions;
-                                permissions.clear();
-                                for (const auto& [id, item] : event["items"].items()) {
-                                    permissions[id] = permissionGroups(item);
-                                }
-                            }
-                        } else if (!item_key.empty()) {
-                            auto& permissions = item_permissions_by_canvas_[data->canvas_id];
-                            auto existing = permissions.find(item_key);
-                            if (existing != permissions.end()) {
-                                had_previous_item = true;
-                                previous_groups = existing->second;
-                                const auto rooms = chat_rooms_by_canvas_.find(data->canvas_id);
-                                const bool existing_chat_room = rooms != chat_rooms_by_canvas_.end()
-                                    && rooms->second.count(item_key) > 0;
-                                if (existing_chat_room && !data->is_admin) item_allowed = false;
-                                if (existing_chat_room && data->is_admin && !delete_item) {
-                                    nlohmann::json* item_payload = nullptr;
-                                    if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
-                                    else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
-                                    if (item_payload && isChatRoomItem(*item_payload) && !item_payload->contains("data")) {
-                                        event["_preserve_chat_history"] = true;
-                                        const auto sequences = chat_next_sequence_by_canvas_.find(data->canvas_id);
-                                        if (sequences != chat_next_sequence_by_canvas_.end()) {
-                                            const auto next = sequences->second.find(item_key);
-                                            if (next != sequences->second.end()) (*item_payload)["next_sequence"] = next->second;
-                                        }
+                                const std::string expected_field = item_kind == "code" ? "code" : "text";
+                                for (const auto& change : (*collaborative_payload)["automerge_changes"]) {
+                                    if (!change.is_object() || !change.contains("field") || !change["field"].is_string()
+                                        || change["field"].get<std::string>() != expected_field
+                                        || !change.contains("change") || !change["change"].is_string()
+                                        || change["change"].get<std::string>().empty()
+                                        || change["change"].get<std::string>().size() > 1048576) {
+                                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_INVALID"}}.dump(), uWS::OpCode::TEXT);
+                                        return;
                                     }
                                 }
-                                if (!data->is_admin) {
-                                    item_allowed = item_allowed && hasAnyGroup(data, existing->second)
-                                        && (delete_item || incoming_groups == existing->second);
-                                }
-                            } else if (!data->is_admin) {
-                                item_allowed = !delete_item && !incoming_groups.empty()
-                                    && hasAnyGroup(data, incoming_groups)
-                                    && groupsAreWithinUserGroups(data, incoming_groups);
                             }
-                            if (item_allowed) {
-                                if (!data->is_admin && !delete_item) {
-                                    nlohmann::json* item_payload = nullptr;
+                            if (event_type == "chat") {
+                                response.acknowledge(event_type);
+                                handleChatEvent(ws, std::move(event));
+                                return;
+                            }
+                            if (event_type == "chat_history") {
+                                response.acknowledge(event_type);
+                                handleChatHistoryRequest(ws, event);
+                                return;
+                            }
+                            const bool bulk_items = event.contains("items") && event["items"].is_object();
+                            if (bulk_items) {
+                                for (const auto& [bulk_id, bulk_item] : event["items"].items()) {
+                                    (void)bulk_id;
+                                    const std::string bulk_kind = bulk_item.is_object() ? bulk_item.value("kind", "") : "";
+                                    if (bulk_kind == "text" || bulk_kind == "note" || bulk_kind == "code"
+                                        || (bulk_item.is_object() && (bulk_item.contains("text") || bulk_item.contains("code")
+                                            || bulk_item.contains("automerge_snapshot") || bulk_item.contains("automerge_changes")))) {
+                                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "ITEM_SAVE_REQUIRED"}}.dump(), uWS::OpCode::TEXT);
+                                        return;
+                                    }
+                                }
+                            }
+                            const std::string item_key = eventItemKey(event);
+                            const bool delete_item = event_type == "item_delete" || event_type == "delete_item";
+                            const bool item_mutation = event_type.rfind("item_", 0) == 0
+                                || event_type == "delete_item" || event.contains("item")
+                                || event.contains("data") || event.contains("permission")
+                                || event.contains("items");
+                            const bool malformed_item_event = !bulk_items && item_key.empty() && item_mutation;
+                            const bool item_event = bulk_items || !item_key.empty() || malformed_item_event;
+                            std::unordered_set<std::string> incoming_groups;
+                            const bool permission_payload_valid = !malformed_item_event
+                                && (bulk_items || delete_item || item_key.empty()
+                                    || normalizeItemEventPermission(event, incoming_groups));
+                            if (!bulk_items) {
+                                nlohmann::json* item_payload = nullptr;
+                                if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
+                                else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
+                                if (item_payload) normalizeChatRoomItem(*item_payload);
+                            } else {
+                                for (auto& [id, item] : event["items"].items()) {
+                                    (void)id;
+                                    if (isChatRoomItem(item) && !item.contains("data")) {
+                                        item["data"] = nlohmann::json::array();
+                                    }
+                                    normalizeChatRoomItem(item);
+                                }
+                            }
+                            std::unordered_set<std::string> previous_groups;
+                            bool had_previous_item = false;
+                            std::unordered_map<std::string, std::unordered_set<std::string>> previous_canvas_permissions;
+                            auto restoreItemPermissions = [&]() {
+                                auto& permissions = item_permissions_by_canvas_[data->canvas_id];
+                                if (bulk_items) {
+                                    permissions = previous_canvas_permissions;
+                                } else if (!item_key.empty()) {
+                                    if (had_previous_item) permissions[item_key] = previous_groups;
+                                    else permissions.erase(item_key);
+                                }
+                            };
+
+                            bool item_allowed = permission_payload_valid;
+                            if (bulk_items) {
+                                item_allowed = data->is_admin;
+                                if (item_allowed) {
+                                    auto& permissions = item_permissions_by_canvas_[data->canvas_id];
+                                    previous_canvas_permissions = permissions;
+                                    permissions.clear();
+                                    for (const auto& [id, item] : event["items"].items()) {
+                                        permissions[id] = permissionGroups(item);
+                                    }
+                                }
+                            } else if (!item_key.empty()) {
+                                auto& permissions = item_permissions_by_canvas_[data->canvas_id];
+                                auto existing = permissions.find(item_key);
+                                if (existing != permissions.end()) {
+                                    had_previous_item = true;
+                                    previous_groups = existing->second;
+                                    const auto rooms = chat_rooms_by_canvas_.find(data->canvas_id);
+                                    const bool existing_chat_room = rooms != chat_rooms_by_canvas_.end()
+                                        && rooms->second.count(item_key) > 0;
+                                    if (existing_chat_room && !data->is_admin) item_allowed = false;
+                                    if (existing_chat_room && data->is_admin && !delete_item) {
+                                        nlohmann::json* item_payload = nullptr;
+                                        if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
+                                        else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
+                                        if (item_payload && isChatRoomItem(*item_payload) && !item_payload->contains("data")) {
+                                            event["_preserve_chat_history"] = true;
+                                            const auto sequences = chat_next_sequence_by_canvas_.find(data->canvas_id);
+                                            if (sequences != chat_next_sequence_by_canvas_.end()) {
+                                                const auto next = sequences->second.find(item_key);
+                                                if (next != sequences->second.end()) (*item_payload)["next_sequence"] = next->second;
+                                            }
+                                        }
+                                    }
+                                    if (!data->is_admin) {
+                                        item_allowed = item_allowed && hasAnyGroup(data, existing->second)
+                                            && (delete_item || incoming_groups == existing->second);
+                                    }
+                                } else if (!data->is_admin) {
+                                    item_allowed = !delete_item && !incoming_groups.empty()
+                                        && hasAnyGroup(data, incoming_groups)
+                                        && groupsAreWithinUserGroups(data, incoming_groups);
+                                }
+                                if (item_allowed) {
+                                    if (!data->is_admin && !delete_item) {
+                                        nlohmann::json* item_payload = nullptr;
+                                        if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
+                                        else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
+                                        if (item_payload && isChatRoomItem(*item_payload)) {
+                                            (*item_payload)["data"] = nlohmann::json::array();
+                                            (*item_payload)["next_sequence"] = 1;
+                                        }
+                                    }
+                                    const bool item_exists = permissions.find(item_key) != permissions.end();
+                                    if (!item_exists && data->is_admin && !delete_item) {
+                                        nlohmann::json* item_payload = nullptr;
+                                        if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
+                                        else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
+                                        if (item_payload && isChatRoomItem(*item_payload) && !item_payload->contains("data")) {
+                                            (*item_payload)["data"] = nlohmann::json::array();
+                                            (*item_payload)["next_sequence"] = 1;
+                                        }
+                                    }
+                                    if (delete_item) permissions.erase(item_key);
+                                    else permissions[item_key] = incoming_groups;
+                                }
+                            }
+
+                            if (item_event && !item_allowed) {
+                                nlohmann::json denied = {{"type", "error"}, {"code", "ITEM_ACCESS_DENIED"}};
+                                sendWithRequestContext(ws, denied.dump(), uWS::OpCode::TEXT);
+                                return;
+                            }
+                            if (hasCanvasPersistenceTarget(event)) {
+                                auto canvas = pool_.getCanvas(data->canvas_id);
+                                bool start_worker = false;
+                                if (!canvas || !canvas->enqueuePersistence(event, start_worker,
+                                        agora::logging::currentRequestLogContext().request_id,
+                                        agora::logging::currentRequestLogContext().parent_request_id)) {
+                                    restoreItemPermissions();
+                                    sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
+                                        {"code", "CANVAS_PERSISTENCE_UNAVAILABLE"}}.dump(), uWS::OpCode::TEXT);
+                                    closeSocketSession(ws, 1012, "Canvas is closing");
+                                    return;
+                                }
+                                response.acknowledge(event_type);
+                                agora::logging::setCurrentRequestOutcome("accepted");
+                                if (start_worker) {
+                                    try {
+                                        std::thread([canvas]() {
+                                            pthread_setname_np(pthread_self(), "agora-persist");
+                                            drainCanvasPersistenceQueue(canvas);
+                                        }).detach();
+                    } catch (...) {
+                                        canvas->cancelPersistenceQueue();
+                                        restoreItemPermissions();
+                                        sendWithRequestContext(ws, nlohmann::json{{"type", "error"},
+                                            {"code", "CANVAS_PERSISTENCE_UNAVAILABLE"}}.dump(), uWS::OpCode::TEXT);
+                                        closeSocketSession(ws, 1012, "Canvas persistence is unavailable");
+                                        return;
+                                    }
+                                }
+                            }
+                            if (item_event) ++authorization_epochs_by_canvas_[data->canvas_id];
+                            if (bulk_items) {
+                                auto& rooms = chat_rooms_by_canvas_[data->canvas_id];
+                                auto& sequences = chat_next_sequence_by_canvas_[data->canvas_id];
+                                rooms.clear();
+                                sequences.clear();
+                                for (const auto& [id, item] : event["items"].items()) {
+                                    if (isChatRoomItem(item)) {
+                                        rooms.insert(id);
+                                        sequences[id] = chatRoomNextSequence(item);
+                                    }
+                                }
+                            } else if (!item_key.empty()) {
+                                auto& rooms = chat_rooms_by_canvas_[data->canvas_id];
+                                auto& sequences = chat_next_sequence_by_canvas_[data->canvas_id];
+                                if (delete_item) {
+                                    rooms.erase(item_key);
+                                    sequences.erase(item_key);
+                                } else {
+                                    const nlohmann::json* item_payload = nullptr;
                                     if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
                                     else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
                                     if (item_payload && isChatRoomItem(*item_payload)) {
-                                        (*item_payload)["data"] = nlohmann::json::array();
-                                        (*item_payload)["next_sequence"] = 1;
+                                        rooms.insert(item_key);
+                                        sequences[item_key] = chatRoomNextSequence(*item_payload);
+                                    } else {
+                                        rooms.erase(item_key);
+                                        sequences.erase(item_key);
                                     }
                                 }
-                                const bool item_exists = permissions.find(item_key) != permissions.end();
-                                if (!item_exists && data->is_admin && !delete_item) {
-                                    nlohmann::json* item_payload = nullptr;
-                                    if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
-                                    else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
-                                    if (item_payload && isChatRoomItem(*item_payload) && !item_payload->contains("data")) {
-                                        (*item_payload)["data"] = nlohmann::json::array();
-                                        (*item_payload)["next_sequence"] = 1;
-                                    }
-                                }
-                                if (delete_item) permissions.erase(item_key);
-                                else permissions[item_key] = incoming_groups;
                             }
-                        }
-
-                        if (item_event && !item_allowed) {
-                            nlohmann::json denied = {{"type", "error"}, {"code", "ITEM_ACCESS_DENIED"}};
-                            sendWithRequestContext(ws, denied.dump(), uWS::OpCode::TEXT);
                             return;
                         }
-                        if (hasCanvasPersistenceTarget(event)) {
-                            auto canvas = pool_.getCanvas(data->canvas_id);
-                            bool start_worker = false;
-                            if (!canvas || !canvas->enqueuePersistence(event, start_worker,
-                                    agora::logging::currentRequestLogContext().request_id,
-                                    agora::logging::currentRequestLogContext().parent_request_id)) {
-                                restoreItemPermissions();
-                                closeSocketSession(ws, 1012, "Canvas is closing");
-                                return;
+                    };
+                    if (event.is_object() && event.value("type", std::string{}) == "item_batch") {
+                        request_log.setOperation("item_batch");
+                        if (event.contains("request_id") && event["request_id"].is_string()
+                            && agora::logging::isValidRequestId(event["request_id"].get<std::string>())) {
+                            request_log.setRequestId(event["request_id"].get<std::string>());
+                        }
+                        if (!event.contains("changes") || !event["changes"].is_array()
+                            || event["changes"].empty() || event["changes"].size() > 512) {
+                            response.reject("ITEM_BATCH_INVALID");
+                            return;
+                        }
+                        // Validate the envelope before dispatching. Each item still uses the
+                        // existing authorization, persistence and response path below.
+                        for (const auto& change : event["changes"]) {
+                            if (!change.is_object() || !change.contains("type") || !change["type"].is_string()
+                                || !change.contains("item_id") || !change.contains("request_id")
+                                || !change["request_id"].is_string()) {
+                                response.reject("ITEM_BATCH_INVALID"); return;
                             }
-                            agora::logging::setCurrentRequestOutcome("accepted");
-                            if (start_worker) {
-                                try {
-                                    std::thread([canvas]() {
-                                        pthread_setname_np(pthread_self(), "agora-persist");
-                                        drainCanvasPersistenceQueue(canvas);
-                                    }).detach();
-                                } catch (...) {
-                                    canvas->cancelPersistenceQueue();
-                                    restoreItemPermissions();
-                                    closeSocketSession(ws, 1012, "Canvas persistence is unavailable");
-                                    return;
-                                }
+                            const auto type = change["type"].get<std::string>();
+                            if (type != "item_update" && type != "item_delete") {
+                                response.reject("ITEM_BATCH_INVALID"); return;
+                            }
+                            if (type == "item_update" && (!change.contains("item") || !change["item"].is_object()
+                                || change["item"].value("kind", std::string{}) != "stroke")) {
+                                response.reject("ITEM_BATCH_INVALID"); return;
                             }
                         }
-                        if (item_event) ++authorization_epochs_by_canvas_[data->canvas_id];
-                        if (bulk_items) {
-                            auto& rooms = chat_rooms_by_canvas_[data->canvas_id];
-                            auto& sequences = chat_next_sequence_by_canvas_[data->canvas_id];
-                            rooms.clear();
-                            sequences.clear();
-                            for (const auto& [id, item] : event["items"].items()) {
-                                if (isChatRoomItem(item)) {
-                                    rooms.insert(id);
-                                    sequences[id] = chatRoomNextSequence(item);
-                                }
-                            }
-                        } else if (!item_key.empty()) {
-                            auto& rooms = chat_rooms_by_canvas_[data->canvas_id];
-                            auto& sequences = chat_next_sequence_by_canvas_[data->canvas_id];
-                            if (delete_item) {
-                                rooms.erase(item_key);
-                                sequences.erase(item_key);
-                            } else {
-                                const nlohmann::json* item_payload = nullptr;
-                                if (event.contains("item") && event["item"].is_object()) item_payload = &event["item"];
-                                else if (event.contains("data") && event["data"].is_object()) item_payload = &event["data"];
-                                if (item_payload && isChatRoomItem(*item_payload)) {
-                                    rooms.insert(item_key);
-                                    sequences[item_key] = chatRoomNextSequence(*item_payload);
-                                } else {
-                                    rooms.erase(item_key);
-                                    sequences.erase(item_key);
-                                }
-                            }
+                        const int batch_canvas_id = data->canvas_id;
+                        sendWithRequestContext(ws, nlohmann::json{{"type", "request_ack"},
+                            {"request_type", "item_batch"}, {"status", "accepted"}}.dump(), uWS::OpCode::TEXT);
+                        auto socket_is_indexed = [&]() {
+                            const auto sockets = sockets_by_canvas_.find(batch_canvas_id);
+                            return sockets != sockets_by_canvas_.end() && sockets->second.count(ws) != 0;
+                        };
+                        for (const auto& change : event["changes"]) {
+                            processEvent(change);
+                            if (!socket_is_indexed()) break;
+                            // Match the existing client's item confirmation ordering.
+                            processEvent(nlohmann::json{{"type", "ping"}});
+                            if (!socket_is_indexed()) break;
                         }
-                        return;
+                    } else {
+                        processEvent(std::move(event));
+                        response.ignore();
                     }
                 } catch (...) {
                     if (parsed_json) {
@@ -2906,20 +3061,10 @@ void WebSocketServer::runServer() {
                                  uWS::OpCode::TEXT);
                         return;
                     }
-                    // Opaque text payloads are ignored; general-purpose relay is disabled.
+                    // Invalid JSON is reported by the request response scope.
                     agora::logging::markCurrentRequestRejected("INVALID_JSON");
+                    response.reject("INVALID_JSON");
                 }
-            }
-
-            if (opCode != uWS::OpCode::TEXT) {
-                request_log.setOperation("websocket.binary_message");
-                agora::logging::markCurrentRequestRejected("UNSUPPORTED_FRAME");
-            }
-
-            if (data->rtc_signaling_only) {
-                sendWithRequestContext(ws, nlohmann::json{{"type", "error"}, {"code", "INVALID_EVENT"}}.dump(),
-                         uWS::OpCode::TEXT);
-                return;
             }
 
         },

@@ -70,23 +70,32 @@ public:
         return declarations;
     }
 
-    bool isValid() const {
-        if (statement_.empty() || statement_.size() > kMaxRpcTextBytes) return false;
+    std::string validationError() const {
+        if (statement_.empty()) return "statement is empty";
+        if (statement_.size() > kMaxStatementBytes) return "statement exceeds SQL statement limit";
         for (std::size_t i = 0; i < parameters_.size(); ++i) {
             const auto& parameter = parameters_[i];
-            if (!isValidName(parameter.name)) return false;
+            if (!isValidName(parameter.name)) return "invalid parameter name at index " + std::to_string(i);
             if ((parameter.type == ParameterType::Varchar || parameter.type == ParameterType::UnicodeText)
-                    && parameter.text_value.size() > kMaxRpcTextBytes) return false;
+                    && parameter.text_value.size() > kMaxRpcTextBytes) {
+                return "text parameter exceeds RPC text limit at index " + std::to_string(i);
+            }
             if (parameter.type == ParameterType::UnicodeMaxText
-                    && parameter.text_value.size() > kMaxBoundTextBytes) return false;
+                    && parameter.text_value.size() > kMaxBoundTextBytes) {
+                return "MAX text parameter exceeds bound text limit at index " + std::to_string(i);
+            }
             for (std::size_t j = 0; j < i; ++j) {
-                if (parameters_[j].name == parameter.name) return false;
+                if (parameters_[j].name == parameter.name) return "duplicate parameter name at index " + std::to_string(i);
             }
         }
         const std::string declarations = parameterDeclarations();
-        return declarations.size() <= kMaxRpcTextBytes;
+        if (declarations.size() > kMaxRpcTextBytes) return "parameter declarations exceed RPC text limit";
+        return {};
     }
 
+    bool isValid() const { return validationError().empty(); }
+
+    static constexpr std::size_t kMaxStatementBytes = 64 * 1024;
     static constexpr std::size_t kMaxRpcTextBytes = 4000;
     static constexpr std::size_t kMaxBoundTextBytes = 1024 * 1024;
 

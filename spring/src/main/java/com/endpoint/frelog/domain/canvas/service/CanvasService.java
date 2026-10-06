@@ -203,6 +203,18 @@ public class CanvasService {
     }
 
     @Transactional
+    public String updateRepresentativeImage(Integer canvasId, MultipartFile image, CustomUserDetails currentUser) {
+        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached())
+                ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
+        validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
+        if (image == null || image.isEmpty()) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이미지 파일을 선택하세요.");
+        }
+        return canvasResourceService.saveRepresentativeImage(canvasId, image);
+    }
+
+    @Transactional
     public void updateCanvasName(Integer canvasId, String name, CustomUserDetails currentUser) {
         CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
         if (name == null || name.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 이름을 입력하세요.");

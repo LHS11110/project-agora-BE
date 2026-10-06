@@ -1,0 +1,1268 @@
+{
+  "run_id": "2610050838362acb87",
+  "target": {
+    "spring": "http://127.0.0.1:8080",
+    "cpp": "http://127.0.0.1:8000"
+  },
+  "started_at_utc": "2026-10-05T08:38:36+00:00",
+  "configured_iterations_per_endpoint": 1000,
+  "elapsed_seconds": 1641.652864713993,
+  "measurement": "external client call-to-complete-response; persistent HTTP sessions; response bodies fully consumed; no server instrumentation",
+  "request_data_bytes": "HTTP body plus URL query bytes; headers/TCP framing excluded",
+  "websocket": "TCP connect through HTTP 101 and first complete server frame; event operations without acknowledgements are not timed",
+  "cleanup": {
+    "remaining_canvases": 0,
+    "sql_hard_delete_verified": true,
+    "temporary_user_rows_remaining": 0
+  },
+  "results": [
+    {
+      "endpoint": "C++ DELETE /api/canvas/{canvasId}",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.229529807,
+      "p50_ms": 42.7913,
+      "p95_ms": 43.909869,
+      "min_ms": 2.882593,
+      "max_ms": 45.017137,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 59.0
+    },
+    {
+      "endpoint": "C++ GET /",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.13536231,
+      "p50_ms": 42.796012,
+      "p95_ms": 43.865619,
+      "min_ms": 2.745172,
+      "max_ms": 44.949695,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 48.0
+    },
+    {
+      "endpoint": "C++ GET /api/canvas/active",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.213710982000002,
+      "p50_ms": 42.802148,
+      "p95_ms": 43.91117,
+      "min_ms": 2.790476,
+      "max_ms": 45.773903,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 44.0
+    },
+    {
+      "endpoint": "C++ GET /api/canvas/count",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.19009358,
+      "p50_ms": 42.814614,
+      "p95_ms": 43.850635,
+      "min_ms": 2.705513,
+      "max_ms": 44.97026,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 30.0
+    },
+    {
+      "endpoint": "C++ GET /health",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.143719469,
+      "p50_ms": 42.758675,
+      "p95_ms": 43.920595,
+      "min_ms": 0.570704,
+      "max_ms": 44.975396,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 53.0
+    },
+    {
+      "endpoint": "C++ POST /api/canvas/{canvasId}/users/{userId}/disconnect",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.265254613,
+      "p50_ms": 42.823257,
+      "p95_ms": 43.901186,
+      "min_ms": 1.167589,
+      "max_ms": 45.116203,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 62.0
+    },
+    {
+      "endpoint": "C++ POST /api/users/{userId}/disconnect",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 27.227591483,
+      "p50_ms": 42.785237,
+      "p95_ms": 43.90469,
+      "min_ms": 0.701586,
+      "max_ms": 45.823798,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 50.0
+    },
+    {
+      "endpoint": "Spring DELETE /api/canvases/{canvasId}",
+      "size_group": "fixed",
+      "samples": 2000,
+      "success_2xx_or_101": 2000,
+      "statuses": {
+        "204": 2000
+      },
+      "mean_ms": 57.909631425,
+      "p50_ms": 57.852961,
+      "p95_ms": 67.262738,
+      "min_ms": 28.078322,
+      "max_ms": 236.228235,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring DELETE /api/canvases/{canvasId}/people",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "204": 1000
+      },
+      "mean_ms": 40.240751544,
+      "p50_ms": 40.119635,
+      "p95_ms": 51.729698,
+      "min_ms": 14.05067,
+      "max_ms": 66.731272,
+      "avg_request_data_bytes": 63.0,
+      "min_request_data_bytes": 63,
+      "max_request_data_bytes": 63,
+      "avg_body_bytes": 63.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring DELETE /api/users/{nickname}/{tagNumber}",
+      "size_group": "fixed",
+      "samples": 2000,
+      "success_2xx_or_101": 2000,
+      "statuses": {
+        "204": 2000
+      },
+      "mean_ms": 14.5872431425,
+      "p50_ms": 13.766317,
+      "p95_ms": 20.241559,
+      "min_ms": 7.282046,
+      "max_ms": 31.944501,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring GET /api/auth/health",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 8.756560726,
+      "p50_ms": 8.90567,
+      "p95_ms": 14.930852,
+      "min_ms": 2.085823,
+      "max_ms": 87.910687,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 46.0
+    },
+    {
+      "endpoint": "Spring GET /api/auth/users",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.271857971,
+      "p50_ms": 2.599277,
+      "p95_ms": 9.957951,
+      "min_ms": 1.335227,
+      "max_ms": 45.072671,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 853.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases",
+      "size_group": "query=0",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 13.67212998,
+      "p50_ms": 14.870435,
+      "p95_ms": 22.114446,
+      "min_ms": 4.367745,
+      "max_ms": 159.159498,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 231.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases",
+      "size_group": "query=2048",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 11.118707496,
+      "p50_ms": 13.164632,
+      "p95_ms": 20.479588,
+      "min_ms": 3.570455,
+      "max_ms": 23.472672,
+      "avg_request_data_bytes": 2053.0,
+      "min_request_data_bytes": 2053,
+      "max_request_data_bytes": 2053,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 2053.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases",
+      "size_group": "query=512",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 9.277274192,
+      "p50_ms": 10.70437,
+      "p95_ms": 16.01192,
+      "min_ms": 3.061955,
+      "max_ms": 29.377802,
+      "avg_request_data_bytes": 517.0,
+      "min_request_data_bytes": 517,
+      "max_request_data_bytes": 517,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 517.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases",
+      "size_group": "query=64",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 8.704163304,
+      "p50_ms": 8.873264,
+      "p95_ms": 14.577032,
+      "min_ms": 3.250436,
+      "max_ms": 17.799374,
+      "avg_request_data_bytes": 69.0,
+      "min_request_data_bytes": 69,
+      "max_request_data_bytes": 69,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 69.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/search",
+      "size_group": "query=0",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 13.306480156,
+      "p50_ms": 15.914239,
+      "p95_ms": 18.688559,
+      "min_ms": 3.987413,
+      "max_ms": 21.863207,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 231.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/search",
+      "size_group": "query=2048",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 11.498716356000001,
+      "p50_ms": 13.217479,
+      "p95_ms": 18.84737,
+      "min_ms": 3.149506,
+      "max_ms": 24.156877,
+      "avg_request_data_bytes": 2053.0,
+      "min_request_data_bytes": 2053,
+      "max_request_data_bytes": 2053,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 2053.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/search",
+      "size_group": "query=512",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 9.234333704,
+      "p50_ms": 10.642903,
+      "p95_ms": 12.931952,
+      "min_ms": 2.57248,
+      "max_ms": 41.81491,
+      "avg_request_data_bytes": 517.0,
+      "min_request_data_bytes": 517,
+      "max_request_data_bytes": 517,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 517.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/search",
+      "size_group": "query=64",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "200": 250
+      },
+      "mean_ms": 8.576896588,
+      "p50_ms": 9.927532,
+      "p95_ms": 11.644802,
+      "min_ms": 2.706755,
+      "max_ms": 13.262088,
+      "avg_request_data_bytes": 69.0,
+      "min_request_data_bytes": 69,
+      "max_request_data_bytes": 69,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 69.0,
+      "avg_response_bytes": 2.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/{canvasId}",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 5.960860758,
+      "p50_ms": 7.071235,
+      "p95_ms": 9.57983,
+      "min_ms": 1.564698,
+      "max_ms": 178.909106,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 124.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/{canvasId}/image",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 6.009590813,
+      "p50_ms": 7.332991,
+      "p95_ms": 9.540343,
+      "min_ms": 1.388946,
+      "max_ms": 36.169861,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 67.0
+    },
+    {
+      "endpoint": "Spring GET /api/canvases/{canvasId}/settings",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 8.784131761000001,
+      "p50_ms": 10.388903,
+      "p95_ms": 12.596624,
+      "min_ms": 2.174554,
+      "max_ms": 70.093351,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 192.0
+    },
+    {
+      "endpoint": "Spring GET /api/database/address",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.358709517,
+      "p50_ms": 4.57561,
+      "p95_ms": 5.668515,
+      "min_ms": 0.783561,
+      "max_ms": 10.063616,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 120.0
+    },
+    {
+      "endpoint": "Spring GET /api/load-balancer/allocate/redis",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 6.121503722000001,
+      "p50_ms": 6.117718,
+      "p95_ms": 7.764084,
+      "min_ms": 1.142451,
+      "max_ms": 28.496846,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 75.0
+    },
+    {
+      "endpoint": "Spring GET /api/load-balancer/allocate/server",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 33.901130156,
+      "p50_ms": 48.905218,
+      "p95_ms": 52.359767,
+      "min_ms": 2.006989,
+      "max_ms": 77.839486,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 91.0
+    },
+    {
+      "endpoint": "Spring GET /api/load-balancer/database",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.693526638000001,
+      "p50_ms": 4.812931,
+      "p95_ms": 6.032044,
+      "min_ms": 0.888376,
+      "max_ms": 9.802896,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 120.0
+    },
+    {
+      "endpoint": "Spring GET /api/test/cpp-active-canvases",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.718609080999999,
+      "p50_ms": 5.765817,
+      "p95_ms": 7.869526,
+      "min_ms": 1.00847,
+      "max_ms": 45.64644,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 44.0
+    },
+    {
+      "endpoint": "Spring GET /api/test/cpp-canvas-count",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 3.559109223,
+      "p50_ms": 2.211749,
+      "p95_ms": 7.300049,
+      "min_ms": 1.011998,
+      "max_ms": 17.394135,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 30.0
+    },
+    {
+      "endpoint": "Spring GET /api/users (admin)",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.634743362999999,
+      "p50_ms": 4.329927,
+      "p95_ms": 8.566119,
+      "min_ms": 1.123897,
+      "max_ms": 31.489868,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 853.0
+    },
+    {
+      "endpoint": "Spring GET /api/users/{nickname}/{tagNumber}",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 4.84010199,
+      "p50_ms": 5.89654,
+      "p95_ms": 8.082927,
+      "min_ms": 1.109354,
+      "max_ms": 45.125349,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 321.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/description",
+      "size_group": "description=0",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 37.102380972,
+      "p50_ms": 37.279138,
+      "p95_ms": 50.844808,
+      "min_ms": 13.829261,
+      "max_ms": 67.394059,
+      "avg_request_data_bytes": 18.0,
+      "min_request_data_bytes": 18,
+      "max_request_data_bytes": 18,
+      "avg_body_bytes": 18.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/description",
+      "size_group": "description=1024",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 36.842145832,
+      "p50_ms": 37.400674,
+      "p95_ms": 49.720766,
+      "min_ms": 13.997497,
+      "max_ms": 60.544859,
+      "avg_request_data_bytes": 1042.0,
+      "min_request_data_bytes": 1042,
+      "max_request_data_bytes": 1042,
+      "avg_body_bytes": 1042.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/description",
+      "size_group": "description=256",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 36.758311916,
+      "p50_ms": 37.335261,
+      "p95_ms": 49.999083,
+      "min_ms": 13.869356,
+      "max_ms": 59.17459,
+      "avg_request_data_bytes": 274.0,
+      "min_request_data_bytes": 274,
+      "max_request_data_bytes": 274,
+      "avg_body_bytes": 274.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/description",
+      "size_group": "description=4000",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 37.26604728,
+      "p50_ms": 37.800546,
+      "p95_ms": 51.478273,
+      "min_ms": 13.89305,
+      "max_ms": 63.681986,
+      "avg_request_data_bytes": 4018.0,
+      "min_request_data_bytes": 4018,
+      "max_request_data_bytes": 4018,
+      "avg_body_bytes": 4018.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/name",
+      "size_group": "name=128",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 33.708509344,
+      "p50_ms": 37.293602,
+      "p95_ms": 50.550169,
+      "min_ms": 14.105975,
+      "max_ms": 57.529269,
+      "avg_request_data_bytes": 146.0,
+      "min_request_data_bytes": 146,
+      "max_request_data_bytes": 146,
+      "avg_body_bytes": 146.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/name",
+      "size_group": "name=16",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 33.59221852,
+      "p50_ms": 37.071406,
+      "p95_ms": 49.163048,
+      "min_ms": 13.792273,
+      "max_ms": 60.901639,
+      "avg_request_data_bytes": 34.0,
+      "min_request_data_bytes": 34,
+      "max_request_data_bytes": 34,
+      "avg_body_bytes": 34.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/name",
+      "size_group": "name=255",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 33.550960855999996,
+      "p50_ms": 37.381922,
+      "p95_ms": 49.932693,
+      "min_ms": 13.971139,
+      "max_ms": 60.363913,
+      "avg_request_data_bytes": 273.0,
+      "min_request_data_bytes": 273,
+      "max_request_data_bytes": 273,
+      "avg_body_bytes": 273.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/name",
+      "size_group": "name=64",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 33.7300873,
+      "p50_ms": 37.449248,
+      "p95_ms": 49.430018,
+      "min_ms": 13.95044,
+      "max_ms": 55.289554,
+      "avg_request_data_bytes": 82.0,
+      "min_request_data_bytes": 82,
+      "max_request_data_bytes": 82,
+      "avg_body_bytes": 82.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/password",
+      "size_group": "password=24",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 194.643501448,
+      "p50_ms": 212.450581,
+      "p95_ms": 223.681996,
+      "min_ms": 74.813929,
+      "max_ms": 266.592227,
+      "avg_request_data_bytes": 46.0,
+      "min_request_data_bytes": 46,
+      "max_request_data_bytes": 46,
+      "avg_body_bytes": 46.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/password",
+      "size_group": "password=48",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 196.116670392,
+      "p50_ms": 213.257708,
+      "p95_ms": 224.348706,
+      "min_ms": 71.876262,
+      "max_ms": 321.242494,
+      "avg_request_data_bytes": 70.0,
+      "min_request_data_bytes": 70,
+      "max_request_data_bytes": 70,
+      "avg_body_bytes": 70.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/password",
+      "size_group": "password=64",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 197.276526512,
+      "p50_ms": 212.554681,
+      "p95_ms": 222.669992,
+      "min_ms": 72.31862,
+      "max_ms": 321.552305,
+      "avg_request_data_bytes": 86.0,
+      "min_request_data_bytes": 86,
+      "max_request_data_bytes": 86,
+      "avg_body_bytes": 86.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/canvases/{canvasId}/password",
+      "size_group": "password=8",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "204": 250
+      },
+      "mean_ms": 195.29508728000002,
+      "p50_ms": 211.516331,
+      "p95_ms": 222.094792,
+      "min_ms": 76.210776,
+      "max_ms": 307.76737,
+      "avg_request_data_bytes": 30.0,
+      "min_request_data_bytes": 30,
+      "max_request_data_bytes": 30,
+      "avg_body_bytes": 30.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring PATCH /api/users/{nickname}/{tagNumber}",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 15.043261697,
+      "p50_ms": 14.44351,
+      "p95_ms": 19.836979,
+      "min_ms": 11.064359,
+      "max_ms": 63.186759,
+      "avg_request_data_bytes": 47.0,
+      "min_request_data_bytes": 47,
+      "max_request_data_bytes": 47,
+      "avg_body_bytes": 47.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 324.886
+    },
+    {
+      "endpoint": "Spring POST /api/auth/login",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 189.564560584,
+      "p50_ms": 207.674559,
+      "p95_ms": 214.441448,
+      "min_ms": 65.936454,
+      "max_ms": 307.653746,
+      "avg_request_data_bytes": 73.0,
+      "min_request_data_bytes": 73,
+      "max_request_data_bytes": 73,
+      "avg_body_bytes": 73.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 583.0
+    },
+    {
+      "endpoint": "Spring POST /api/auth/me",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 5.858910055,
+      "p50_ms": 6.964328,
+      "p95_ms": 10.47568,
+      "min_ms": 1.254811,
+      "max_ms": 35.318125,
+      "avg_request_data_bytes": 276.0,
+      "min_request_data_bytes": 276,
+      "max_request_data_bytes": 276,
+      "avg_body_bytes": 276.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 272.0
+    },
+    {
+      "endpoint": "Spring POST /api/auth/signup",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "201": 1000
+      },
+      "mean_ms": 176.806943478,
+      "p50_ms": 202.901866,
+      "p95_ms": 212.784642,
+      "min_ms": 70.702197,
+      "max_ms": 284.820565,
+      "avg_request_data_bytes": 136.0,
+      "min_request_data_bytes": 136,
+      "max_request_data_bytes": 136,
+      "avg_body_bytes": 136.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 324.774
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [JSON]",
+      "size_group": "description=0",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 38.937667696,
+      "p50_ms": 40.514138,
+      "p95_ms": 50.297623,
+      "min_ms": 19.46443,
+      "max_ms": 201.371168,
+      "avg_request_data_bytes": 62.0,
+      "min_request_data_bytes": 62,
+      "max_request_data_bytes": 62,
+      "avg_body_bytes": 62.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 127.784
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [JSON]",
+      "size_group": "description=1024",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 39.225893876,
+      "p50_ms": 40.545088,
+      "p95_ms": 52.891511,
+      "min_ms": 19.585496,
+      "max_ms": 61.25236,
+      "avg_request_data_bytes": 1086.0,
+      "min_request_data_bytes": 1086,
+      "max_request_data_bytes": 1086,
+      "avg_body_bytes": 1086.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 1151.8
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [JSON]",
+      "size_group": "description=256",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 38.62516488,
+      "p50_ms": 40.565417,
+      "p95_ms": 52.372034,
+      "min_ms": 19.58842,
+      "max_ms": 66.112554,
+      "avg_request_data_bytes": 318.0,
+      "min_request_data_bytes": 318,
+      "max_request_data_bytes": 318,
+      "avg_body_bytes": 318.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 383.8
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [JSON]",
+      "size_group": "description=4000",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 38.892431607999995,
+      "p50_ms": 40.721491,
+      "p95_ms": 50.396063,
+      "min_ms": 19.49211,
+      "max_ms": 59.377902,
+      "avg_request_data_bytes": 4062.0,
+      "min_request_data_bytes": 4062,
+      "max_request_data_bytes": 4062,
+      "avg_body_bytes": 4062.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 4127.808
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [multipart]",
+      "size_group": "description=0",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 38.98454778,
+      "p50_ms": 39.834136,
+      "p95_ms": 48.124557,
+      "min_ms": 19.570472,
+      "max_ms": 93.246879,
+      "avg_request_data_bytes": 319.0,
+      "min_request_data_bytes": 319,
+      "max_request_data_bytes": 319,
+      "avg_body_bytes": 319.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 130.0
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [multipart]",
+      "size_group": "description=1024",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 39.107241464,
+      "p50_ms": 39.849761,
+      "p95_ms": 48.873096,
+      "min_ms": 19.537382,
+      "max_ms": 58.370393,
+      "avg_request_data_bytes": 1343.0,
+      "min_request_data_bytes": 1343,
+      "max_request_data_bytes": 1343,
+      "avg_body_bytes": 1343.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 1154.0
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [multipart]",
+      "size_group": "description=256",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 38.932854788,
+      "p50_ms": 39.787562,
+      "p95_ms": 48.270842,
+      "min_ms": 19.722566,
+      "max_ms": 60.204253,
+      "avg_request_data_bytes": 575.0,
+      "min_request_data_bytes": 575,
+      "max_request_data_bytes": 575,
+      "avg_body_bytes": 575.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 386.0
+    },
+    {
+      "endpoint": "Spring POST /api/canvases [multipart]",
+      "size_group": "description=4000",
+      "samples": 250,
+      "success_2xx_or_101": 250,
+      "statuses": {
+        "201": 250
+      },
+      "mean_ms": 39.165635308,
+      "p50_ms": 40.511072,
+      "p95_ms": 48.253773,
+      "min_ms": 19.670753,
+      "max_ms": 57.629185,
+      "avg_request_data_bytes": 4319.0,
+      "min_request_data_bytes": 4319,
+      "max_request_data_bytes": 4319,
+      "avg_body_bytes": 4319.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 4130.0
+    },
+    {
+      "endpoint": "Spring POST /api/canvases/{canvasId}/access",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 148.657882001,
+      "p50_ms": 185.095337,
+      "p95_ms": 192.117158,
+      "min_ms": 58.782249,
+      "max_ms": 230.863181,
+      "avg_request_data_bytes": 79.0,
+      "min_request_data_bytes": 79,
+      "max_request_data_bytes": 79,
+      "avg_body_bytes": 79.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 759.0
+    },
+    {
+      "endpoint": "Spring POST /api/canvases/{canvasId}/people",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "204": 1000
+      },
+      "mean_ms": 38.333093962999996,
+      "p50_ms": 40.094349,
+      "p95_ms": 51.665331,
+      "min_ms": 14.062911,
+      "max_ms": 161.840231,
+      "avg_request_data_bytes": 63.0,
+      "min_request_data_bytes": 63,
+      "max_request_data_bytes": 63,
+      "avg_body_bytes": 63.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 0.0
+    },
+    {
+      "endpoint": "Spring POST /api/load-balancer/allocate/database",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 3.87496591,
+      "p50_ms": 4.440069,
+      "p95_ms": 6.051524,
+      "min_ms": 0.739777,
+      "max_ms": 7.36354,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 120.0
+    },
+    {
+      "endpoint": "Spring POST /api/load-balancer/allocate/redis",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 5.986537403000001,
+      "p50_ms": 6.076244,
+      "p95_ms": 7.647968,
+      "min_ms": 1.107231,
+      "max_ms": 15.259775,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 75.0
+    },
+    {
+      "endpoint": "Spring POST /api/load-balancer/allocate/server",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 33.50304118,
+      "p50_ms": 48.741363,
+      "p95_ms": 51.684018,
+      "min_ms": 1.927526,
+      "max_ms": 65.422007,
+      "avg_request_data_bytes": 0.0,
+      "min_request_data_bytes": 0,
+      "max_request_data_bytes": 0,
+      "avg_body_bytes": 0.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 91.0
+    },
+    {
+      "endpoint": "Spring POST /api/users",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "201": 1000
+      },
+      "mean_ms": 161.739244437,
+      "p50_ms": 190.095048,
+      "p95_ms": 212.0919,
+      "min_ms": 65.449382,
+      "max_ms": 259.696319,
+      "avg_request_data_bytes": 137.0,
+      "min_request_data_bytes": 137,
+      "max_request_data_bytes": 137,
+      "avg_body_bytes": 137.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 325.74
+    },
+    {
+      "endpoint": "Spring PUT /api/users/{nickname}/{tagNumber}",
+      "size_group": "fixed",
+      "samples": 1000,
+      "success_2xx_or_101": 1000,
+      "statuses": {
+        "200": 1000
+      },
+      "mean_ms": 14.938541395,
+      "p50_ms": 14.540842,
+      "p95_ms": 20.184202,
+      "min_ms": 7.314214,
+      "max_ms": 68.307751,
+      "avg_request_data_bytes": 45.0,
+      "min_request_data_bytes": 45,
+      "max_request_data_bytes": 45,
+      "avg_body_bytes": 45.0,
+      "avg_query_bytes": 0.0,
+      "avg_response_bytes": 321.786
+    }
+  ],
+  "http_endpoint_methods": 41,
+  "http_total_samples": 43000,
+  "websocket_report": "agora-ws-benchmark-2026-10-05.json",
+  "notes": [
+    "HTTP targets are local Docker host ports; HTTPS, Nginx, and public Internet latency are not included.",
+    "C++ disconnect/delete controls use nonexistent positive IDs to avoid changing live sessions; these measure their safe no-op path.",
+    "The two canvas creation content types are reported separately. Each user and canvas delete route has 2,000 successful samples because 2,000 disposable fixtures were created."
+  ]
+}

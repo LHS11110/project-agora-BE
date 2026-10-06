@@ -223,6 +223,17 @@ void HttpServer::setupRoutes() {
             {{"error_type", error_type}, {"error_message", error_message}}, "failure", "HTTP_500");
     });
 
+    server_.set_error_handler([](const httplib::Request&, httplib::Response& res) {
+        if (res.status != 404) return;
+        nlohmann::json body = {
+            {"status", 404}, {"error", "NOT_FOUND"},
+            {"message", "요청한 경로를 찾을 수 없습니다."}
+        };
+        const std::string& request_id = agora::logging::currentRequestLogContext().request_id;
+        if (!request_id.empty()) body["request_id"] = request_id;
+        res.set_content(body.dump(), "application/json; charset=utf-8");
+    });
+
     server_.set_logger([](const httplib::Request& req, const httplib::Response& res) {
         const int status = res.status > 0 ? res.status : 500;
         const std::string outcome = status >= 500 ? "failure" : status >= 400 ? "rejected" : "success";

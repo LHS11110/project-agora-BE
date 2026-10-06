@@ -3,6 +3,8 @@
 #include <string>
 #include <utility>
 #include <optional>
+#include <cstdint>
+#include <vector>
 #include "SqlExecutor.hpp"
 
 struct CanvasStorageAssignment {
@@ -13,10 +15,19 @@ struct CanvasStorageAssignment {
     int redis_port{0};
 };
 
+struct RedisAllocationCandidate {
+    std::string redis_ip;
+    int redis_port{0};
+    std::int64_t cached_canvas_count{0};
+};
+
 struct CanvasRedisAllocation {
     std::string redis_ip;
     int redis_port{0};
     bool was_cached{false};
+    std::string allocation_strategy;
+    std::vector<RedisAllocationCandidate> candidates;
+    std::int64_t selected_cached_canvas_count{-1};
 };
 
 class MssqlClient : public SqlExecutor {

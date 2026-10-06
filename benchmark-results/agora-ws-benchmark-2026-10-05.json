@@ -1,0 +1,67 @@
+{
+  "run_id": "261005091734012ce1",
+  "target": "temporary client on Docker agora-net; Spring and C++ receive the same client IP",
+  "started_at_utc": "2026-10-05T09:17:45.263600+00:00",
+  "configured_iterations_per_route": 1000,
+  "elapsed_seconds": 10.210157794004772,
+  "measurement": "TCP connect through HTTP 101 and first complete WebSocket server frame; no server instrumentation",
+  "cleanup": {
+    "temporary_canvas_removed": true
+  },
+  "results": {
+    "C++ WS canvas": {
+      "expected_first_frame": "init_items",
+      "samples": 3,
+      "successes": 0,
+      "statuses": {
+        "200": 3
+      },
+      "first_frame_types": {
+        "": 3
+      },
+      "error_classes": {
+        "empty_http_response": 3
+      },
+      "response_meta": {
+        "upgrade": "websocket",
+        "connection": "Upgrade"
+      },
+      "mean_ms": 2.8301193333333337,
+      "p50_ms": 2.912155,
+      "p95_ms": 2.94216,
+      "min_ms": 2.636043,
+      "max_ms": 2.94216,
+      "avg_request_bytes": 481.0,
+      "avg_response_bytes": 214.0
+    },
+    "C++ WS RTC": {
+      "expected_first_frame": "rtc_ready",
+      "samples": 3,
+      "successes": 0,
+      "statuses": {
+        "200": 3
+      },
+      "first_frame_types": {
+        "": 3
+      },
+      "error_classes": {
+        "empty_http_response": 3
+      },
+      "response_meta": {
+        "upgrade": "websocket",
+        "connection": "Upgrade"
+      },
+      "mean_ms": 2.4799253333333335,
+      "p50_ms": 2.397818,
+      "p95_ms": 2.744719,
+      "min_ms": 2.297239,
+      "max_ms": 2.744719,
+      "avg_request_bytes": 485.0,
+      "avg_response_bytes": 214.0
+    }
+  },
+  "notes": [
+    "The client ran on agora-net so Spring and C++ see the same client IP bound into the canvas token.",
+    "Both paths returned HTTP 200 with Upgrade: websocket and Connection: Upgrade, but not HTTP 101 and no first frame; no successful WebSocket latency can be reported."
+  ]
+}

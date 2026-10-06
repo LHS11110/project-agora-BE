@@ -7,6 +7,7 @@ import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
 import com.endpoint.frelog.domain.canvas.service.CanvasResourceService;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
+import com.endpoint.frelog.domain.canvas.service.CanvasPreviewService;
 import com.endpoint.frelog.global.security.CustomUserDetails;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -39,11 +40,20 @@ import java.util.List;
 public class CanvasController {
 
     private final CanvasService canvasService;
+    private final CanvasPreviewService canvasPreviewService;
     private final CanvasResourceService canvasResourceService;
 
-    public CanvasController(CanvasService canvasService, CanvasResourceService canvasResourceService) {
+    public CanvasController(CanvasService canvasService, CanvasResourceService canvasResourceService, CanvasPreviewService canvasPreviewService) {
         this.canvasService = canvasService;
+        this.canvasPreviewService = canvasPreviewService;
         this.canvasResourceService = canvasResourceService;
+    }
+
+    @GetMapping("/{canvasId}/preview")
+    public ResponseEntity<java.util.Map<String, Object>> preview(
+            @PathVariable Integer canvasId, @AuthenticationPrincipal CustomUserDetails currentUser) {
+        return ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                .body(canvasPreviewService.preview(canvasId, currentUser));
     }
 
     /**
@@ -95,6 +105,15 @@ public class CanvasController {
             @PathVariable Integer canvasId,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         return ResponseEntity.ok(canvasService.getCanvasSummary(canvasId, currentUser));
+    }
+
+    @PostMapping(value = "/{canvasId}/image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<java.util.Map<String, String>> updateCanvasImage(
+            @PathVariable Integer canvasId,
+            @RequestPart("image") MultipartFile image,
+            @AuthenticationPrincipal CustomUserDetails currentUser) {
+        return ResponseEntity.ok(java.util.Map.of("image",
+                canvasService.updateRepresentativeImage(canvasId, image, currentUser)));
     }
 
     @GetMapping("/{canvasId}/image")
