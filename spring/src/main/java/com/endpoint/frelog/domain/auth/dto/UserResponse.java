@@ -9,6 +9,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.LocalDateTime;
 
 public record UserResponse(
+        @JsonProperty("user_id") Long userId,
         @JsonProperty("email")
         String email,
 
@@ -38,6 +39,7 @@ public record UserResponse(
 ) {
     public static UserResponse from(User user) {
         return new UserResponse(
+                user.getUserId(),
                 user.getEmail(),
                 user.getNickname(),
                 user.getTagNumber(),

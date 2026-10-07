@@ -17,9 +17,9 @@ public class CanvasPreviewService {
     private final CanvasElasticsearchService elasticsearch;
     private final CanvasRedisDocumentReader redis;
     private static final Set<String> FIELDS = Set.of("kind", "x", "y", "width", "height", "rotation", "color",
-            "text", "format", "code", "language", "filename", "formula", "columns", "rows", "src",
+            "text", "format", "code", "language", "filename", "formula", "columns", "rows", "src", "thumbnail",
             "title", "url", "mediaType", "shapeType", "points", "strokeWidth", "from", "to", "bend",
-            "startHead", "endHead", "fill", "opacity");
+            "startHead", "endHead", "fill", "opacity", "members", "groupTitle");
     public CanvasPreviewService(CanvasInfoRepository repository, CanvasElasticsearchService elasticsearch,
                                 CanvasRedisDocumentReader redis) {
         this.repository = repository; this.elasticsearch = elasticsearch; this.redis = redis;

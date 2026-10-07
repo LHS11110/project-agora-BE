@@ -79,7 +79,7 @@ public class CanvasResourceService {
         return storePng(canvasId, DEFAULT_PNG);
     }
 
-    private byte[] normalizePng(byte[] source) {
+    public byte[] normalizePng(byte[] source) {
         if (source == null || source.length == 0) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "PNG 또는 JPEG 이미지 파일을 선택하세요.");
         }

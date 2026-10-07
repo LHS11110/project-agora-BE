@@ -34,6 +34,7 @@ public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
+    private final com.endpoint.frelog.domain.user.service.UserProfileImageService profileImages;
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
@@ -42,7 +43,8 @@ public class AuthService {
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtTokenProvider jwtTokenProvider,
-                       UserSessionRepository userSessionRepository) {
+                       UserSessionRepository userSessionRepository, com.endpoint.frelog.domain.user.service.UserProfileImageService profileImages) {
+        this.profileImages = profileImages;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
@@ -186,6 +188,7 @@ public class AuthService {
                     "캔버스를 이용 중인 회원은 탈퇴할 수 없습니다. 캔버스 연결을 종료한 뒤 다시 시도해 주세요.");
         }
 
+        profileImages.remove(userId);
         // Hash the user identifier and mark the account withdrawn.
         String hashValue = generateHash(userId);
         user.setNickname("deleted user-" + hashValue);
