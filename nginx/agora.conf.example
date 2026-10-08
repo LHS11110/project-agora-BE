@@ -17,6 +17,10 @@ map "${FRONTEND_MODE}" $asset_cache {
     default "public, max-age=31536000, immutable";
     development "no-cache";
 }
+map "${FRONTEND_MODE}" $vite_enabled {
+    default 0;
+    development 1;
+}
 
 server {
     server_tokens off;
@@ -99,7 +103,7 @@ server {
     }
     location @vite {
         # A missing production asset must not return the SPA HTML.
-        if ("${FRONTEND_MODE}" != "development") { return 404; }
+        if ($vite_enabled = 0) { return 404; }
         set $vite_host agora-frontend-dev;
         proxy_pass http://$vite_host:5173;
         proxy_http_version 1.1;
