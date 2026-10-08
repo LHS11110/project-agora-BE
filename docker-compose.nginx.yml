@@ -1,0 +1,36 @@
+name: agora-gateway
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    container_name: agora-nginx
+    restart: unless-stopped
+    environment:
+      FRONTEND_MODE: ${FRONTEND_MODE:-production}
+      NGINX_ENVSUBST_FILTER: ^FRONTEND_MODE
+    ports:
+      - "127.0.0.1:${NGINX_PORT:-4173}:80"
+    volumes:
+      - ./nginx/agora.conf.example:/etc/nginx/templates/default.conf.template:ro
+      - frontend-dist:/usr/share/nginx/html:ro
+    networks:
+      agora-net:
+        ipv4_address: ${NGINX_BACKEND_IP:-172.21.0.250}
+      agora-web: {}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  agora-net:
+    external: true
+    name: agora-net
+  agora-web:
+    name: agora-web
+
+volumes:
+  frontend-dist:
+    name: agora-frontend-dist

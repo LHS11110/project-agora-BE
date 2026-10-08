@@ -39,8 +39,9 @@ cd "$PROJECT_DIR"
 compose() {
     local network_gateway
     network_gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' agora-net 2>/dev/null || true)"
-    if [[ -z "${CPP_TRUSTED_PROXY_IPS:-}" && -n "$network_gateway" ]]; then
-        export CPP_TRUSTED_PROXY_IPS="$network_gateway"
+    if [[ -z "${CPP_TRUSTED_PROXY_IPS:-}" && -n "$network_gateway" ]] \
+        && ! grep -q '^CPP_TRUSTED_PROXY_IPS=.' "$ENV_FILE"; then
+        export CPP_TRUSTED_PROXY_IPS="$network_gateway,${NGINX_BACKEND_IP:-172.21.0.250}"
     fi
 
     docker compose \

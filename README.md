@@ -193,7 +193,7 @@ cd /path/to/project-agora-BE
 
 `up`은 `agora-net`, `agora-redis-ha` 네트워크와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. DB 스택이 Docker 네트워크를 교체해 기존 백엔드 컨테이너가 사라진 네트워크 ID를 참조하면, 스크립트가 백엔드 컨테이너를 새 네트워크에 다시 연결합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 네트워크 주소나 AG listener를 쓸 때는 `.env`에 `DOCKER_DB_HOST`/`DOCKER_DB_PORT`, `DOCKER_ES_HOST`/`DOCKER_ES_PORT`를 지정하세요. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
 
-컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring 캔버스 이미지는 `agora-backend-spring-resources` 볼륨에 저장되어 컨테이너를 재생성해도 유지됩니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 현재 Nginx 예시는 호스트 loopback 포트들을 프록시합니다. `backend-docker.sh`는 `agora-net`의 Docker 게이트웨이를 C++의 `CPP_TRUSTED_PROXY_IPS`로 전달해, 신뢰한 호스트 프록시의 `X-Real-IP`만 접속 JWT의 IP 확인에 사용합니다. 직접 `docker compose`로 백엔드만 시작할 때는 `CPP_TRUSTED_PROXY_IPS`에 해당 네트워크의 게이트웨이 주소를 지정해야 합니다.
+컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring 캔버스 이미지는 `agora-backend-spring-resources` 볼륨에 저장되어 컨테이너를 재생성해도 유지됩니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 백엔드 Nginx 컨테이너는 Docker 서비스 주소로 프록시합니다. `backend-docker.sh`는 Docker 게이트웨이와 Nginx 고정 IP를 C++의 `CPP_TRUSTED_PROXY_IPS`에 전달합니다. 직접 Compose로 실행하면 기본 Nginx IP를 신뢰합니다. 호스트 프록시를 추가하면 해당 주소도 명시해야 합니다.
 
 ```bash
 ./scripts/backend-docker.sh status
@@ -354,38 +354,54 @@ curl -fsS http://127.0.0.1:8000/health
 
 ## Nginx와 WSS
 
-[nginx/agora.conf.example](nginx/agora.conf.example) 파일에는 Spring Boot API 프록시와 C++ 포트별 WSS 라우팅이 통합된 전체 Nginx 설정 예시가 포함되어 있습니다.
+Nginx는 이 저장소에서만 관리합니다. [nginx/agora.conf.example](nginx/agora.conf.example)이 유일한 설정 파일이며 [docker-compose.nginx.yml](docker-compose.nginx.yml)이 이를 Nginx Docker 이미지의 템플릿으로 마운트합니다. 컨테이너 시작 시 `FRONTEND_MODE`만 치환하고 Nginx의 `$uri`, `$host` 등은 보존합니다. 호스트 Nginx 설치는 필요하지 않습니다.
 
-같은 Nginx 가상 호스트에서 React/Vite 프런트엔드는 Docker 컨테이너로 제공합니다. 프런트엔드 저장소의 운영 Compose가 `127.0.0.1:4173`에 컨테이너 포트를 바인딩하고, 이 Nginx 설정은 `/api/`와 `/wss/` 외의 요청을 컨테이너로 전달합니다. 컨테이너 내부 Nginx가 SPA 경로, 정적 파일, 로컬 MathJax 에셋을 처리합니다.
+| 요청 | 처리 |
+| --- | --- |
+| `/api/` | `agora-spring:8080`으로 프록시 |
+| `/wss/port/8002/canvas/:id` 및 `/rtc/canvas/:id` | `agora-cpp:8002`로 WebSocket 프록시 |
+| SPA 페이지 | 배포 시 공유 볼륨의 `index.html` fallback, 개발 시 Vite로 프록시 |
+| `/assets/`, `.mjs` | 파일 제공, 배포 자산 캐시 및 JavaScript MIME |
+| `/mathjax/`, `/pdfjs/` | 로컬 자산 제공 및 WASM MIME |
+| Vite HMR | 개발 모드에서 Upgrade 헤더를 유지해 Vite로 프록시 |
+
+### 개발 실행
+
+DB 스택과 백엔드가 먼저 실행되어야 합니다. Nginx를 시작하면 FE와 공유하는 `agora-web` 네트워크가 생성됩니다.
+
+```bash
+cd /path/to/project-agora-BE
+./scripts/backend-docker.sh up
+FRONTEND_MODE=development docker compose -f docker-compose.nginx.yml up -d
+cd ../project-agora-FE
+docker compose -f compose.dev.yaml up -d --build --remove-orphans
+```
+
+브라우저 주소는 `http://127.0.0.1:4173`입니다. Nginx는 FE 소스를 직접 마운트하지 않고 `agora-web` 네트워크의 `agora-frontend-dev:5173`에 연결합니다. API와 C++는 DB가 생성한 `agora-net` 네트워크로 연결하므로 Docker Desktop 전용 호스트 게이트웨이에 의존하지 않습니다.
+
+### 빌드 배포
 
 ```bash
 cd /path/to/project-agora-FE
-docker compose up -d --build
-docker compose ps
+docker compose -f compose.dev.yaml down --remove-orphans
+docker compose build frontend-build
+docker compose run --rm frontend-build
+cd ../project-agora-BE
+FRONTEND_MODE=production docker compose -f docker-compose.nginx.yml up -d
 curl -fsS http://127.0.0.1:4173/
 ```
 
-Nginx 설정을 적용하기 전 `server_name`과 인증서 경로를 배포 도메인에 맞게 바꾸세요. 자체 서명 인증서는 로컬 테스트에만 사용합니다.
+FE 빌드 컨테이너는 `agora-frontend-dist` 볼륨에 `dist/`를 내보내고 종료합니다. Nginx는 같은 볼륨을 읽기 전용으로 사용합니다. FE에 남아 있는 이전 `agora-frontend` 컨테이너는 `docker rm -f agora-frontend`로 제거해 포트 충돌을 해소합니다. 빌드 내보내기는 기존 배포 파일을 교체하므로 트래픽이 적은 시점에 수행하세요.
+
+BE `.env` 또는 실행 환경에서 `NGINX_PORT`(기본 4173), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. 개발 접속 주소를 변경하면 FE `.env`의 `VITE_WS_BASE_URL`을 함께 변경하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
 
 ```bash
-# Nginx 설치 및 자체 서명 인증서(Local 테스트용) 생성
-sudo apt-get install -y nginx
-sudo install -d -m 700 /etc/nginx/ssl/agora
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /tmp/agora-privkey.pem -out /tmp/agora-fullchain.pem \
-  -subj "/C=KR/ST=Seoul/L=Seoul/O=Project Agora/OU=Dev/CN=localhost"
-sudo install -m 600 -o root -g root /tmp/agora-privkey.pem /etc/nginx/ssl/agora/privkey.pem
-sudo install -m 644 -o root -g root /tmp/agora-fullchain.pem /etc/nginx/ssl/agora/fullchain.pem
-rm -f /tmp/agora-privkey.pem /tmp/agora-fullchain.pem
-
-# Nginx 환경 설정 적용
-sudo cp nginx/agora.conf.example /etc/nginx/sites-available/agora.conf
-sudo ln -sf /etc/nginx/sites-available/agora.conf /etc/nginx/sites-enabled/agora.conf
-sudo nginx -t
-sudo systemctl reload nginx
+docker compose -f docker-compose.nginx.yml exec nginx nginx -t
+docker compose -f docker-compose.nginx.yml logs -f
+docker compose -f docker-compose.nginx.yml down
 ```
 
-운영에서는 위의 자체 서명 인증서 대신 CA가 발급한 `fullchain.pem`과 `privkey.pem`을 `/etc/nginx/ssl/agora/`에 같은 권한으로 설치하세요. 기본 Nginx 사이트를 해제해야 한다면, 해당 사이트가 사용 중이지 않은지 확인한 뒤 별도로 처리합니다.
+기본 구성은 로컬 개발용 HTTP이며 loopback에만 게시됩니다. 기존 HTTPS 설정의 인증서 경로·TLS 프로토콜·HSTS 예시는 단일 설정 파일의 주석에 보존했습니다. 외부 운영 공개 시 CA 발급 `fullchain.pem`·`privkey.pem`을 `/etc/nginx/ssl/agora/`에 읽기 전용 마운트하고 해당 TLS 설정과 443 포트 게시를 활성화하며 HTTP→HTTPS 리디렉션을 적용하세요. FE에는 장기 비밀값을 넣지 않습니다.
 
 WSS 주소는 두 용도로 나뉘며, 둘 다 `/access` 응답의 같은 `ws_port`와 `canvas_access_token`을 사용합니다.
 

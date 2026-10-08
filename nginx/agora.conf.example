@@ -1,74 +1,114 @@
-server {
-    server_tokens off;
-    listen 80;
-    server_name _;
-    
-    # HTTP 요청을 HTTPS로 리디렉션
-    return 301 https://$host$request_uri;
+# Single Nginx configuration, owned by project-agora-BE.
+# Mounted as /etc/nginx/templates/default.conf.template by the Nginx Compose.
+# FRONTEND_MODE is production or development; Docker substitutes it at startup.
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+map "${FRONTEND_MODE}" $frontend_root {
+    default /usr/share/nginx/html;
+    development /var/empty/agora;
+}
+map "${FRONTEND_MODE}" $spa_fallback {
+    default /index.html;
+    development @vite;
+}
+map "${FRONTEND_MODE}" $asset_cache {
+    default "public, max-age=31536000, immutable";
+    development "no-cache";
 }
 
 server {
     server_tokens off;
-    listen 443 ssl;
+    listen 80;
     server_name _;
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    root $frontend_root;
+    index index.html;
 
-    # Use a CA-issued certificate in production. Keep the private key outside
-    # the application checkout and readable only by root.
-    ssl_certificate /etc/nginx/ssl/agora/fullchain.pem;
-    ssl_certificate_key /etc/nginx/ssl/agora/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:SSL:10m;
+    # For public HTTPS, mount CA-issued certificates using this Compose and
+    # enable these lines, publish 443:443, and redirect HTTP to HTTPS.
+    # listen 443 ssl;
+    # ssl_certificate /etc/nginx/ssl/agora/fullchain.pem;
+    # ssl_certificate_key /etc/nginx/ssl/agora/privkey.pem;
+    # ssl_protocols TLSv1.2 TLSv1.3;
+    # add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
 
-    add_header Strict-Transport-Security "max-age=31536000" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+    }
 
-    # Spring Boot API 라우팅
     location /api/ {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header Host $host;
+        set $spring_host agora-spring;
+        proxy_pass http://$spring_host:8080;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
-    
-    # React/Vite production container publishes its Nginx service on host loopback :4173.
-    # That container serves the SPA entry point, Vite assets and local MathJax files.
+
+    # Only WS ports 8002-8099 are accepted; C++ REST is never exposed here.
+    location ~ ^/wss/port/(?<cpp_ws_port>80(?:0[2-9]|[1-9][0-9]))/(?<cpp_ws_path>(?:rtc/)?canvas/[0-9]+)$ {
+        set $cpp_host agora-cpp;
+        proxy_pass http://$cpp_host:$cpp_ws_port/ws/$cpp_ws_path$is_args$args;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+        access_log off; # Canvas access tokens are in the query string.
+    }
+    location /wss/ { return 404; }
+
+    location = /index.html {
+        try_files $uri @vite;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
+    location /assets/ {
+        try_files $uri @vite;
+        add_header Cache-Control $asset_cache;
+    }
+    location ~ \.mjs$ {
+        try_files $uri @vite;
+        types { application/javascript mjs; }
+        add_header Cache-Control $asset_cache;
+    }
+    location /pdfjs/ {
+        try_files $uri @vite;
+        types {
+            application/wasm wasm;
+            application/javascript js mjs;
+            application/json json;
+        }
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=86400";
+    }
+    location /mathjax/ {
+        try_files $uri @vite;
+        add_header Cache-Control "public, max-age=86400";
+    }
     location / {
-        proxy_pass http://127.0.0.1:4173;
+        try_files $uri $uri/ $spa_fallback;
+    }
+    location @vite {
+        # A missing production asset must not return the SPA HTML.
+        if ("${FRONTEND_MODE}" != "development") { return 404; }
+        set $vite_host agora-frontend-dev;
+        proxy_pass http://$vite_host:5173;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # C++ 서버 WebSocket 라우팅
-    # Local C++ instances use distinct WS ports. Only the configured 8002-8099
-    # range is accepted, preventing this endpoint from becoming an open proxy.
-    location ~ ^/wss/port/(?<rtc_cpp_ws_port>80(?:0[2-9]|[1-9][0-9]))/rtc/canvas/(?<rtc_canvas_id>[0-9]+)$ {
-        proxy_pass http://127.0.0.1:$rtc_cpp_ws_port/ws/rtc/canvas/$rtc_canvas_id$is_args$args;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }
-
-    location ~ ^/wss/port/(?<cpp_ws_port>80(?:0[2-9]|[1-9][0-9]))/canvas/(?<canvas_id>[0-9]+)$ {
-        proxy_pass http://127.0.0.1:$cpp_ws_port/ws/canvas/$canvas_id$is_args$args;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
     }
 }
