@@ -11,6 +11,7 @@ services:
     ports:
       - "127.0.0.1:${NGINX_PORT:-4173}:80"
     volumes:
+      - ./nginx/10-validate-mode.sh:/docker-entrypoint.d/10-validate-mode.sh:ro
       - ./nginx/agora.conf.example:/etc/nginx/templates/default.conf.template:ro
       - frontend-dist:/usr/share/nginx/html:ro
     networks:

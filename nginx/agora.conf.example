@@ -6,7 +6,7 @@ map $http_upgrade $connection_upgrade {
     '' close;
 }
 map "${FRONTEND_MODE}" $frontend_root {
-    default /usr/share/nginx/html;
+    default /usr/share/nginx/html/current;
     development /var/empty/agora;
 }
 map "${FRONTEND_MODE}" $spa_fallback {
@@ -74,15 +74,24 @@ server {
     location = /index.html {
         try_files $uri @vite;
         add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
     }
     location /assets/ {
         try_files $uri @vite;
         add_header Cache-Control $asset_cache;
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
     }
     location ~ \.mjs$ {
         try_files $uri @vite;
         types { application/javascript mjs; }
-        add_header Cache-Control $asset_cache;
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
     }
     location /pdfjs/ {
         try_files $uri @vite;
@@ -92,11 +101,17 @@ server {
             application/json json;
         }
         default_type application/octet-stream;
-        add_header Cache-Control "public, max-age=86400";
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
     }
     location /mathjax/ {
         try_files $uri @vite;
-        add_header Cache-Control "public, max-age=86400";
+        add_header Cache-Control "no-cache";
+        add_header X-Content-Type-Options nosniff always;
+        add_header X-Frame-Options SAMEORIGIN always;
+        add_header Referrer-Policy strict-origin-when-cross-origin always;
     }
     location / {
         try_files $uri $uri/ $spa_fallback;

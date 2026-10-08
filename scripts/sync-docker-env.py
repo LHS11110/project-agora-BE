@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
+import json
 import os
 import re
 import shlex
@@ -47,9 +49,11 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 def compose_value(value: str) -> str:
+    if any(character in value for character in ("\n", "\r", "$", "`")):
+        raise ValueError("Generated environment settings cannot contain shell expansion or line breaks.")
     if not value or re.fullmatch(r"[A-Za-z0-9_./:@,+%!=-]+", value):
         return value
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return json.dumps(value, ensure_ascii=False)
 
 
 def atomic_write_owner_only(path: Path, contents: str) -> None:
@@ -70,6 +74,27 @@ def atomic_write_owner_only(path: Path, contents: str) -> None:
             pass
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def copy_public_ca(base: Path, raw_path: str, target: Path) -> str:
+    if not raw_path:
+        raise ValueError("A host-readable TLS CA certificate path is required for Docker synchronization.")
+    source = Path(raw_path)
+    if not source.is_absolute():
+        source = base / source
+    data = source.read_text(encoding="utf-8")
+    if "-----BEGIN CERTIFICATE-----" not in data or "PRIVATE KEY-----" in data:
+        raise ValueError("CA input must contain only public certificates, never a private key.")
+    # Content-addressed CA paths preserve the old working CA if later validation
+    # or the .env update fails. Only the final atomic .env write selects a CA.
+    fingerprint = hashlib.sha256(data.encode()).hexdigest()[:16]
+    target = target.with_name(f"{target.stem}-{fingerprint}{target.suffix}")
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    atomic_write_owner_only(target, data)
+    # Only this public certificate is mounted; non-root UID 10001 must read it.
+    # The host directory remains 0700 and private keys are never copied here.
+    os.chmod(target, 0o644)
+    return str(target)
 
 
 def main() -> int:
@@ -119,9 +144,22 @@ def main() -> int:
         raise ValueError("Local Redis Sentinel IP addresses must be unique.")
     desired["REDIS_SENTINELS"] = ",".join(f"{address}:26379" for address in sentinel_ips)
 
+    if elasticsearch.get("ES_HTTP_TLS_ENABLED", "false").lower() != "true" or elasticsearch.get("ES_SCHEME", "http") != "https":
+        raise ValueError("Local backend Docker requires Elasticsearch HTTPS. Prepare its TLS configuration before synchronizing.")
+    if redis.get("REDIS_TLS_ENABLED", "false").lower() != "true":
+        raise ValueError("Local backend Docker requires verified Redis TLS.")
     missing = [key for key, value in desired.items() if not value]
     if missing:
         raise ValueError("Required DB environment values are missing: " + ", ".join(missing))
+
+    certs = backend_env.parent / ".local-certs"
+    desired["ES_SCHEME"] = "https"
+    desired["ES_CA_CERT"] = copy_public_ca(db_dir / "elasticsearch", elasticsearch.get("ES_CA_CERT", ""), certs / "elasticsearch-ca.crt")
+    desired["REDIS_TLS_ENABLED"] = "true"
+    desired["REDIS_TLS_CA_CERT"] = copy_public_ca(db_dir / "redis", redis.get("REDIS_TLS_CA_CERT_HOST", ""), certs / "redis-ca.crt")
+    desired["DB_TRUST_SERVER_CERTIFICATE"] = mssql.get("DB_TRUST_SERVER_CERTIFICATE", "false")
+    desired["DB_ENCRYPT"] = "true"
+    desired["DB_MULTI_SUBNET_FAILOVER"] = "false"
 
     output: list[str] = []
     seen: set[str] = set()

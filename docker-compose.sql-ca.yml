@@ -1,0 +1,10 @@
+# Optional custom SQL CA bundle. Base images use their own system CA store.
+services:
+  cpp:
+    volumes:
+      - type: bind
+        source: ${CPP_SQL_CA_CERT_HOST_PATH:?Set CPP_SQL_CA_CERT_HOST_PATH to a readable custom SQL CA bundle}
+        target: /etc/ssl/certs/ca-certificates.crt
+        read_only: true
+        bind:
+          create_host_path: false

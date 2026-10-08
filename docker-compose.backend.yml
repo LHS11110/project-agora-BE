@@ -109,7 +109,7 @@ services:
       APP_ENV: ${APP_ENV:-production}
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
-      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-172.21.0.250}
+      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-${NGINX_BACKEND_IP:-172.21.0.250}}
       PORT: "8000"
       WS_PORT: "8002"
       REST_THREAD_POOL: ${REST_THREAD_POOL:-16}
@@ -146,7 +146,7 @@ services:
       REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
-      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-${DB_FREETDS_CONF:-/etc/freetds/freetds.conf}}
+      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
     volumes:
       - type: bind
         source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
@@ -163,12 +163,6 @@ services:
       - type: bind
         source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-${DB_TRUST_SERVER_CERTIFICATE:-false}.conf.example}
         target: /etc/freetds/freetds.conf
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${CPP_SQL_CA_CERT_HOST_PATH:-/etc/ssl/certs/ca-certificates.crt}
-        target: /run/certs/sql-ca-bundle.crt
         read_only: true
         bind:
           create_host_path: false

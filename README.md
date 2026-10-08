@@ -160,7 +160,7 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 
 백엔드 Compose는 프로젝트 루트 `.env`의 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`를 호스트의 CA 파일 경로로 사용해 컨테이너에 읽기 전용으로 마운트합니다. 컨테이너 안에서는 각각 `/run/certs/elasticsearch-ca.crt`, `/run/certs/redis-ca.crt`로 참조합니다. TLS 연결을 위해 Elasticsearch는 HTTPS, Redis/Sentinel은 TLS를 사용하며 `REDIS_SENTINELS`에는 세 Sentinel 주소를 설정해야 합니다. 이미지에는 `.env`나 인증서를 복사하지 않습니다.
 
-운영 환경에서 C++ SQL TLS 인증서 검증을 사용할 때 Docker 컨테이너 경로는 `DOCKER_DB_FREETDS_CONF=/etc/freetds/freetds.conf`로 설정합니다. `DB_TRUST_SERVER_CERTIFICATE=false`이면 기본 FreeTDS 설정이 TLS를 강제하고 OS 신뢰 저장소와 서버 호스트명을 검증합니다. OS 신뢰 저장소에 없는 SQL CA를 쓸 때는 `CPP_SQL_CA_CERT_HOST_PATH`로 호스트 CA 파일을 마운트하고, `CPP_FREETDS_CONF_HOST_PATH`가 가리키는 FreeTDS 설정에서 `/run/certs/sql-ca-bundle.crt`를 `ca file`로 지정합니다. 로컬 자체 서명 DB에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 사용하세요. 이 설정은 TLS 암호화를 유지하면서 자체 서명 인증서 검증만 건너뛰는 개발용 FreeTDS 설정을 자동 선택합니다.
+운영 환경에서 C++ SQL TLS 인증서 검증을 사용할 때 Docker 컨테이너 경로는 `DOCKER_DB_FREETDS_CONF=/etc/freetds/freetds.conf`로 설정합니다. `DB_TRUST_SERVER_CERTIFICATE=false`이면 기본 FreeTDS 설정이 TLS를 강제하고 OS 신뢰 저장소와 서버 호스트명을 검증합니다. 기본 SQL CA는 C++ 이미지 내부의 OS 신뢰 저장소를 사용하므로 호스트 `/etc/ssl` 경로를 요구하지 않습니다. 사설 SQL CA는 `CPP_SQL_CA_CERT_HOST_PATH`로 지정합니다. `backend-docker.sh`는 이 값이 있을 때만 `docker-compose.sql-ca.yml`을 추가해 컨테이너 신뢰 저장소 경로에 마운트합니다. 직접 Compose로 실행할 때는 `-f docker-compose.backend.yml -f docker-compose.sql-ca.yml`을 사용하세요. 로컬 자체 서명 DB에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 사용하세요. 이 설정은 TLS 암호화를 유지하면서 자체 서명 인증서 검증만 건너뛰는 개발용 FreeTDS 설정을 자동 선택합니다.
 
 로컬 단일 Docker 엔진에서 DB와 백엔드를 함께 실행할 때는 아래 스크립트가 MSSQL·Elasticsearch를 올리고 health를 기다린 다음 기본 Redis Sentinel HA를 준비합니다. 기존 standalone 컨테이너나 데이터 볼륨이 남아 있으면 데이터를 자동으로 버리지 않고 RDB 이관 안내와 함께 멈춥니다. 레거시 데이터를 HA로 옮긴 뒤 다시 실행하면 retired 컨테이너를 제거하고 Redis HA ACL·색인·단일 `redis_server` 등록을 적용합니다. 이어 DB 계정과 Sentinel 주소를 백엔드 `.env`에 동기화한 뒤 백엔드를 시작합니다. `.env`는 소유자 전용 권한(`0600`)으로 다시 씁니다. 스크립트는 SQL·Elasticsearch 데이터 볼륨이 있는지도 확인하며 누락된 볼륨을 빈 데이터로 새로 만들지 않습니다. 최초 실행 전 SQL 스키마와 Elasticsearch 계정은 초기화되어 있어야 합니다.
 
@@ -372,7 +372,7 @@ DB 스택과 백엔드가 먼저 실행되어야 합니다. Nginx를 시작하�
 ```bash
 cd /path/to/project-agora-BE
 ./scripts/backend-docker.sh up
-FRONTEND_MODE=development docker compose -f docker-compose.nginx.yml up -d
+./scripts/nginx-docker.sh development
 cd ../project-agora-FE
 docker compose -f compose.dev.yaml up -d --build --remove-orphans
 ```
@@ -387,13 +387,13 @@ docker compose -f compose.dev.yaml down --remove-orphans
 docker compose build frontend-build
 docker compose run --rm frontend-build
 cd ../project-agora-BE
-FRONTEND_MODE=production docker compose -f docker-compose.nginx.yml up -d
+./scripts/nginx-docker.sh production
 curl -fsS http://127.0.0.1:4173/
 ```
 
-FE 빌드 컨테이너는 `agora-frontend-dist` 볼륨에 `dist/`를 내보내고 종료합니다. Nginx는 같은 볼륨을 읽기 전용으로 사용합니다. FE에 남아 있는 이전 `agora-frontend` 컨테이너는 `docker rm -f agora-frontend`로 제거해 포트 충돌을 해소합니다. 빌드 내보내기는 기존 배포 파일을 교체하므로 트래픽이 적은 시점에 수행하세요.
+FE 빌드 컨테이너는 `agora-frontend-dist` 볼륨에 `dist/`를 내보내고 종료합니다. Nginx는 같은 볼륨을 읽기 전용으로 사용합니다. FE에 남아 있는 이전 `agora-frontend` 컨테이너는 `docker rm -f agora-frontend`로 제거해 포트 충돌을 해소합니다. 빌드 내보내기는 `current` 링크를 원자적으로 바꾸고 실패 시 이전 배포를 유지합니다. 새 FE exporter와 Nginx 설정을 함께 적용해야 하며 예전 볼륨의 최상위 파일은 새 배포에서 사용하지 않습니다.
 
-BE `.env` 또는 실행 환경에서 `NGINX_PORT`(기본 4173), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. 개발 접속 주소를 변경하면 FE `.env`의 `VITE_WS_BASE_URL`을 함께 변경하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
+BE `.env` 또는 실행 환경에서 `NGINX_PORT`(기본 4173), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. Docker 개발 WebSocket은 현재 브라우저 origin을 자동으로 사용합니다. 별도 WebSocket 도메인만 FE `VITE_WS_BASE_URL`로 지정하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
 
 ```bash
 docker compose -f docker-compose.nginx.yml exec nginx nginx -t
@@ -486,3 +486,20 @@ nginx/        TLS/WSS 프록시 예시
 이 프로젝트는 [MIT License](LICENSE)를 따릅니다. 외부 라이브러리 고지는 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)에서 확인할 수 있습니다.
 
 C++ 실행 파일을 배포할 때는 실행 파일만 복사하지 말고 `cmake --install cpp/build --prefix <배포 경로>`로 라이선스 파일도 함께 설치하세요. Spring 실행 JAR에는 프로젝트 및 주요 외부 라이선스 고지가 포함됩니다. 운영체제 공유 라이브러리나 Docker 이미지를 별도로 묶어 배포한다면 해당 버전의 라이선스·고지도 추가로 확인해야 합니다.
+
+## Docker 실행 의존성 및 사전 점검
+
+- 호스트: Docker Compose v2, Bash 3.2 이상, Python 3.10 이상. Python은 기존 DB 설정 도구와 공통인 표준 라이브러리만 사용합니다. 호스트 Java·Node·Nginx·sqlcmd 설치는 Docker 기동에 필요하지 않습니다. Windows는 Bash 스크립트를 WSL2에서 실행합니다.
+- 저장소: BE·DB·FE는 독립 디렉터리에 둘 수 있습니다. DB 자동 재기동 스크립트만 기본 sibling 경로를 사용하며 다른 배치는 `AGORA_DB_DIR`로 지정합니다. `sync-docker-env.py --db-dir <DB 경로> --backend-env <BE .env>`가 비밀번호와 공개 CA를 동기화합니다. 저장소 이동이나 CA 교체 뒤에는 다시 실행하세요.
+- 네트워크: Nginx IP는 `agora-net` 서브넷 안의 빈 주소여야 합니다. `.env` 또는 실행 환경의 `NGINX_BACKEND_IP`를 C++ 신뢰 IP와 동일하게 반영하며 실행 시 실제 서브넷을 검사합니다. FE와 Nginx는 같은 Docker 엔진을 사용해야 합니다.
+- 인증: DB health가 정상이어도 로그 계정이 준비되지 않을 수 있습니다. `backend-docker.sh`의 기동·health 검사는 Spring 컨테이너에서 로그 계정 인증도 확인합니다. 실패하면 DB 계정 동기화 후 컨테이너를 재생성해야 합니다.
+
+```bash
+python3 scripts/docker-preflight.py --build
+python3 scripts/checks/runtime_checks.py
+./scripts/nginx-docker.sh config
+```
+
+사전 점검은 비밀값을 출력하지 않습니다. 실제 컨테이너 빌드·`nginx -t`·헬스 체크에는 Docker 소켓 접근이 필요합니다.
+
+공개 CA 파일은 non-root 컨테이너가 읽을 수 있도록 `0644`로 복사하고 호스트 `.local-certs/` 디렉터리는 `0700`으로 유지합니다. `.env`·개인 키는 `0600`을 유지합니다. CA 파일명은 내용 해시를 포함하므로 동기화 실패 시 기존 CA 경로가 덮어써지지 않습니다. 사용자 지정 SQL CA에도 컨테이너 읽기 권한이 필요합니다.
