@@ -102,9 +102,22 @@ if(BUILD_TESTING)
     target_compile_options(agora_cpp_unit_tests PRIVATE -Wall -Wextra -O2)
     add_test(NAME agora_cpp_unit_tests COMMAND agora_cpp_unit_tests)
 
+    add_executable(agora_cpp_memory_tests
+        tests/canvas_memory_tests.cpp
+        src/CanvasMemory.cpp
+        src/RedisClient.cpp
+        src/ElasticsearchBulkLogBuffer.cpp
+    )
+    target_link_libraries(agora_cpp_memory_tests
+        PRIVATE Threads::Threads Poco::Foundation ${HTTPLIB_LIBRARIES} crypto ssl)
+    target_compile_options(agora_cpp_memory_tests PRIVATE
+        ${HTTPLIB_CFLAGS_OTHER} -Wall -Wextra -O2)
+    add_test(NAME agora_cpp_memory_tests COMMAND agora_cpp_memory_tests)
+
     add_executable(agora_cpp_redis_failover_integration
         tests/redis_failover_integration.cpp
         src/RedisClient.cpp
+        src/CanvasMemory.cpp
         src/ElasticsearchBulkLogBuffer.cpp
     )
     target_link_libraries(agora_cpp_redis_failover_integration

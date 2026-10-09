@@ -1,4 +1,5 @@
 #include "CanvasPool.hpp"
+#include "CanvasMemory.hpp"
 #include "CanvasPassword.hpp"
 #include <atomic>
 #include <chrono>
@@ -107,15 +108,15 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canva
 
     // Prefer an existing Redis document during failover. Elasticsearch is the
     // source only when this canvas has no active cache.
-    RedisClient redis(redis_ip, redis_port);
-    if (!redis.ping()) {
+    CanvasMemory memory(redis_ip, redis_port);
+    if (!memory.ping()) {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << " initialization: Redis is unavailable\n";
         if (!redis_was_cached) mssql.updateCanvasUncached(canvas_id, cpp_server_ip_, cpp_server_port_);
         return nullptr;
     }
 
     std::optional<nlohmann::json> canvas_doc;
-    auto cached_str = redis_was_cached ? redis.get("canvas:" + std::to_string(canvas_id))
+    auto cached_str = redis_was_cached ? memory.loadCanvas(canvas_id)
                                    : std::nullopt;
     if (cached_str && !cached_str->empty()) {
         try {
@@ -166,11 +167,10 @@ std::shared_ptr<Canvas> CanvasPool::getOrCreateCanvasWithLifecycleLock(int canva
         return nullptr;
     }
     (*canvas_doc)["_cache_generation"] = newCacheGeneration();
-    if (!redis.set("canvas:" + std::to_string(canvas_id), canvas_doc->dump())) {
+    if (!memory.storeCanvas(canvas_id, *canvas_doc)) {
         std::cerr << "[CanvasPool] Rejecting canvas #" << canvas_id << ": Redis document write failed\n";
         if (!redis_was_cached) {
-            const bool cleaned = redis.deletePattern("canvas:" + std::to_string(canvas_id) + ":*")
-                && redis.del("canvas:" + std::to_string(canvas_id));
+            const bool cleaned = memory.clearCanvas(canvas_id);
             if (cleaned) {
                 mssql.updateCanvasUncached(canvas_id, cpp_server_ip_, cpp_server_port_);
             } else {
@@ -244,8 +244,8 @@ std::optional<nlohmann::json> CanvasPool::getAuthorizedCanvasDocument(
     if (auto canvas = getCanvas(canvas_id)) {
         std::lock_guard<std::mutex> settings_lock(canvas->settings_mutex);
         if (canvas->unloading) return std::nullopt;
-        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-        const auto raw = redis.get("canvas:" + std::to_string(canvas_id));
+        CanvasMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+        const auto raw = memory.loadCanvas(canvas_id);
         if (!raw || raw->empty()) return std::nullopt;
         try {
             auto doc = nlohmann::json::parse(*raw);
@@ -260,8 +260,8 @@ std::optional<nlohmann::json> CanvasPool::getAuthorizedCanvasDocument(
 
     if (assignment->is_cached) {
         if (assignment->redis_ip.empty() || assignment->redis_port <= 0) return std::nullopt;
-        RedisClient redis(assignment->redis_ip, assignment->redis_port);
-        const auto raw = redis.get("canvas:" + std::to_string(canvas_id));
+        CanvasMemory memory(assignment->redis_ip, assignment->redis_port);
+        const auto raw = memory.loadCanvas(canvas_id);
         if (!raw || raw->empty()) return std::nullopt;
         try {
             auto doc = nlohmann::json::parse(*raw);
@@ -307,13 +307,13 @@ bool CanvasPool::saveCanvasSnapshotToElasticsearch(
 
     nlohmann::json final_doc;
     try {
-        RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-        if (!redis.flushCanvasItemCache("canvas:" + std::to_string(canvas_id))) {
+        CanvasMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+        if (!memory.flushCanvas(canvas_id)) {
             std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id
                       << " assigned because its LRU items could not be synchronized to Redis\n";
             return false;
         }
-        auto cached_str = redis.get("canvas:" + std::to_string(canvas_id));
+        auto cached_str = memory.loadCanvas(canvas_id);
         if (!cached_str || cached_str->empty()) {
             std::cerr << "[CanvasPool] Keeping Canvas #" << canvas_id
                       << " assigned because its active Redis document could not be read\n";
@@ -426,13 +426,12 @@ bool CanvasPool::unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas) {
 
     // 3. Remove only the snapshot owned by this unload. If another load has
     // already replaced it, leave the new cache untouched.
-    RedisClient redis(canvas->getRedisIp(), canvas->getRedisPort());
-    const auto cleanup = redis.deleteIfCacheGenerationMatches(
-        "canvas:" + std::to_string(canvas_id), cache_generation);
-    if (cleanup == RedisClient::CompareSetResult::Error) {
+    CanvasMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    const auto cleanup = memory.removeCanvasGeneration(canvas_id, cache_generation);
+    if (cleanup == CanvasMemory::CompareSetResult::Error) {
         std::cerr << "[CanvasPool] Canvas #" << canvas_id
                   << " is uncached in MS SQL, but old Redis snapshot cleanup failed\n";
-    } else if (cleanup == RedisClient::CompareSetResult::Applied) {
+    } else if (cleanup == CanvasMemory::CompareSetResult::Applied) {
         std::cout << "[CanvasPool] Cleaned up Redis cache for Canvas #" << canvas_id << "\n";
     }
 

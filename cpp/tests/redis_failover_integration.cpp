@@ -1,4 +1,4 @@
-#include "RedisClient.hpp"
+#include "CanvasMemory.hpp"
 #include "TestSupport.hpp"
 
 #include <arpa/inet.h>
@@ -393,7 +393,7 @@ void runRedisSentinelFailover() {
     ::setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
 
     {
-        RedisClient client("127.0.0.1", primary_a.port(), "", "cpp-test-password");
+        CanvasMemory client("127.0.0.1", primary_a.port(), "", "cpp-test-password");
         AGORA_CHECK(client.connect());
         AGORA_CHECK(client.ping());
 
@@ -528,7 +528,7 @@ void runRedisTlsSentinelSmoke() {
     while (std::getline(input, seed, ',')) {
         if (seed.empty()) continue;
         ::setenv("REDIS_SENTINELS", seed.c_str(), 1);
-        RedisClient client;
+        CanvasMemory client;
         AGORA_CHECK(client.connect());
         AGORA_CHECK(client.ping());
         client.disconnect();

@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <optional>
 #include "Canvas.hpp"
-#include "RedisClient.hpp"
 #include "EsClient.hpp"
 #include "MssqlClient.hpp"
 

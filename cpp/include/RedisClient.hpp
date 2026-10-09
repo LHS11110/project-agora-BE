@@ -1,50 +1,25 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 #include <optional>
-#include <cstdint>
-#include <cstddef>
 #include <sys/types.h>
 #include <utility>
-#include <nlohmann/json.hpp>
 #include <openssl/ssl.h>
-#include "KeyValueStore.hpp"
+#include "RedisCommandExecutor.hpp"
 
-class RedisClient : public KeyValueStore {
+// Sentinel discovery, verified TLS and RESP transport only; no cache policy.
+// Keep each instance confined to a single operation/request thread.
+class RedisClient final : public RedisCommandExecutor {
 public:
-    enum class CompareSetResult { Applied, Conflict, Error };
     RedisClient(const std::string& host = "127.0.0.1", int port = 6379,
                 const std::string& user = "", const std::string& password = "");
-    ~RedisClient();
-
-    bool connect();
-    void disconnect();
-
+    ~RedisClient() override;
+    bool connect() override;
+    void disconnect() override;
     bool ping();
-    bool set(const std::string& key, const std::string& value) override;
-    std::optional<std::string> get(const std::string& key) override;
-    bool flushCanvasItemCache(const std::string& key);
-    std::optional<std::string> getJsonPath(const std::string& key, const std::string& path);
-    bool setJsonPath(const std::string& key, const std::string& path, const nlohmann::json& value);
-    bool appendChatMessage(const std::string& key, const std::string& item_id,
-                           std::uint64_t sequence, const nlohmann::json& message);
-    std::optional<std::string> getChatHistoryPage(const std::string& key, const std::string& item_id,
-                           const std::optional<std::uint64_t>& from_sequence,
-                           const std::optional<std::uint64_t>& to_sequence,
-                           std::uint64_t limit);
-    CompareSetResult compareAndSetJsonPaths(const std::string& key, long long expected_revision,
-                            const std::vector<std::pair<std::string, nlohmann::json>>& values,
-                            const std::vector<std::string>& deletes = {});
-    bool deleteJsonPath(const std::string& key, const std::string& path);
-    bool del(const std::string& key) override;
-    // Deletes the old cache only if a newer canvas load has not replaced it.
-    CompareSetResult deleteIfCacheGenerationMatches(const std::string& key, const std::string& generation);
-    bool deletePattern(const std::string& pattern);
-    int getKeyCount(const std::string& pattern = "canvas*");
-
-    // Helper to read JSON, update field, and write back
-    bool updateJson(const std::string& key, const std::function<void(nlohmann::json&)>& modifier);
+    std::optional<std::string> execute(const std::vector<std::string>& command) override;
 
 private:
     std::string user_;
@@ -60,11 +35,6 @@ private:
     SSL_CTX* ssl_context_;
     SSL* ssl_;
 
-    std::optional<std::string> readFromRedis(const std::string& key);
-    std::optional<std::string> readJsonPathFromRedis(const std::string& key, const std::string& path);
-    bool writeBackCanvasItem(const std::string& key, const std::string& item_id,
-                             const std::string& item_json);
-    bool flushCanvasItemCacheLocked(const std::string& key);
     bool connectTo(const std::string& host, int port, int timeout_ms);
     ssize_t readTransport(void* buffer, std::size_t size);
     ssize_t writeTransport(const void* buffer, std::size_t size);
