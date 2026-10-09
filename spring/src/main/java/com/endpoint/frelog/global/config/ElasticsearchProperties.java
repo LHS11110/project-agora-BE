@@ -12,7 +12,7 @@ public class ElasticsearchProperties {
 
     private String host = "127.0.0.1";
     private int port = 9200;
-    private String scheme = "http";
+    private String scheme = "https";
     private String caCertificate = "";
     private String index = "canvas";
     private String username = "agora_user";
@@ -120,8 +120,8 @@ public class ElasticsearchProperties {
     }
 
     public String getBaseUrl() {
-        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
-            throw new IllegalStateException("ES_SCHEME must be either http or https");
+        if (!"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalStateException("ES_SCHEME must be https");
         }
         return String.format("%s://%s:%d", scheme, host, port);
     }

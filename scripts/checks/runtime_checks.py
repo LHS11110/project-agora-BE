@@ -45,6 +45,15 @@ class PreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'not readable by container UID'):
                     module.validate()
 
+    def test_root_tls_initializer_can_read_owner_only_public_ca_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory)/'ca.pem';source.write_text('public test certificate');source.chmod(0o600)
+            def docker(args,**kwargs):
+                config={'services':{'service-tls-init':{'user':'0:0','volumes':[{'type':'bind','source':str(source),'target':'/source-ca.pem'}]}}}
+                return subprocess.CompletedProcess(args,0,json.dumps(config),'')
+            with patch.object(module,'effective_settings',return_value=self.values()),patch.object(module.subprocess,'run',side_effect=docker):
+                module.validate()
+
     def test_public_ca_copy_rejects_keys_and_preserves_previous_ca(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

@@ -7,19 +7,38 @@ services:
     restart: unless-stopped
     environment:
       FRONTEND_MODE: ${FRONTEND_MODE:-production}
-      NGINX_ENVSUBST_FILTER: ^FRONTEND_MODE
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-8443}
+      NGINX_ENVSUBST_FILTER: ^(FRONTEND_MODE|NGINX_HTTPS_PORT)$
     ports:
-      - "127.0.0.1:${NGINX_PORT:-4173}:80"
+      - "127.0.0.1:${NGINX_HTTPS_PORT:-8443}:443"
     volumes:
       - ./nginx/10-validate-mode.sh:/docker-entrypoint.d/10-validate-mode.sh:ro
       - ./nginx/agora.conf.example:/etc/nginx/templates/default.conf.template:ro
       - frontend-dist:/usr/share/nginx/html:ro
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/fullchain.pem
+        target: /etc/nginx/ssl/agora/fullchain.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/privkey.pem
+        target: /etc/nginx/ssl/agora/privkey.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/root-ca.pem
+        target: /etc/nginx/ssl/agora/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       agora-net:
         ipv4_address: ${NGINX_BACKEND_IP:-172.21.0.250}
       agora-web: {}
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/etc/nginx/ssl/agora/ca.pem", "https://localhost/nginx-health"]
       interval: 10s
       timeout: 5s
       retries: 5

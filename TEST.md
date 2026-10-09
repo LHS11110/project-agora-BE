@@ -13,7 +13,7 @@ cd spring
 ./gradlew test
 ```
 
-Windows에서는 `./gradlew` 대신 `gradlew.bat test`를 실행합니다. Gradle 테스트 리포트는 `spring/build/reports/tests/test/index.html`에 생성됩니다.
+Gradle 테스트 리포트는 `spring/build/reports/tests/test/index.html`에 생성됩니다.
 
 자동 테스트는 `spring/src/test/resources/application.properties`를 사용합니다. SQL Server 대신 MSSQL 호환 모드의 H2 메모리 DB를 사용하고, Spring 테스트 컨텍스트 수명에 맞춰 스키마를 생성·삭제합니다. Redis와 Elasticsearch는 기본적으로 외부 인스턴스에 연결하지 않습니다.
 

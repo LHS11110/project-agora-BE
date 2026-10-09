@@ -39,5 +39,5 @@ private:
     std::string internal_api_token_;
     std::string db_host_;
     int db_port_;
-    httplib::Server server_;
+    httplib::SSLServer server_;
 };

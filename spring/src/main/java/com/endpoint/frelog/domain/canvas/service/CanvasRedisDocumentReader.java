@@ -50,7 +50,7 @@ public class CanvasRedisDocumentReader {
             @Value("${app.redis.sentinel-master-name:agora-master}") String sentinelMasterName,
             @Value("${REDIS_SENTINEL_USER:}") String sentinelUsername,
             @Value("${REDIS_SENTINEL_PASSWORD:}") String sentinelPassword,
-            @Value("${app.redis.tls-enabled:false}") boolean tlsEnabled,
+            @Value("${app.redis.tls-enabled:true}") boolean tlsEnabled,
             @Value("${app.redis.tls-ca-certificate:}") String tlsCaCertificate,
             ElasticsearchBulkLogService logService) {
         this.objectMapper = objectMapper;

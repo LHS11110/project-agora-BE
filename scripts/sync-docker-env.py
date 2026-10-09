@@ -157,7 +157,13 @@ def main() -> int:
     desired["ES_CA_CERT"] = copy_public_ca(db_dir / "elasticsearch", elasticsearch.get("ES_CA_CERT", ""), certs / "elasticsearch-ca.crt")
     desired["REDIS_TLS_ENABLED"] = "true"
     desired["REDIS_TLS_CA_CERT"] = copy_public_ca(db_dir / "redis", redis.get("REDIS_TLS_CA_CERT_HOST", ""), certs / "redis-ca.crt")
-    desired["DB_TRUST_SERVER_CERTIFICATE"] = mssql.get("DB_TRUST_SERVER_CERTIFICATE", "false")
+    if mssql.get("MSSQL_TLS_ENABLED", "true").lower() != "true" or mssql.get("DB_TRUST_SERVER_CERTIFICATE", "false").lower() != "false":
+        raise ValueError("SQL Server requires TLS and certificate verification.")
+    sql_dir = Path(mssql.get("MSSQL_TLS_CERTS_DIR", "./tls"))
+    if not sql_dir.is_absolute():
+        sql_dir = db_dir / "mssql" / sql_dir
+    desired["SQL_TLS_CA_CERT"] = copy_public_ca(db_dir / "mssql", str(sql_dir / "ca.crt"), certs / "sql-ca.crt")
+    desired["DB_TRUST_SERVER_CERTIFICATE"] = "false"
     desired["DB_ENCRYPT"] = "true"
     desired["DB_MULTI_SUBNET_FAILOVER"] = "false"
 

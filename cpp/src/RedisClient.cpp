@@ -607,7 +607,7 @@ std::string envOr(const char* name, const std::string& value) {
 
 bool envEnabled(const char* name) {
     const char* value = std::getenv(name);
-    if (!value) return false;
+    if (!value || !*value) return true;
     std::string normalized(value);
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });

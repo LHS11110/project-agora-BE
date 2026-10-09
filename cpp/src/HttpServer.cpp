@@ -15,6 +15,8 @@
 #include "ElasticsearchBulkLogBuffer.hpp"
 #include "RequestLogContext.hpp"
 
+#include <openssl/ssl.h>
+#include <stdexcept>
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
@@ -37,7 +39,10 @@ HttpServer::HttpServer(CanvasPool& canvas_pool, const std::string& host, int por
                        const std::string& db_host, int db_port,
                        std::vector<std::unique_ptr<HttpApiModule>> api_modules)
     : canvas_pool_(canvas_pool), api_modules_(std::move(api_modules)), host_(host), port_(port), advertised_host_(advertised_host),
-      jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port) {
+      jwt_secret_(jwt_secret), db_host_(db_host), db_port_(db_port),
+      server_(environmentValue("SERVICE_TLS_CERT").c_str(), environmentValue("SERVICE_TLS_KEY").c_str()) {
+    if (!server_.is_valid()) throw std::runtime_error("HTTPS requires valid SERVICE_TLS_CERT and SERVICE_TLS_KEY");
+    SSL_CTX_set_min_proto_version(server_.ssl_context(), TLS1_2_VERSION);
     internal_api_token_ = environmentValue("CPP_INTERNAL_API_TOKEN");
     // cpp-httplib enables SO_REUSEPORT by default on Linux. That lets a second
     // server bind the same port and makes the kernel distribute requests to a

@@ -40,7 +40,9 @@ public class UserProfileController {
     @GetMapping("/profile-images/{id}")
     public ResponseEntity<byte[]> image(@PathVariable Long id, @AuthenticationPrincipal CustomUserDetails current) {
         self(current); active(id);
-        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).contentType(MediaType.IMAGE_PNG).body(images.read(id));
+        byte[] image = images.read(id);
+        if (image == null) return ResponseEntity.noContent().cacheControl(CacheControl.noStore()).build();
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).contentType(MediaType.IMAGE_PNG).body(image);
     }
     @PutMapping(value = "/me/profile-image", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Map<String, String> upload(@RequestPart("image") MultipartFile file, @AuthenticationPrincipal CustomUserDetails current) {

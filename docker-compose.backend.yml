@@ -1,6 +1,36 @@
 name: agora-backend
 
 services:
+  service-tls-init:
+    image: eclipse-temurin:26-jdk
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/bin/sh", "/prepare-service-tls.sh"]
+    volumes:
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:?Set NGINX_TLS_CERT_DIR}/internal
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./docker/prepare-service-tls.sh:/prepare-service-tls.sh:ro
+      - spring-tls:/target/spring
+      - cpp-tls:/target/cpp
+      - frontend-tls:/target/frontend
+      - type: bind
+        source: ${SQL_TLS_CA_CERT:?Set SQL_TLS_CA_CERT to the SQL issuing CA file}
+        target: /source-sql-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:?Set NGINX_TLS_CERT_DIR}/root-ca.pem
+        target: /source-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
   spring:
     image: agora-spring:local
     build:
@@ -14,6 +44,7 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
     volumes:
+      - spring-tls:/run/tls:ro
       - type: volume
         source: spring-resources
         target: /home/agora/project-agora/canvas-resource
@@ -37,6 +68,10 @@ services:
       APP_ENV: ${APP_ENV:-production}
       SERVER_ADDRESS: 0.0.0.0
       SERVER_PORT: "8080"
+      JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/run/tls/truststore -Djavax.net.ssl.trustStorePassword=changeit
+      SERVICE_TLS_CERT: /run/tls/fullchain.pem
+      SERVICE_TLS_KEY: /run/tls/privkey.pem
+      SERVICE_TLS_CA: /run/tls/ca.pem
       DB_NAME: ${DB_NAME:-agora_db}
       DB_USER: ${DB_USER:-agora_user}
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
@@ -72,13 +107,14 @@ services:
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
-    ports:
-      - "127.0.0.1:8080:8080"
     networks:
       - agora-net
       - redis-ha
+    depends_on:
+      service-tls-init:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/auth/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "https://localhost:8080/api/auth/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -106,6 +142,9 @@ services:
     cap_drop:
       - ALL
     environment:
+      SERVICE_TLS_CERT: /run/tls/fullchain.pem
+      SERVICE_TLS_KEY: /run/tls/privkey.pem
+      SERVICE_TLS_CA: /run/tls/ca.pem
       APP_ENV: ${APP_ENV:-production}
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
@@ -148,6 +187,13 @@ services:
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
     volumes:
+      - cpp-tls:/run/tls:ro
+      - type: bind
+        source: ${SQL_TLS_CA_CERT:?Set SQL_TLS_CA_CERT to the SQL issuing CA file}
+        target: /run/certs/sql-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
         target: /run/certs/elasticsearch-ca.crt
@@ -161,22 +207,21 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-${DB_TRUST_SERVER_CERTIFICATE:-false}.conf.example}
+        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-docker-tls.conf}
         target: /etc/freetds/freetds.conf
         read_only: true
         bind:
           create_host_path: false
-    ports:
-      - "127.0.0.1:8000:8000"
-      - "127.0.0.1:8002:8002"
     networks:
       - agora-net
       - redis-ha
     depends_on:
+      service-tls-init:
+        condition: service_completed_successfully
       spring:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "https://localhost:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -198,3 +243,10 @@ networks:
 volumes:
   spring-resources:
     name: agora-backend-spring-resources
+
+  spring-tls:
+    name: agora-spring-tls
+  cpp-tls:
+    name: agora-cpp-tls
+  frontend-tls:
+    name: agora-frontend-tls

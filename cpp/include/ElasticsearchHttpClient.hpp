@@ -10,8 +10,8 @@ inline std::unique_ptr<httplib::Client> makeElasticsearchHttpClient(
         const std::string& host, int port) {
     const char* configured_scheme = std::getenv("ES_SCHEME");
     const std::string scheme = configured_scheme && *configured_scheme
-        ? configured_scheme : "http";
-    if (scheme != "http" && scheme != "https") return {};
+        ? configured_scheme : "https";
+    if (scheme != "https") return {};
 
     std::string url_host = host;
     if (url_host.find(':') != std::string::npos

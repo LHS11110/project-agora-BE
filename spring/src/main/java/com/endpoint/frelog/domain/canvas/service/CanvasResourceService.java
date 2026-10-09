@@ -42,7 +42,7 @@ public class CanvasResourceService {
     private final Path baseResourceDir;
 
     public CanvasResourceService() {
-        String userHome = System.getProperty("user.home", "/home/ubuntu");
+        String userHome = System.getProperty("user.home", ".");
         this.baseResourceDir = Paths.get(userHome, "project-agora", "canvas-resource");
         try {
             Files.createDirectories(this.baseResourceDir);

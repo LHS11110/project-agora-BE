@@ -30,7 +30,7 @@ Commands:
 EOF
 }
 
-[[ -f "$ENV_FILE" ]] || die "Missing $ENV_FILE. Create it from the README environment-variable section."
+[[ -f "$ENV_FILE" ]] || die "Missing $ENV_FILE. Run python3 scripts/setup-docker.py --db-dir <DB path> --tls-dir <certificate bundle path>."
 command -v python3 >/dev/null 2>&1 || die "python3 is required for portable configuration checks."
 command -v docker >/dev/null 2>&1 || die "Docker is not installed or not on PATH."
 docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required."
@@ -61,7 +61,7 @@ compose() {
 
 require_network() {
     local network_name="$1"
-    docker info >/dev/null 2>&1 || die "Docker engine is unavailable or access is denied. Check Docker Desktop/daemon and socket permissions."
+    docker info >/dev/null 2>&1 || die "Docker engine is unavailable or access is denied. Check the Docker daemon and socket permissions."
     docker network inspect "$network_name" >/dev/null 2>&1 \
         || die "Docker network '$network_name' is missing. Start the matching DB/Sentinel Compose stack first."
 }
@@ -142,11 +142,11 @@ wait_for_backend_health() {
 
 health_check() {
     command -v curl >/dev/null 2>&1 || die "curl is required for the host health check."
-    curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-        http://127.0.0.1:8080/api/auth/health
+    docker exec agora-spring curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+        --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health
     printf '\n'
-    curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
-        http://127.0.0.1:8000/health
+    docker exec agora-cpp curl --fail --silent --show-error --connect-timeout 3 --max-time 10 \
+        --cacert /run/tls/ca.pem https://localhost:8000/health
     printf '\n'
     # Database health does not establish that the dedicated log writer can authenticate.
     if ! docker exec agora-spring /bin/sh -c '

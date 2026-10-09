@@ -14,6 +14,7 @@ import math
 import os
 import secrets
 import socket
+import ssl
 import statistics
 import time
 from collections import Counter
@@ -43,7 +44,7 @@ def api_json(host: str, method: str, path: str, body: object | None = None,
         headers["Authorization"] = "Bearer " + token
     if internal_token:
         headers["X-Agora-Internal-Token"] = internal_token
-    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ssl.create_default_context(cafile=os.environ.get("SERVICE_TLS_CA")))
     try:
         conn.request(method, path, body=payload, headers=headers)
         response = conn.getresponse()
@@ -109,7 +110,7 @@ def ws_sample(host: str, route: str, token: str, expected_type: str) -> dict[str
     response_meta: dict[str, str] = {}
     sock = None
     try:
-        sock = socket.create_connection((host, 8002), timeout=10)
+        sock = ssl.create_default_context(cafile=os.environ.get("SERVICE_TLS_CA")).wrap_socket(socket.create_connection((host, 8002), timeout=10), server_hostname=host)
         sock.settimeout(10)
         sock.sendall(request)
         data = bytearray()

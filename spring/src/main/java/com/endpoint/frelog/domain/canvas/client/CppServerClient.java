@@ -8,7 +8,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import com.endpoint.frelog.global.logging.RequestCorrelationFilter;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
+import java.net.http.HttpClient;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -28,9 +35,21 @@ public class CppServerClient {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
-    public CppServerClient(@Value("${app.cpp.internal-api-token:}") String internalApiToken) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(Duration.ofMillis(3000));
+    public CppServerClient(@Value("${app.cpp.internal-api-token:}") String internalApiToken,
+                           @Value("${app.service-tls-ca}") String caPath) throws Exception {
+        var trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        trustStore.load(null);
+        try (var input = Files.newInputStream(Path.of(caPath))) {
+            var certificates = CertificateFactory.getInstance("X.509").generateCertificates(input);
+            int index = 0;
+            for (var certificate : certificates) trustStore.setCertificateEntry("service-ca-" + index++, certificate);
+        }
+        var trustManagers = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        trustManagers.init(trustStore);
+        var sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustManagers.getTrustManagers(), null);
+        var httpClient = HttpClient.newBuilder().sslContext(sslContext).connectTimeout(Duration.ofSeconds(3)).build();
+        var requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(Duration.ofMillis(3000));
         this.restClient = RestClient.builder().requestFactory(requestFactory).build();
         this.internalApiToken = internalApiToken;
@@ -48,7 +67,7 @@ public class CppServerClient {
             String requestId = MDC.get("request_id");
             if (requestId == null || requestId.isBlank()) requestId = UUID.randomUUID().toString();
             String body = restClient.get()
-                    .uri(URI.create("http://" + host + ":" + port + "/api/canvas/count"))
+                    .uri(URI.create("https://" + host + ":" + port + "/api/canvas/count"))
                     .header("X-Agora-Internal-Token", internalApiToken)
                     .header(RequestCorrelationFilter.HEADER, requestId)
                     .retrieve()

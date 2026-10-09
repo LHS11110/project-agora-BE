@@ -16,13 +16,14 @@ import math
 import os
 import secrets
 import socket
+import ssl
 import statistics
 import subprocess
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
 
@@ -52,10 +53,15 @@ def percentile(values: list[float], p: float) -> float:
 
 class Benchmark:
     def __init__(self, spring: str, cpp: str):
+        if urlparse(spring).scheme != "https" or urlparse(cpp).scheme != "https":
+            raise ValueError("Benchmark endpoints require HTTPS")
         self.spring = spring.rstrip("/")
         self.cpp = cpp.rstrip("/")
         self.spring_session = requests.Session()
         self.cpp_session = requests.Session()
+        self.ca = os.environ.get("SERVICE_TLS_CA", str(ROOT.parent / "project-agora-FE/.local-https/root-ca.pem"))
+        self.spring_session.verify = self.ca
+        self.cpp_session.verify = self.ca
         self.samples: dict[tuple[str, str], list[dict[str, object]]] = defaultdict(list)
         self.route_samples: Counter[str] = Counter()
         self.started = time.perf_counter()
@@ -105,7 +111,8 @@ class Benchmark:
         message = b""
         sock = None
         try:
-            sock = socket.create_connection(("127.0.0.1", 8002), timeout=10)
+            host = urlparse(self.cpp).hostname
+            sock = ssl.create_default_context(cafile=self.ca).wrap_socket(socket.create_connection((host, 8002), timeout=10), server_hostname=host)
             sock.settimeout(10)
             sock.sendall(request)
             buf = bytearray()
@@ -221,8 +228,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=1000,
                         help="samples per endpoint (mutating create/delete pairs use 2x this count)")
-    parser.add_argument("--spring", default="http://127.0.0.1:8080")
-    parser.add_argument("--cpp", default="http://127.0.0.1:8000")
+    parser.add_argument("--spring", default="https://localhost:8443")
+    parser.add_argument("--cpp", default="https://agora-cpp:8000")
     parser.add_argument("--output", default="/tmp/agora-api-benchmark.json")
     args = parser.parse_args()
     n = args.iterations

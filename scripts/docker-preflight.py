@@ -25,6 +25,9 @@ def effective_settings():
 
 def validate(build=False, gateway=False):
     values = effective_settings()
+    for key, expected in (("DB_ENCRYPT", "true"), ("DB_TRUST_SERVER_CERTIFICATE", "false"), ("REDIS_TLS_ENABLED", "true"), ("ES_SCHEME", "https")):
+        if values.get(key, expected).lower() != expected:
+            raise ValueError(f'TLS configuration requires {key}={expected}.')
     proxy_ip = values.get('NGINX_BACKEND_IP') or '172.21.0.250'
     address = ipaddress.ip_address(proxy_ip)
     if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified or address.is_multicast:
@@ -53,8 +56,18 @@ def validate(build=False, gateway=False):
             if mount['type'] != 'bind':
                 continue
             path = Path(mount['source'])
+            if mount['target'] == '/source':
+                if not path.is_dir():
+                    raise ValueError('service-tls-init: missing internal certificate directory; run setup-docker.py with --tls-dir.')
+                for name in ('spring', 'cpp', 'frontend'):
+                    for filename in ('fullchain.pem', 'privkey.pem', 'ca.pem'):
+                        if not (path / name / filename).is_file():
+                            raise ValueError(f'Missing manually supplied certificate file: {path / name / filename}')
+                continue
             if not path.is_file() or not os.access(path, os.R_OK):
                 raise ValueError(f'{service}: unreadable/missing bind file for {mount["target"]}. Configure its host path in .env.')
+            if str(definition.get('user', '10001')).split(':', 1)[0] == '0':
+                continue
             info = path.stat()
             readable = bool(info.st_mode & stat.S_IROTH) or (info.st_uid == 10001 and bool(info.st_mode & stat.S_IRUSR)) or (info.st_gid == 10001 and bool(info.st_mode & stat.S_IRGRP))
             if not readable:

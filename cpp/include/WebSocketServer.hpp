@@ -40,13 +40,14 @@ struct PerSocketData {
     std::string rtc_canvas_connection_hash;
     bool closing{false};
     bool rtc_signaling_only{false};
+    bool canvas_host_protocol{false};
     std::string parent_request_id;
     std::string connection_request_id;
 };
 
 class WebSocketServer {
 public:
-    using Socket = uWS::WebSocket<false, true, PerSocketData>;
+    using Socket = uWS::WebSocket<true, true, PerSocketData>;
     using TokenValidator = std::function<std::optional<AuthenticatedUser>(const std::string&, int, const std::string&)>;
 
     WebSocketServer(CanvasPool& pool, const std::string& host = "0.0.0.0", int ws_port = 8001,
@@ -76,6 +77,7 @@ private:
     void detachRtcPeersForCanvasSocket(std::uint64_t canvas_connection_id);
     void announceRtcPeer(Socket* ws, const nlohmann::json& event);
     bool sendRtcPeerList(Socket* ws);
+    void refreshCanvasHost(int canvas_id);
     void handleRtcSignal(Socket* ws, const nlohmann::json& event);
     void closeSocketSession(Socket* ws, int code, const std::string& reason);
     void indexSocket(Socket* ws);
@@ -124,6 +126,8 @@ private:
     std::unordered_map<std::uint64_t, std::unordered_set<Socket*>> rtc_sockets_by_canvas_connection_;
     std::unordered_map<std::uint64_t, Socket*> sockets_by_connection_id_;
     std::unordered_map<int, std::unordered_map<std::string, Socket*>> sockets_by_canvas_peer_;
+    struct CanvasHostState { std::string term; std::string peer_id; nlohmann::json members; };
+    std::unordered_map<int, CanvasHostState> canvas_hosts_;
     std::unordered_map<int, std::unordered_map<std::string, std::unordered_set<std::string>>> item_permissions_by_canvas_;
     std::unordered_map<int, std::unordered_set<std::string>> chat_rooms_by_canvas_;
     std::unordered_map<int, std::unordered_map<std::string, std::uint64_t>> chat_next_sequence_by_canvas_;

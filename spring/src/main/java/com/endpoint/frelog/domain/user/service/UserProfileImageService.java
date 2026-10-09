@@ -31,7 +31,7 @@ public class UserProfileImageService {
     }
     public byte[] read(Long id) {
         Path target = directory.resolve(id + ".png");
-        if (!Files.isRegularFile(target)) throw new CustomException(ErrorCode.USER_NOT_FOUND, "프로필 이미지가 없습니다.");
+        if (!Files.isRegularFile(target)) return null; // Optional avatar, not a missing account.
         try { return Files.readAllBytes(target); }
         catch (IOException failure) { throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR); }
     }

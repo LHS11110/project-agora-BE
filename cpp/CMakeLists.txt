@@ -23,9 +23,7 @@ include_directories(
     /usr/include
 )
 
-# Build vendored uSockets with CMake. Its upstream Makefile always tries the
-# Windows-only lib.exe before falling back to ar, which produces a misleading
-# warning on every Linux build.
+# Build vendored uSockets with CMake to use the configured archiver directly.
 file(GLOB_RECURSE USOCKETS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/src/*.c"
 )
@@ -36,7 +34,9 @@ add_library(usockets STATIC ${USOCKETS_SOURCES})
 target_include_directories(usockets PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/src
 )
-target_compile_definitions(usockets PRIVATE LIBUS_NO_SSL)
+target_sources(usockets PRIVATE third_party/uWebSockets/uSockets/src/crypto/sni_tree.cpp)
+target_compile_definitions(usockets PUBLIC LIBUS_USE_OPENSSL)
+target_link_libraries(usockets PUBLIC ssl crypto)
 target_compile_options(usockets PRIVATE -O3)
 
 # Source files
@@ -46,7 +46,7 @@ file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src
 add_executable(agora_cpp_server ${CPP_SOURCES})
 
 # Target compile definitions
-target_compile_definitions(agora_cpp_server PRIVATE LIBUS_NO_SSL AGORA_BUILD_VERSION=\"${PROJECT_VERSION}\")
+target_compile_definitions(agora_cpp_server PRIVATE LIBUS_USE_OPENSSL AGORA_BUILD_VERSION=\"${PROJECT_VERSION}\")
 
 # Target link libraries
 target_link_libraries(agora_cpp_server
@@ -89,6 +89,10 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jwt-cpp/LICENSE
 # fake Redis Sentinel/primary pair on loopback and needs no external services.
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(agora_cpp_host_tests tests/canvas_host_test.cpp)
+    target_compile_options(agora_cpp_host_tests PRIVATE -Wall -Wextra -O2)
+    add_test(NAME agora_cpp_host_tests COMMAND agora_cpp_host_tests)
+
     add_executable(agora_cpp_unit_tests
         tests/unit_tests.cpp
         src/Canvas.cpp

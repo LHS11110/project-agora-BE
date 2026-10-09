@@ -1,4 +1,6 @@
 #include "WebSocketServer.hpp"
+#include "Environment.hpp"
+#include "CanvasHostElection.hpp"
 #include "RedisClient.hpp"
 #include "CanvasPassword.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
@@ -79,6 +81,7 @@ struct ActiveWebSocketResponseTracker {
 };
 
 thread_local ActiveWebSocketResponseTracker* active_websocket_response_tracker = nullptr;
+thread_local std::string* active_host_batch_error = nullptr;
 
 template <typename SocketType>
 static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS::OpCode opcode) {
@@ -95,6 +98,7 @@ static auto sendWithRequestContext(SocketType* ws, std::string_view payload, uWS
                     const std::string error_code = message.contains("code") && message["code"].is_string()
                         ? message["code"].get<std::string>() : "WEBSOCKET_REQUEST_REJECTED";
                     agora::logging::markCurrentRequestRejected(error_code);
+                    if (active_host_batch_error && active_host_batch_error->empty()) *active_host_batch_error = error_code;
                 }
                 const bool correlated_response = failed
                     || (type.size() >= 7 && type.compare(type.size() - 7, 7, "_result") == 0)
@@ -1090,7 +1094,7 @@ void WebSocketServer::stopAcceptingClients() {
             listener_closed_future = listener_closed->get_future();
             loop_->defer([this, listener_closed]() {
                 if (listen_socket_) {
-                    us_listen_socket_close(0, static_cast<us_listen_socket_t*>(listen_socket_));
+                    us_listen_socket_close(1, static_cast<us_listen_socket_t*>(listen_socket_));
                     listen_socket_ = nullptr;
                 }
                 listener_closed->set_value();
@@ -1130,7 +1134,7 @@ void WebSocketServer::stop(bool send_reconnect_signal) {
                     }
                 }
                 if (listen_socket_) {
-                    us_listen_socket_close(0, static_cast<us_listen_socket_t*>(listen_socket_));
+                    us_listen_socket_close(1, static_cast<us_listen_socket_t*>(listen_socket_));
                     listen_socket_ = nullptr;
                 }
             });
@@ -1298,6 +1302,7 @@ void WebSocketServer::unregisterSocket(Socket* ws) {
     it->second.erase(ws);
     if (it->second.empty()) {
         sockets_by_canvas_.erase(it);
+        canvas_hosts_.erase(data->canvas_id);
         item_permissions_by_canvas_.erase(data->canvas_id);
         chat_rooms_by_canvas_.erase(data->canvas_id);
         chat_next_sequence_by_canvas_.erase(data->canvas_id);
@@ -1330,6 +1335,7 @@ void WebSocketServer::detachRtcPeer(Socket* ws) {
         if (peer_index->second.empty()) sockets_by_canvas_peer_.erase(peer_index);
     }
     data->rtc_peer_id.clear();
+    refreshCanvasHost(data->canvas_id);
 
     const auto peers = sockets_by_canvas_peer_.find(data->canvas_id);
     if (peers == sockets_by_canvas_peer_.end()) return;
@@ -1376,6 +1382,34 @@ void WebSocketServer::detachRtcPeersForCanvasSocket(std::uint64_t canvas_connect
     }
 }
 
+void WebSocketServer::refreshCanvasHost(int canvas_id) {
+    nlohmann::json members = nlohmann::json::array();
+    std::vector<CanvasHostCandidate> candidates;
+    bool hosted = canvas_hosts_.count(canvas_id) != 0;
+    const auto peers = sockets_by_canvas_peer_.find(canvas_id);
+    if (peers != sockets_by_canvas_peer_.end()) {
+        for (const auto& [id, socket] : peers->second) {
+            const auto* data = socket->getUserData();
+            if (!data->access_authorized || data->closing || !findBoundCanvasSocket(data)) continue;
+            members.push_back(publicRtcPeer(data));
+            candidates.push_back({id, data->is_admin, data->canvas_host_protocol, data->groups});
+            hosted = hosted || data->canvas_host_protocol;
+        }
+    }
+    if (!hosted) return;
+    auto& state = canvas_hosts_[canvas_id];
+    state = {createRtcPeerId(), electCanvasHost(candidates), std::move(members)};
+    const auto payload = nlohmann::json{{"type", "rtc_host_changed"},
+        {"host", {{"protocol", 1}, {"term", state.term}, {"peer_id", state.peer_id}, {"members", state.members}}}}.dump();
+    std::vector<std::uint64_t> recipients;
+    if (peers != sockets_by_canvas_peer_.end()) for (const auto& [id, socket] : peers->second) {
+        (void)id; recipients.push_back(socket->getUserData()->connection_id);
+    }
+    for (const auto id : recipients) if (auto* socket = findSocketByConnectionId(id)) {
+        if (!socket->getUserData()->closing) sendWithRequestContext(socket, payload, uWS::OpCode::TEXT);
+    }
+}
+
 bool WebSocketServer::sendRtcPeerList(Socket* ws) {
     const auto* data = ws->getUserData();
     if (!data->rtc_signaling_only || !data->access_authorized || data->rtc_peer_id.empty()) return false;
@@ -1392,9 +1426,11 @@ bool WebSocketServer::sendRtcPeerList(Socket* ws) {
             }
         }
     }
-    return sendWithRequestContext(ws, nlohmann::json{{"type", "rtc_peers"},
-        {"self_peer_id", data->rtc_peer_id}, {"peers", std::move(peers)}}.dump(),
-        uWS::OpCode::TEXT) != Socket::DROPPED;
+    nlohmann::json response{{"type", "rtc_peers"}, {"self_peer_id", data->rtc_peer_id}, {"peers", std::move(peers)}};
+    const auto host = canvas_hosts_.find(data->canvas_id);
+    if (host != canvas_hosts_.end()) response["host"] = {{"protocol", 1}, {"term", host->second.term},
+        {"peer_id", host->second.peer_id}, {"members", host->second.members}};
+    return sendWithRequestContext(ws, response.dump(), uWS::OpCode::TEXT) != Socket::DROPPED;
 }
 
 void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
@@ -1464,6 +1500,13 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
             return;
         }
     }
+    const bool host_protocol = event.contains("host_protocol") && event["host_protocol"].is_number_integer()
+        && event["host_protocol"].get<int>() == 1;
+    if (canvas_hosts_.count(data->canvas_id) && !host_protocol) {
+        sendWithRequestContext(ws, "{\"type\":\"error\",\"code\":\"HOST_PROTOCOL_REQUIRED\"}", uWS::OpCode::TEXT);
+        return;
+    }
+    data->canvas_host_protocol = host_protocol;
     data->groups = canvas_ws->getUserData()->groups;
     data->is_admin = canvas_ws->getUserData()->is_admin;
     if (!data->rtc_peer_id.empty()) {
@@ -1475,6 +1518,7 @@ void WebSocketServer::announceRtcPeer(Socket* ws, const nlohmann::json& event) {
     data->rtc_canvas_connection_hash = canvas_ws->getUserData()->rtc_canvas_connection_hash;
     rtc_sockets_by_canvas_connection_[data->rtc_canvas_connection_id].insert(ws);
     sockets_by_canvas_peer_[data->canvas_id][data->rtc_peer_id] = ws;
+    refreshCanvasHost(data->canvas_id);
     if (!sendRtcPeerList(ws)) {
         closeSocketSession(ws, 1013, "RTC peer list could not be delivered");
         return;
@@ -2156,10 +2200,15 @@ void WebSocketServer::runServer() {
         return;
     }
 
-    auto app = uWS::App();
+    const auto certificate = environmentValue("SERVICE_TLS_CERT");
+    const auto private_key = environmentValue("SERVICE_TLS_KEY");
+    uWS::SocketContextOptions tls_options;
+    tls_options.key_file_name = private_key.c_str();
+    tls_options.cert_file_name = certificate.c_str();
+    auto app = uWS::SSLApp(tls_options);
 
     auto createWsHandler = [this](bool rtc_only) {
-        return uWS::App::WebSocketBehavior<PerSocketData>{
+        return uWS::SSLApp::WebSocketBehavior<PerSocketData>{
             .compression = uWS::SHARED_COMPRESSOR,
             .maxPayloadLength = rtc_only ? 256U * 1024U : 16U * 1024U * 1024U,
             .idleTimeout = 120,
@@ -2833,6 +2882,21 @@ void WebSocketServer::runServer() {
                                     }
                                 }
                             }
+                            const auto host_state = canvas_hosts_.find(data->canvas_id);
+                            if (hasCanvasPersistenceTarget(event) && host_state != canvas_hosts_.end()) {
+                                std::string sender_peer;
+                                const auto peers = sockets_by_canvas_peer_.find(data->canvas_id);
+                                if (peers != sockets_by_canvas_peer_.end()) {
+                                    const auto host = peers->second.find(host_state->second.peer_id);
+                                    if (host != peers->second.end() && findBoundCanvasSocket(host->second->getUserData()) == ws)
+                                        sender_peer = host->first;
+                                }
+                                const auto supplied_term = event.contains("host_term") && event["host_term"].is_string()
+                                    ? event["host_term"].get<std::string>() : std::string{};
+                                if (!canvasHostMayPersist(host_state->second.peer_id, host_state->second.term, sender_peer, supplied_term)) {
+                                    response.reject("HOST_FENCED"); return;
+                                }
+                            }
                             const std::string item_key = eventItemKey(event);
                             const bool delete_item = event_type == "item_delete" || event_type == "delete_item";
                             const bool item_mutation = event_type.rfind("item_", 0) == 0
@@ -2975,6 +3039,7 @@ void WebSocketServer::runServer() {
                                     }
                                 }
                             }
+                            if (event.contains("host_term")) response.ignore();
                             if (item_event) ++authorization_epochs_by_canvas_[data->canvas_id];
                             if (bulk_items) {
                                 auto& rooms = chat_rooms_by_canvas_[data->canvas_id];
@@ -3009,7 +3074,55 @@ void WebSocketServer::runServer() {
                             return;
                         }
                     };
-                    if (event.is_object() && event.value("type", std::string{}) == "item_batch") {
+                    if (event.is_object() && event.value("type", std::string{}) == "host_item_batch") {
+                        const auto host = canvas_hosts_.find(data->canvas_id);
+                        bool sender_is_host = false;
+                        if (host != canvas_hosts_.end()) {
+                            const auto peers = sockets_by_canvas_peer_.find(data->canvas_id);
+                            if (peers != sockets_by_canvas_peer_.end()) {
+                                const auto leader = peers->second.find(host->second.peer_id);
+                                sender_is_host = leader != peers->second.end() && findBoundCanvasSocket(leader->second->getUserData()) == ws;
+                            }
+                        }
+                        const auto term = event.contains("host_term") && event["host_term"].is_string()
+                            ? event["host_term"].get<std::string>() : std::string{};
+                        if (!sender_is_host || !canvasHostMayPersist(host->second.peer_id, host->second.term, host->second.peer_id, term)) {
+                            response.reject("HOST_FENCED"); return;
+                        }
+                        if (!event.contains("changes") || !event["changes"].is_array() || event["changes"].empty() || event["changes"].size() > 512) {
+                            response.reject("HOST_BATCH_INVALID"); return;
+                        }
+                        for (const auto& change : event["changes"]) {
+                            if (!change.is_object() || !change.contains("type") || !change["type"].is_string()
+                                || !change.contains("request_id") || !change["request_id"].is_string()
+                                || !change.contains("item_id") || !change["item_id"].is_string()
+                                || !change.contains("host_term") || change["host_term"] != term) {
+                                response.reject("HOST_BATCH_INVALID"); return;
+                            }
+                            const auto type = change["type"].get<std::string>();
+                            if ((type != "item_save" && type != "item_update" && type != "item_delete")
+                                || (type != "item_delete" && (!change.contains("item") || !change["item"].is_object()))) {
+                                response.reject("HOST_BATCH_INVALID"); return;
+                            }
+                        }
+                        std::string failure;
+                        struct CaptureError {
+                            std::string* previous;
+                            explicit CaptureError(std::string* target) : previous(active_host_batch_error) { active_host_batch_error = target; }
+                            ~CaptureError() { active_host_batch_error = previous; }
+                        } capture(&failure);
+                        const auto connection_id = data->connection_id;
+                        for (const auto& change : event["changes"]) {
+                            processEvent(change);
+                            if (!failure.empty() || findSocketByConnectionId(connection_id) != ws) break;
+                        }
+                        if (findSocketByConnectionId(connection_id) == ws && !ws->getUserData()->closing) {
+                            nlohmann::json result{{"type", "host_batch_result"}, {"ok", failure.empty()},
+                                {"host_term", term}, {"request_id", event.value("request_id", std::string{})}, {"status", "queued"}};
+                            if (!failure.empty()) result["code"] = failure;
+                            sendWithRequestContext(ws, result.dump(), uWS::OpCode::TEXT);
+                        }
+                    } else if (event.is_object() && event.value("type", std::string{}) == "item_batch") {
                         request_log.setOperation("item_batch");
                         if (event.contains("request_id") && event["request_id"].is_string()
                             && agora::logging::isValidRequestId(event["request_id"].get<std::string>())) {
@@ -3096,7 +3209,7 @@ void WebSocketServer::runServer() {
             const std::size_t remaining_peers = peers == sockets_by_canvas_peer_.end()
                 ? 0 : peers->second.size();
 
-            const auto* socket_context = us_socket_context(0, reinterpret_cast<us_socket_t*>(ws));
+            const auto* socket_context = us_socket_context(1, reinterpret_cast<us_socket_t*>(ws));
             std::cout << "[uWebSockets] " << (rtc_only ? "RTC signaling" : "Canvas")
                       << " WebSocket client disconnected: User #" << user_id
                       << " from Canvas #" << canvas_id << " (close code: " << code
@@ -3138,7 +3251,7 @@ void WebSocketServer::runServer() {
                 listen_socket_ = token;
                 opened = true;
             } else if (token) {
-                us_listen_socket_close(0, token);
+                us_listen_socket_close(1, token);
             }
             listener_setup_complete_ = true;
             if (!token) running_ = false;

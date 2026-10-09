@@ -56,7 +56,7 @@ C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spri
 - Project Agora DB의 MS SQL Server, Redis Stack, Elasticsearch
 - TLS 인증서와 Nginx (외부 WSS 제공 시)
 
-Ubuntu 환경에서는 제공되는 스크립트를 통해 위 종속성들을 한번에 설치할 수 있습니다:
+제공되는 APT 기반 설치 스크립트로 위 종속성들을 한 번에 설치할 수 있습니다:
 
 ```bash
 chmod +x install_dependencies.sh
@@ -68,63 +68,13 @@ JDK_SHA256=<official-sha256> ./install_dependencies.sh
 
 ## 환경 변수
 
-운영 비밀값은 Git에 넣지 않습니다. 프로젝트 루트의 `.env`를 만들고 권한을 제한합니다.
+[TLS 초기 설정 안내](TLS_SETUP.md)의 파일 구조대로 인증서를 직접 준비합니다. BE 저장소에서 다음 명령으로 DB·BE `.env` 생성, 난수 비밀번호·토큰 준비와 DB 연결 동기화를 수행합니다. 기존 비밀번호는 보존하고 인증서는 생성하지 않습니다.
 
 ```bash
-cd /path/to/project-agora-BE
-umask 077
-cat > .env <<'EOF'
-DB_HOST=127.0.0.1
-DB_PORT=1433
-DB_NAME=agora_db
-DB_USER=agora_user
-DB_PASSWORD=<mssql-application-password>
-# 로컬 단일 노드는 false, 운영 AG listener는 true를 사용합니다.
-DB_MULTI_SUBNET_FAILOVER=false
-
-JWT_SECRET=<32바이트-이상의-무작위-공유-키>
-CPP_INTERNAL_API_TOKEN=<Spring과 C++ REST 내부 호출용 32바이트-이상의-무작위-키>
-ADMIN_PASSWORD=<초기-관리자-비밀번호>
-
-ES_HOST=127.0.0.1
-ES_PORT=9200
-ES_SCHEME=http
-ES_CA_CERT=
-ES_INDEX=canvas
-ES_USER_NAME=agora_user
-ES_USER_PASSWORD=<elasticsearch-application-password>
-ES_LOG_INDEX=agora-logs
-ES_LOG_USER_NAME=agora_log_writer
-ES_LOG_USER_PASSWORD=<elasticsearch-log-writer-password>
-
-# Optional: flush the bounded Elasticsearch log queue in batches.
-ES_LOG_BATCH_SIZE=100
-ES_LOG_FLUSH_INTERVAL_MS=1000
-HA_FAILOVER_MONITOR_INTERVAL_MS=10000
-
-REDIS_USER=agora_user
-REDIS_USER_PASSWORD=<redis-application-password>
-# 로컬 HA Compose에서는 같은 Docker 호스트의 내부 사설 주소를 지정합니다.
-# 운영에서는 BE 호스트에서 도달 가능한 사설 Sentinel 주소를 사용합니다.
-# 단일 Redis 개발 환경은 비워 두고 DB에 등록된 endpoint를 사용합니다.
-REDIS_SENTINELS=172.20.0.6:26379,172.20.0.3:26379,172.20.0.4:26379
-REDIS_SENTINEL_MASTER_NAME=agora-master
-REDIS_SENTINEL_USER=
-REDIS_SENTINEL_PASSWORD=
-REDIS_TLS_ENABLED=true
-REDIS_TLS_CA_CERT=/etc/agora/certs/redis-ca.crt
-
-# Production C++ FreeTDS config (strict TLS, CA and hostname validation).
-DB_ENCRYPT=true
-DB_TRUST_SERVER_CERTIFICATE=false
-DB_FREETDS_CONF=/etc/freetds/freetds.conf
-
-# 브라우저에서 별도 프론트엔드 도메인으로 API를 호출할 때만 지정합니다.
-# 여러 도메인은 쉼표로 구분합니다. 같은 도메인에서 제공하면 비워 둡니다.
-CORS_ALLOWED_ORIGINS=https://app.example.com
-EOF
-chmod 600 .env
+python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/certificates
 ```
+
+세 프로젝트를 함께 준비하려면 FE의 `scripts/setup-projects.py`를 사용합니다. 기본값은 [.env.example](.env.example)을 참고하세요. 실행 설정과 비밀값은 `.env`에 보관하며 Git에 넣지 않습니다.
 
 `JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `ES_LOG_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다. 캔버스 문서는 `ES_USER_NAME`/`ES_USER_PASSWORD`, 운영 로그는 별도 `ES_LOG_USER_NAME`/`ES_LOG_USER_PASSWORD` 계정을 사용합니다.
 
@@ -146,7 +96,7 @@ Spring과 C++ REST는 `X-Request-ID`를 전달하며, 누락되거나 안전한 
 
 두 서버는 쓰기 전용 로그 계정으로 문서를 `create` 방식으로 추가하며 로그 조회나 기존 문서 수정은 하지 않습니다. Spring과 C++은 각각 최대 100건 또는 1초 주기로 로그를 모아 Elasticsearch `_bulk` 요청 한 번으로 전송합니다. 조정에는 `ES_LOG_BATCH_SIZE`와 `ES_LOG_FLUSH_INTERVAL_MS`를 사용하고, Spring SQL 상태 점검 주기는 `HA_FAILOVER_MONITOR_INTERVAL_MS`로 설정합니다. Elasticsearch에 연결할 수 없는 동안 큐는 최대 10,000건이며, 초과한 새 로그는 버려지고 로컬 로그에 경고가 남습니다.
 
-Spring JDBC는 기본적으로 TLS 인증서 검증을 사용합니다. C++ FreeTDS는 `DB_FREETDS_CONF`에 `encryption = strict`, CA 파일, 호스트명 검증을 설정해야 합니다. 검증 가능한 인증서를 구성할 수 없는 개발 환경에서만 `DB_TRUST_SERVER_CERTIFICATE=true`를 지정하고 운영에서는 설정하지 마세요.
+Spring JDBC는 기본적으로 TLS 인증서 검증을 사용합니다. C++ FreeTDS는 `DB_FREETDS_CONF`에 `encryption = strict`, CA 파일, 호스트명 검증을 설정해야 합니다. 모든 환경에서 `DB_ENCRYPT=true`, `DB_TRUST_SERVER_CERTIFICATE=false`를 사용합니다. Docker 기본 FreeTDS 설정은 설치된 라이브러리에 맞는 `encryption = require`와 명시적 CA·호스트명 검증을 사용합니다.
 
 비밀 저장소를 파일로 마운트하면 Spring은 `/run/secrets/`의 파일을 프로퍼티로 읽습니다(예: `DB_PASSWORD`, `JWT_SECRET`, `ES_LOG_USER_PASSWORD`). Spring config tree 파일은 값 끝의 개행도 비밀번호에 포함하므로 파일 생성 시 개행을 추가하지 마세요(예: `printf %s "$SECRET" > /run/secrets/DB_PASSWORD`). C++은 DB·Redis·Sentinel·Elasticsearch 비밀번호에서 `<VARIABLE>_FILE`을 지원하고 파일 끝의 CR/LF를 제거합니다(예: `DB_PASSWORD_FILE=/run/secrets/DB_PASSWORD`). 직접 설정한 환경변수가 있으면 파일보다 우선합니다.
 
@@ -205,7 +155,7 @@ cd /path/to/project-agora-BE
 ./scripts/backend-docker.sh down    # 백엔드 컨테이너만 제거; DB와 볼륨은 유지
 ```
 
-소스 변경을 이미지에 반영할 때는 `./scripts/backend-docker.sh up`을 다시 실행합니다. `.env`나 Docker 설정을 바꿨을 때도 Compose가 컨테이너를 재생성합니다. `logs`는 계속 출력되므로 `Ctrl+C`를 눌러도 컨테이너는 중지되지 않습니다. 서버 health API는 `http://127.0.0.1:8080/api/auth/health`와 `http://127.0.0.1:8000/health`입니다.
+소스 변경을 이미지에 반영할 때는 `./scripts/backend-docker.sh up`을 다시 실행합니다. `.env`나 Docker 설정을 바꿨을 때도 Compose가 컨테이너를 재생성합니다. `logs`는 계속 출력되므로 `Ctrl+C`를 눌러도 컨테이너는 중지되지 않습니다. 서버 health API는 `https://localhost:8443/api/auth/health` 및 Docker 내부 HTTPS health 경로입니다.
 
 ## 로컬 실행
 
@@ -269,8 +219,8 @@ set +a
 Spring과 C++을 각각 실행한 뒤 두 health API가 HTTP 200을 반환하는지 확인합니다.
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/auth/health
-curl -fsS http://127.0.0.1:8000/health
+docker exec agora-spring curl -fsS --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health
+docker exec agora-cpp curl -fsS --cacert /run/tls/ca.pem https://localhost:8000/health
 ```
 
 각 명령은 서비스 상태가 정상이면 JSON 응답을 출력합니다. 포트 사용 여부는 다음처럼 확인할 수 있습니다.
@@ -298,7 +248,7 @@ Description=Project Agora Spring API
 After=network-online.target docker.service
 
 [Service]
-User=ubuntu
+User=agora
 WorkingDirectory=/path/to/project-agora-BE
 EnvironmentFile=/path/to/project-agora-BE/.env
 ExecStart=/usr/bin/java -jar /path/to/project-agora-BE/spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
@@ -316,7 +266,7 @@ After=network-online.target docker.service agora-spring.service
 Requires=agora-spring.service
 
 [Service]
-User=ubuntu
+User=agora
 WorkingDirectory=/path/to/project-agora-BE/cpp
 EnvironmentFile=/path/to/project-agora-BE/.env
 ExecStart=/path/to/project-agora-BE/cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
@@ -348,13 +298,13 @@ sudo systemctl restart agora-spring agora-cpp
 `enable`은 서버 재부팅 후 자동 시작을 설정하고, `start`는 지금 서버를 시작합니다. `agora-cpp`는 Spring API를 사용하므로 Spring을 먼저 시작합니다. DB Compose는 이 unit에 포함되지 않으므로 DB 저장소의 Docker 서비스가 먼저 준비되어 있어야 합니다. 각 서버의 health API도 확인합니다.
 
 ```bash
-curl -fsS http://127.0.0.1:8080/api/auth/health
-curl -fsS http://127.0.0.1:8000/health
+docker exec agora-spring curl -fsS --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health
+docker exec agora-cpp curl -fsS --cacert /run/tls/ca.pem https://localhost:8000/health
 ```
 
 ## Nginx와 WSS
 
-Nginx는 이 저장소에서만 관리합니다. [nginx/agora.conf.example](nginx/agora.conf.example)이 유일한 설정 파일이며 [docker-compose.nginx.yml](docker-compose.nginx.yml)이 이를 Nginx Docker 이미지의 템플릿으로 마운트합니다. 컨테이너 시작 시 `FRONTEND_MODE`만 치환하고 Nginx의 `$uri`, `$host` 등은 보존합니다. 호스트 Nginx 설치는 필요하지 않습니다.
+Nginx는 이 저장소에서만 관리합니다. [nginx/agora.conf.example](nginx/agora.conf.example)이 유일한 설정 파일이며 [docker-compose.nginx.yml](docker-compose.nginx.yml)이 이를 Nginx Docker 이미지의 템플릿으로 마운트합니다. 컨테이너 시작 시 `FRONTEND_MODE`와 `NGINX_HTTPS_PORT`만 치환하고 Nginx의 `$uri`, `$host` 등은 보존합니다. 호스트 Nginx 설치는 필요하지 않습니다.
 
 | 요청 | 처리 |
 | --- | --- |
@@ -364,6 +314,10 @@ Nginx는 이 저장소에서만 관리합니다. [nginx/agora.conf.example](ngin
 | `/assets/`, `.mjs` | 파일 제공, 배포 자산 캐시 및 JavaScript MIME |
 | `/mathjax/`, `/pdfjs/` | 로컬 자산 제공 및 WASM MIME |
 | Vite HMR | 개발 모드에서 Upgrade 헤더를 유지해 Vite로 프록시 |
+
+### TLS 인증서
+
+Nginx와 내부 서비스는 TLS 인증서가 필수입니다. [TLS 초기 설정 안내](TLS_SETUP.md)에 따라 직접 인증서를 넣고 `setup-docker.py`로 경로와 연결 설정을 준비하세요. 사설 CA는 브라우저 또는 시스템의 신뢰 저장소에 직접 등록합니다. 개인 키는 Git과 Docker 빌드에서 제외하며 CA 개인 키는 컨테이너에 전달하지 않습니다.
 
 ### 개발 실행
 
@@ -377,7 +331,7 @@ cd ../project-agora-FE
 docker compose -f compose.dev.yaml up -d --build --remove-orphans
 ```
 
-브라우저 주소는 `http://127.0.0.1:4173`입니다. Nginx는 FE 소스를 직접 마운트하지 않고 `agora-web` 네트워크의 `agora-frontend-dev:5173`에 연결합니다. API와 C++는 DB가 생성한 `agora-net` 네트워크로 연결하므로 Docker Desktop 전용 호스트 게이트웨이에 의존하지 않습니다.
+브라우저 주소는 **https://localhost:8443** 또는 **https://127.0.0.1:8443**입니다. HTTP 4173 포트는 닫혀 있으며 리다이렉트도 제공하지 않습니다. Nginx는 FE 소스를 직접 마운트하지 않고 `agora-web` 네트워크의 `agora-frontend-dev:5173`에 연결합니다. API와 C++는 DB가 생성한 `agora-net` 네트워크로 연결합니다.
 
 ### 빌드 배포
 
@@ -388,12 +342,12 @@ docker compose build frontend-build
 docker compose run --rm frontend-build
 cd ../project-agora-BE
 ./scripts/nginx-docker.sh production
-curl -fsS http://127.0.0.1:4173/
+curl -fsS https://localhost:8443/
 ```
 
 FE 빌드 컨테이너는 `agora-frontend-dist` 볼륨에 `dist/`를 내보내고 종료합니다. Nginx는 같은 볼륨을 읽기 전용으로 사용합니다. FE에 남아 있는 이전 `agora-frontend` 컨테이너는 `docker rm -f agora-frontend`로 제거해 포트 충돌을 해소합니다. 빌드 내보내기는 `current` 링크를 원자적으로 바꾸고 실패 시 이전 배포를 유지합니다. 새 FE exporter와 Nginx 설정을 함께 적용해야 하며 예전 볼륨의 최상위 파일은 새 배포에서 사용하지 않습니다.
 
-BE `.env` 또는 실행 환경에서 `NGINX_PORT`(기본 4173), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. Docker 개발 WebSocket은 현재 브라우저 origin을 자동으로 사용합니다. 별도 WebSocket 도메인만 FE `VITE_WS_BASE_URL`로 지정하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
+BE `.env` 또는 실행 환경에서 `NGINX_PORT`(HTTP, 기본 4173), `NGINX_HTTPS_PORT`(HTTPS, 기본 8443), `NGINX_TLS_CERT_DIR`(인증서 디렉터리), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. Docker 개발 WebSocket은 현재 브라우저 origin을 자동으로 사용합니다. 별도 WebSocket 도메인만 FE `VITE_WS_BASE_URL`로 지정하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
 
 ```bash
 docker compose -f docker-compose.nginx.yml exec nginx nginx -t
@@ -430,8 +384,8 @@ wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>
 | 캔버스 설정 조회·변경 | `GET /api/canvases/{canvasId}/settings`, `PATCH /api/canvases/{canvasId}/{name,description,password}` | 참여자 조회, 비활성 캔버스 관리자 변경; 활성 상태면 C++ 설정 이벤트 사용 |
 | 참여자 추가·제외 | `POST`, `DELETE /api/canvases/{canvasId}/people` (`nickname`, `tag_number` 본문) | 비활성 캔버스 관리자; 활성 상태면 캔버스에 접속해 변경 |
 | 서버·Redis 할당 점검 | `/api/load-balancer/**` | 관리자 |
-| C++ health | `GET http://127.0.0.1:8000/health` | 내부 |
-| C++ 활성 캔버스 | `GET http://127.0.0.1:8000/api/canvas/active` | 내부 |
+| C++ health | `GET https://agora-cpp:8000/health` | 내부 |
+| C++ 활성 캔버스 | `GET https://agora-cpp:8000/api/canvas/active` | 내부 |
 
 접속 응답 예시:
 
@@ -459,9 +413,9 @@ cmake --build cpp/build -j2
 ctest --test-dir cpp/build --output-on-failure
 
 # 서버 상태
-curl http://127.0.0.1:8080/api/auth/health
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/api/canvas/active
+docker exec agora-spring curl --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health
+docker exec agora-cpp curl --cacert /run/tls/ca.pem https://localhost:8000/health
+docker exec agora-cpp curl --cacert /run/tls/ca.pem https://localhost:8000/api/canvas/active
 ```
 
 C++ 단위 테스트는 캔버스 연결 수명주기, persistence queue, 비밀번호 해시 형식을 검사합니다. C++ 통합 테스트는 loopback에 가짜 Redis Sentinel과 primary 두 개를 띄워 기존 primary의 READONLY 응답과 승격 뒤 재연결을 확인합니다. 실제 DB·Redis·Elasticsearch 서비스는 중단하거나 변경하지 않습니다.
@@ -489,7 +443,7 @@ C++ 실행 파일을 배포할 때는 실행 파일만 복사하지 말고 `cmak
 
 ## Docker 실행 의존성 및 사전 점검
 
-- 호스트: Docker Compose v2, Bash 3.2 이상, Python 3.10 이상. Python은 기존 DB 설정 도구와 공통인 표준 라이브러리만 사용합니다. 호스트 Java·Node·Nginx·sqlcmd 설치는 Docker 기동에 필요하지 않습니다. Windows는 Bash 스크립트를 WSL2에서 실행합니다.
+- 호스트: Docker Compose v2, Bash 3.2 이상, Python 3.10 이상. Python은 기존 DB 설정 도구와 공통인 표준 라이브러리만 사용합니다. 호스트 Java·Node·Nginx·sqlcmd 설치는 Docker 기동에 필요하지 않습니다.
 - 저장소: BE·DB·FE는 독립 디렉터리에 둘 수 있습니다. DB 자동 재기동 스크립트만 기본 sibling 경로를 사용하며 다른 배치는 `AGORA_DB_DIR`로 지정합니다. `sync-docker-env.py --db-dir <DB 경로> --backend-env <BE .env>`가 비밀번호와 공개 CA를 동기화합니다. 저장소 이동이나 CA 교체 뒤에는 다시 실행하세요.
 - 네트워크: Nginx IP는 `agora-net` 서브넷 안의 빈 주소여야 합니다. `.env` 또는 실행 환경의 `NGINX_BACKEND_IP`를 C++ 신뢰 IP와 동일하게 반영하며 실행 시 실제 서브넷을 검사합니다. FE와 Nginx는 같은 Docker 엔진을 사용해야 합니다.
 - 인증: DB health가 정상이어도 로그 계정이 준비되지 않을 수 있습니다. `backend-docker.sh`의 기동·health 검사는 Spring 컨테이너에서 로그 계정 인증도 확인합니다. 실패하면 DB 계정 동기화 후 컨테이너를 재생성해야 합니다.
@@ -503,3 +457,15 @@ python3 scripts/checks/runtime_checks.py
 사전 점검은 비밀값을 출력하지 않습니다. 실제 컨테이너 빌드·`nginx -t`·헬스 체크에는 Docker 소켓 접근이 필요합니다.
 
 공개 CA 파일은 non-root 컨테이너가 읽을 수 있도록 `0644`로 복사하고 호스트 `.local-certs/` 디렉터리는 `0700`으로 유지합니다. `.env`·개인 키는 `0600`을 유지합니다. CA 파일명은 내용 해시를 포함하므로 동기화 실패 시 기존 CA 경로가 덮어써지지 않습니다. 사용자 지정 SQL CA에도 컨테이너 읽기 권한이 필요합니다.
+
+## HTTPS/WSS-only service transport
+
+All browser and Docker service HTTP endpoints use TLS. The gateway has no port 80 or 4173 mapping; Spring 8080, C++ 8000/8002 and Vite 5173 are not published on the host. Nginx verifies each upstream's CA and service hostname. Spring verifies the C++ HTTPS server using SERVICE_TLS_CA. Redis Insight serves HTTPS on its existing local port 8001. Redis/Sentinel and Elasticsearch retain their existing TLS transport. MSSQL enforces TLS server-side; Spring and C++ verify its certificate using the SQL issuing CA.
+
+Supply certificates manually following [TLS_SETUP.md](TLS_SETUP.md), then run `python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/certificates`. Setup never generates or replaces certificates. DB Compose initializes the SQL and Redis Insight TLS volumes; BE initializes only Spring, C++ and frontend TLS volumes. Each service receives its own key and public CA, never the issuing private key.
+
+Use `docker exec agora-spring curl --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health` and `docker exec agora-cpp curl --cacert /run/tls/ca.pem https://localhost:8000/health` for direct internal health checks. Use https://localhost:8443/api/auth/health for the gateway health endpoint. MSSQL client certificate verification is enabled (DB_TRUST_SERVER_CERTIFICATE=false). FreeTDS 1.3 uses TDS 7.4 with required encryption plus explicit CA/hostname verification.
+
+References: [Spring PEM TLS](https://docs.spring.io/spring-boot/3.5/how-to/webserver.html), [Redis Insight HTTPS](https://redis.io/docs/latest/operate/redisinsight/configuration/).
+
+For a fresh stack, generate the certificates and run only `service-tls-init` before starting the DB root Compose stack (MSSQL and Redis Insight consume its external TLS volumes). Start the backend services afterward. SQL health and initialization commands verify the SQL issuing CA via SSL_CERT_FILE. Benchmark tools use HTTPS and TLS WebSocket sockets; run internal endpoints on the shared Docker network and set SERVICE_TLS_CA to the public CA certificate path.
