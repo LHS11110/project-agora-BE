@@ -87,6 +87,12 @@ services:
       ES_SCHEME: https
       ES_CA_CERT: /run/certs/elasticsearch-ca.crt
       ES_INDEX: ${ES_INDEX:-canvas}
+      ES_SEARCH_INDEX: ${ES_SEARCH_INDEX:-canvas-search}
+      ES_SEMANTIC_SEARCH_ENABLED: ${ES_SEMANTIC_SEARCH_ENABLED:-true}
+      SEARCH_EMBEDDING_URL: ${SEARCH_EMBEDDING_URL:-https://agora-nginx:8444/internal/search/embedding}
+      ES_SEARCH_LIMIT: ${ES_SEARCH_LIMIT:-100}
+      ES_SEARCH_CANDIDATES: ${ES_SEARCH_CANDIDATES:-500}
+      ES_SEARCH_MIN_SIMILARITY: ${ES_SEARCH_MIN_SIMILARITY:-0.80}
       ES_USER_NAME: ${ES_USER_NAME:-agora_user}
       ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
       ES_LOG_INDEX: ${ES_LOG_INDEX:-agora-logs}
@@ -96,6 +102,7 @@ services:
       ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
       HA_FAILOVER_MONITOR_INTERVAL_MS: ${HA_FAILOVER_MONITOR_INTERVAL_MS:-10000}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      WALL_CPP_API_ORIGIN: ${WALL_CPP_API_ORIGIN:-https://agora-nginx:8444}
       CPP_WS_PORT_OFFSET: ${CPP_WS_PORT_OFFSET:-2}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
       REDIS_USER: ${REDIS_USER:?Set REDIS_USER in .env}
@@ -104,12 +111,12 @@ services:
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
       REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
       REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
+      REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     networks:
-      - agora-net
-      - redis-ha
+      - agora-services
     depends_on:
       service-tls-init:
         condition: service_completed_successfully
@@ -148,14 +155,13 @@ services:
       APP_ENV: ${APP_ENV:-production}
       HOST: 0.0.0.0
       ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-agora-cpp}
-      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-${NGINX_BACKEND_IP:-172.21.0.250}}
+      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-${NGINX_BACKEND_IP:-172.23.0.250}}
       PORT: "8000"
       WS_PORT: "8002"
       REST_THREAD_POOL: ${REST_THREAD_POOL:-16}
       CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
       CPP_CANVAS_LRU_ITEMS_PER_CANVAS: ${CPP_CANVAS_LRU_ITEMS_PER_CANVAS:-64}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
       DB_PORT: ${DOCKER_DB_PORT:-1433}
       DB_NAME: ${DB_NAME:-agora_db}
@@ -183,6 +189,7 @@ services:
       REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-agora-master}
       REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
       REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
+      REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
@@ -213,8 +220,7 @@ services:
         bind:
           create_host_path: false
     networks:
-      - agora-net
-      - redis-ha
+      - agora-services
     depends_on:
       service-tls-init:
         condition: service_completed_successfully
@@ -233,12 +239,9 @@ services:
         max-file: "5"
 
 networks:
-  agora-net:
+  agora-services:
     external: true
-    name: agora-net
-  redis-ha:
-    external: true
-    name: agora-redis-ha
+    name: agora-services
 
 volumes:
   spring-resources:

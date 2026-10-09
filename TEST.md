@@ -51,7 +51,7 @@ ctest --test-dir cpp/build --output-on-failure
 | 실행 대상 | 실제 검증 내용 |
 | --- | --- |
 | `agora_cpp_unit_tests` | 캔버스 비밀번호 해시 형식 판별 및 레거시 값 정규화, 한 사용자의 여러 WebSocket 연결 수와 마지막 연결 해제 시 활성 상태 변경, 영속화 큐의 순서·barrier·unload 후 enqueue 거부, SQL 명령에서 악성 입력 문자열이 쿼리 본문이 아닌 바인딩 값으로 유지되는지 확인합니다. |
-| `agora_cpp_redis_failover_integration` | 실제 `RedisClient`를 인증이 필요한 가짜 Sentinel과 가짜 Redis primary A/B에 연결합니다. Sentinel 인증과 Redis 인증·ROLE 확인·PING을 검증하고, A가 read-only replica로 바뀌면 기존 연결의 실패를 확인합니다. 이후 Sentinel이 B를 primary로 안내하면 클라이언트가 새 노드를 찾고 연결을 복구해 PING에 성공하는지 확인합니다. |
+| `agora_cpp_redis_failover_integration` | `CanvasServiceMemory`와 내부 `RedisClient`를 인증이 필요한 가짜 Sentinel과 가짜 Redis primary A/B에 연결합니다. Sentinel 인증과 Redis 인증·ROLE 확인·PING을 검증하고, A가 read-only replica로 바뀌면 기존 연결의 실패를 확인합니다. 이후 Sentinel이 B를 primary로 안내하면 클라이언트가 새 노드를 찾고 연결을 복구해 PING에 성공하는지 확인합니다. |
 
 C++ 통합 테스트는 별도의 Redis, Sentinel, SQL Server, Elasticsearch를 실행하지 않습니다. C++ 서버 전체를 구동하는 WebSocket 종단 간 테스트도 아닙니다. `cpp/tests/unit_tests.cpp`와 `cpp/tests/redis_failover_integration.cpp`가 테스트 본체입니다.
 
@@ -62,3 +62,7 @@ C++ 통합 테스트는 별도의 Redis, Sentinel, SQL Server, Elasticsearch를 
 - Redis 장애 전환은 클라이언트의 Sentinel 조회와 재접속 로직을 가짜 로컬 서버로 재현합니다. 운영 Redis Stack HA 클러스터 자체를 검증하지 않습니다.
 - 위 장애 감지 테스트는 Elasticsearch에 로그 문서를 실제 저장하는 테스트가 아닙니다. 로그 서비스 메서드 호출을 모의 객체로 확인합니다. Elasticsearch 실연동 테스트는 캔버스 문서 CRUD를 확인합니다.
 - Elasticsearch 실연동 테스트를 실행하는 경우 테스트 인덱스의 ID `9876` 문서를 삭제하므로, `localhost:9200`이 테스트용 클러스터인지 확인해야 합니다.
+
+C++는 저장소·용도별 메모리·API 도구·서비스를 별도 라이브러리로 빌드합니다. 추가된 `agora_cpp_layer_tests`는 주입한 SQL·문서 저장소를 통해 할당 결과 변환, 바인딩, 스냅샷 인코딩·복원 및 LRU 퇴거 후 값의 수명을 검증합니다. `agora_cpp_layer_dependencies`는 계층을 건너뛰는 저장소 참조와 하위 계층의 서비스 의존성을 검사합니다.
+
+`agora_cpp_generic_memory_tests`는 서비스와 무관한 키의 캐시 승격, 독립 상태, 저장 실패 시 dirty 값 보존, 퇴거 실패, 원자적 변경 무효화, 용량 초과 및 원격 컬렉션 보존을 검증합니다. `agora_cpp_memory_tests`는 Elasticsearch 문서 복원과 활성 문서의 오래된 스냅샷 대체 방지도 검증합니다.

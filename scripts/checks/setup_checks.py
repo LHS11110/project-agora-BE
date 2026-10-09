@@ -75,6 +75,7 @@ class SetupTests(unittest.TestCase):
             'project-agora-BE': ['.env.example', 'scripts/setup-docker.py', 'scripts/sync-docker-env.py', 'cpp/config/freetds-docker-tls.conf'],
             'project-agora-DB': ['ops/configure-db.py', 'mssql/.env.example', 'redis/.env.example', 'elasticsearch/.env.example'],
             'project-agora-FE': ['.env.example', 'scripts/setup-projects.py'],
+            'project-agora-Wall': ['.env.example', 'scripts/setup.py'],
         }.items():
             for relative in files:
                 source = ROOT / relative if repo == 'project-agora-BE' else ROOT.parent / repo / relative
@@ -96,7 +97,7 @@ class SetupTests(unittest.TestCase):
             result = self.run_setup(parent, tls)
             self.assertEqual(result.returncode, 0, result.stderr)
             envs = sorted(parent.rglob('.env'))
-            self.assertEqual(len(envs), 5)
+            self.assertEqual(len(envs), 6)
             contents = {path: path.read_bytes() for path in envs}
             for path in envs:
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -107,6 +108,11 @@ class SetupTests(unittest.TestCase):
             self.assertIn('DB_TRUST_SERVER_CERTIFICATE=false', be)
             self.assertIn('REDIS_TLS_ENABLED=true', be)
             self.assertIn('ES_SCHEME=https', be)
+            self.assertIn('REDIS_BROKER_ROUTES=', be)
+            self.assertIn('NGINX_BACKEND_IP=172.23.0.250', be)
+            wall = (parent / 'project-agora-Wall/.env').read_text()
+            self.assertIn('STORAGE_REDIS_REPLICA_1_UPSTREAM=', wall)
+            self.assertIn('172.20.0.7:6379', wall)
             db = (parent / 'project-agora-DB/mssql/.env').read_text()
             self.assertIn('MSSQL_TLS_ENABLED=true', db)
             self.assertIn('DB_TRUST_SERVER_CERTIFICATE=false', db)
@@ -186,16 +192,17 @@ class SetupTests(unittest.TestCase):
             result = self.run_setup(parent, tls)
             self.assertEqual(result.returncode, 0, result.stderr)
             definitions = {
-                'project-agora-BE': ['docker-compose.backend.yml', 'docker-compose.nginx.yml'],
+                'project-agora-BE': ['docker-compose.backend.yml'],
                 'project-agora-DB': ['docker-compose.yml', 'mssql/docker-compose.yml', 'redis/docker-compose.sentinel.yml', 'elasticsearch/docker-compose.yml'],
                 'project-agora-FE': ['compose.dev.yaml'],
+                'project-agora-Wall': ['docker-compose.storage-broker.yml'],
             }
             for repo, files in definitions.items():
                 for relative in files:
                     source = ROOT / relative if repo == 'project-agora-BE' else ROOT.parent / repo / relative
                     shutil.copyfile(source, parent / repo / relative)
             models = {}
-            for repo, filename in (('project-agora-DB', 'docker-compose.yml'), ('project-agora-BE', 'docker-compose.backend.yml'), ('project-agora-FE', 'compose.dev.yaml')):
+            for repo, filename in (('project-agora-DB', 'docker-compose.yml'), ('project-agora-BE', 'docker-compose.backend.yml'), ('project-agora-FE', 'compose.dev.yaml'), ('project-agora-Wall', 'docker-compose.storage-broker.yml')):
                 checked = subprocess.run(['docker', 'compose', '-f', filename, 'config', '--format', 'json'],
                                          cwd=parent / repo, capture_output=True, text=True)
                 self.assertEqual(checked.returncode, 0, checked.stderr)
@@ -213,6 +220,14 @@ class SetupTests(unittest.TestCase):
             for name in ('spring', 'cpp'):
                 self.assertEqual(backend[name]['environment']['REDIS_TLS_ENABLED'], 'true')
                 self.assertFalse(backend[name].get('ports'))
+                self.assertEqual(set(backend[name]['networks']), {'agora-services'})
+                self.assertTrue(backend[name]['environment']['REDIS_BROKER_ROUTES'])
+            wall = models['project-agora-Wall']
+            proxy = wall['services']['storage-broker']
+            self.assertEqual(set(proxy['networks']), {'agora-services', 'agora-net', 'redis-ha'})
+            self.assertTrue(wall['networks']['agora-services']['internal'])
+            self.assertFalse(proxy.get('ports'))
+            self.assertTrue(all(key.startswith('STORAGE_') for key in proxy['environment']))
 
 
 if __name__ == '__main__':

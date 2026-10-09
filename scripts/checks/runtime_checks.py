@@ -15,11 +15,28 @@ module=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 class PreflightTests(unittest.TestCase):
-    def values(self):return {'JWT_SECRET':'j'*32,'CPP_INTERNAL_API_TOKEN':'t'*32,'NGINX_BACKEND_IP':'172.21.0.250'}
+    def values(self):return {'JWT_SECRET':'j'*32,'CPP_INTERNAL_API_TOKEN':'t'*32,'NGINX_BACKEND_IP':'172.23.0.250'}
     def test_base_never_requires_a_host_system_ca(self):
         text=(ROOT/'docker-compose.backend.yml').read_text()
         self.assertNotIn('/etc/ssl/certs/ca-certificates.crt}',text)
         self.assertIn('DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf',text)
+    def test_build_preflight_requires_all_socket_submodules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def docker(args, **kwargs):
+                if args[1:3] == ['network', 'inspect']:
+                    return subprocess.CompletedProcess(args, 1, '', '')
+                return subprocess.CompletedProcess(args, 0, json.dumps({'services': {}}), '')
+            with patch.object(module, 'ROOT', root), patch.object(module, 'effective_settings', return_value=self.values()), patch.object(module.subprocess, 'run', side_effect=docker):
+                paths = ['cpp/third_party/uWebSockets/src/App.h', 'cpp/third_party/uWebSockets/uSockets/src/libusockets.h']
+                for relative in paths:
+                    with self.assertRaisesRegex(ValueError, 'Build dependencies'):
+                        module.validate(build=True)
+                    file = root / relative
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_text('test header')
+                module.validate(build=True)
+
     def test_missing_mount_reports_target_without_secret(self):
         def docker(args,**kwargs):
             if args[1:3]==['network','inspect']:return subprocess.CompletedProcess(args,1,'','')
@@ -32,7 +49,7 @@ class PreflightTests(unittest.TestCase):
         def docker(args,**kwargs):
             return subprocess.CompletedProcess(args,0,json.dumps([{'IPAM':{'Config':[{'Subnet':'172.25.0.0/16'}]}}]),'')
         with patch.object(module,'effective_settings',return_value=self.values()),patch.object(module.subprocess,'run',side_effect=docker):
-            with self.assertRaisesRegex(ValueError,'outside agora-net'):
+            with self.assertRaisesRegex(ValueError,'outside agora-services'):
                 module.validate(gateway=True)
     def test_public_mount_permissions_are_checked_for_nonroot_containers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -82,9 +99,5 @@ class PreflightTests(unittest.TestCase):
             self.assertIn('Authorization: Basic',Path(env['CAPTURE']).read_text())
             self.assertNotIn('synthetic-test-only',Path(env['ARGUMENTS']).read_text())
             self.assertEqual(result.stdout,b'')
-
-    def test_nginx_mode_rejects_typos(self):
-        result=subprocess.run(['/bin/sh',str(ROOT/'nginx/10-validate-mode.sh')],env={'FRONTEND_MODE':'devlopment'},capture_output=True)
-        self.assertNotEqual(result.returncode,0)
 
 if __name__=='__main__':unittest.main()

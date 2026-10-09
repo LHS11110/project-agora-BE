@@ -1,4 +1,4 @@
-#include "CanvasMemory.hpp"
+#include "service_memory/CanvasServiceMemory.hpp"
 #include "TestSupport.hpp"
 
 #include <arpa/inet.h>
@@ -393,7 +393,7 @@ void runRedisSentinelFailover() {
     ::setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
 
     {
-        CanvasMemory client("127.0.0.1", primary_a.port(), "", "cpp-test-password");
+        CanvasServiceMemory client("127.0.0.1", primary_a.port(), "", "cpp-test-password");
         AGORA_CHECK(client.connect());
         AGORA_CHECK(client.ping());
 
@@ -401,84 +401,84 @@ void runRedisSentinelFailover() {
         const std::string hot_path = "$[\"items\"][\"hot\"][\"value\"]";
         const std::string cold_path = "$[\"items\"][\"cold\"][\"value\"]";
         const std::string rare_path = "$[\"items\"][\"rare\"][\"value\"]";
-        AGORA_CHECK(client.set(canvas_a, nlohmann::json{
+        AGORA_CHECK(client.storeCanvas(987654320, nlohmann::json{
             {"items", {{"hot", {{"value", 1}}}, {"cold", {{"value", 10}}},
                        {"rare", {{"value", 99}}}}}
-        }.dump()));
+        }));
 
         const std::string created_item_path = "$[\"items\"][\"created\"]";
         const std::string created_value_path = "$[\"items\"][\"created\"][\"value\"]";
-        AGORA_CHECK(client.setJsonPath(canvas_a, created_item_path, nlohmann::json{{"value", 7}}));
+        AGORA_CHECK(client.storeItem(987654320, "created", nlohmann::json{{"value", 7}}));
         const int created_reads_before_lookup = primary_a.jsonGetCount(canvas_a, created_value_path);
-        AGORA_CHECK(client.getJsonPath(canvas_a, created_value_path) == std::string("[7]"));
+        AGORA_CHECK(client.readItem(987654320, "created", "value") == std::string("[7]"));
         AGORA_CHECK(primary_a.jsonGetCount(canvas_a, created_value_path) == created_reads_before_lookup + 1);
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("created").at("value") == 7);
 
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[1]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[1]"));
         const int hot_reads_before_hit = primary_a.jsonGetCount(canvas_a, hot_path);
         const int canvas_reads_before_hit = primary_a.jsonGetTotalCount(canvas_a);
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[1]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[1]"));
         AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == hot_reads_before_hit);
         AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_hit);
 
         // A one-off item read uses only its requested Redis path and is not promoted.
         const int rare_path_reads_before = primary_a.jsonGetCount(canvas_a, rare_path);
         const int canvas_reads_before_rare = primary_a.jsonGetTotalCount(canvas_a);
-        AGORA_CHECK(client.getJsonPath(canvas_a, rare_path) == std::string("[99]"));
+        AGORA_CHECK(client.readItem(987654320, "rare", "value") == std::string("[99]"));
         AGORA_CHECK(primary_a.jsonGetCount(canvas_a, rare_path) == rare_path_reads_before + 1);
         AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_rare + 1);
 
         // Cached edits stay in the LRU until eviction or an explicit sync.
-        AGORA_CHECK(client.setJsonPath(canvas_a, hot_path, 2));
+        AGORA_CHECK(client.patchItemField(987654320, "hot", "value", 2));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 1);
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
-        const auto merged_document = client.get(canvas_a);
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[2]"));
+        const auto merged_document = client.loadCanvas(987654320);
         AGORA_CHECK(merged_document.has_value());
         AGORA_CHECK(nlohmann::json::parse(*merged_document).at("items").at("hot").at("value") == 2);
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 1);
-        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
-        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
+        AGORA_CHECK(client.readItem(987654320, "cold", "value") == std::string("[10]"));
+        AGORA_CHECK(client.readItem(987654320, "cold", "value") == std::string("[10]"));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 2);
-        AGORA_CHECK(client.getJsonPath(canvas_a, cold_path) == std::string("[10]"));
+        AGORA_CHECK(client.readItem(987654320, "cold", "value") == std::string("[10]"));
         const int hot_reads_before_reload = primary_a.jsonGetCount(canvas_a, hot_path);
         const int canvas_reads_before_reload = primary_a.jsonGetTotalCount(canvas_a);
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[2]"));
         AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == hot_reads_before_reload + 1);
         AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_reads_before_reload + 1);
 
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[2]"));
-        AGORA_CHECK(client.setJsonPath(canvas_a, hot_path, 3));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[2]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[2]"));
+        AGORA_CHECK(client.patchItemField(987654320, "hot", "value", 3));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 2);
-        AGORA_CHECK(client.flushCanvasItemCache(canvas_a));
+        AGORA_CHECK(client.flushCanvas(987654320));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 3);
 
         // Each canvas has its own item capacity and does not evict another canvas's cache.
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[3]"));
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[3]"));
         const std::string canvas_b = "canvas:987654321";
         const std::string canvas_b_path = "$[\"items\"][\"hot\"][\"value\"]";
-        AGORA_CHECK(client.set(canvas_b, nlohmann::json{
+        AGORA_CHECK(client.storeCanvas(987654321, nlohmann::json{
             {"items", {{"hot", {{"value", 3}}}}}
-        }.dump()));
-        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
-        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
-        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        }));
+        AGORA_CHECK(client.readItem(987654321, "hot", "value") == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654321, "hot", "value") == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654321, "hot", "value") == std::string("[3]"));
         const int canvas_a_reads = primary_a.jsonGetCount(canvas_a, hot_path);
         const int canvas_b_reads = primary_a.jsonGetCount(canvas_b, canvas_b_path);
         const int canvas_a_total_reads = primary_a.jsonGetTotalCount(canvas_a);
         const int canvas_b_total_reads = primary_a.jsonGetTotalCount(canvas_b);
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[3]"));
-        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654321, "hot", "value") == std::string("[3]"));
         AGORA_CHECK(primary_a.jsonGetCount(canvas_a, hot_path) == canvas_a_reads);
         AGORA_CHECK(primary_a.jsonGetCount(canvas_b, canvas_b_path) == canvas_b_reads);
         AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_a) == canvas_a_total_reads);
         AGORA_CHECK(primary_a.jsonGetTotalCount(canvas_b) == canvas_b_total_reads);
 
-        AGORA_CHECK(client.setJsonPath(canvas_a, hot_path, 4));
+        AGORA_CHECK(client.patchItemField(987654320, "hot", "value", 4));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 3);
-        AGORA_CHECK(client.getJsonPath(canvas_b, canvas_b_path) == std::string("[3]"));
+        AGORA_CHECK(client.readItem(987654321, "hot", "value") == std::string("[3]"));
         std::string canvas_c;
         for (int candidate = 987654322; candidate < 987654500; ++candidate) {
             const std::string key = "canvas:" + std::to_string(candidate);
@@ -490,15 +490,15 @@ void runRedisSentinelFailover() {
         }
         AGORA_CHECK(!canvas_c.empty());
         const std::string canvas_c_path = "$[\"items\"][\"warm\"][\"value\"]";
-        AGORA_CHECK(client.set(canvas_c, nlohmann::json{
+        AGORA_CHECK(client.storeCanvas(std::stoi(canvas_c.substr(7)), nlohmann::json{
             {"items", {{"warm", {{"value", 12}}}}}
-        }.dump()));
-        AGORA_CHECK(client.getJsonPath(canvas_c, canvas_c_path) == std::string("[12]"));
+        }));
+        AGORA_CHECK(client.readItem(std::stoi(canvas_c.substr(7)), "warm", "value") == std::string("[12]"));
         AGORA_CHECK(primary_a.document(canvas_a)->at("items").at("hot").at("value") == 4);
 
-        AGORA_CHECK(client.deleteJsonPath(canvas_a, "$[\"items\"][\"hot\"]"));
+        AGORA_CHECK(client.removeItem(987654320, "hot"));
         AGORA_CHECK(!primary_a.document(canvas_a)->at("items").contains("hot"));
-        AGORA_CHECK(client.getJsonPath(canvas_a, hot_path) == std::string("[]"));
+        AGORA_CHECK(client.readItem(987654320, "hot", "value") == std::string("[]"));
 
         // The old primary remains reachable but has become a replica.
         primary_a.becomeReadOnly();
@@ -512,7 +512,7 @@ void runRedisSentinelFailover() {
 
         // RESP error replies must not be mistaken for successful JSON deletes.
         primary_b.rejectJsonDeleteWithNoAuth();
-        AGORA_CHECK(!client.deleteJsonPath("canvas:987654321", "$.items"));
+        AGORA_CHECK(!client.clearItems(987654321));
     }
 }
 
@@ -528,7 +528,7 @@ void runRedisTlsSentinelSmoke() {
     while (std::getline(input, seed, ',')) {
         if (seed.empty()) continue;
         ::setenv("REDIS_SENTINELS", seed.c_str(), 1);
-        CanvasMemory client;
+        CanvasServiceMemory client;
         AGORA_CHECK(client.connect());
         AGORA_CHECK(client.ping());
         client.disconnect();

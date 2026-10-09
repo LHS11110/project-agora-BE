@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <chrono>
 #include <map>
 #include <set>
 #include <mutex>
@@ -15,11 +16,6 @@
 
 class Canvas {
 public:
-    struct WebSocketCallbacks {
-        std::function<void(int, int, const nlohmann::json&)> send_to_user;
-        std::function<void(int, int)> disconnect_user;
-        std::function<void(int)> disconnect_all;
-    };
 
     Canvas(int canvas_id, const std::string& redis_ip = "127.0.0.1", int redis_port = 6379);
     ~Canvas();
@@ -64,34 +60,16 @@ public:
         redis_port = port;
     }
 
-    // Record one authorized canvas WebSocket connection for this user.
-    void connectUser(int user_id);
-
-    // Disconnect one connection for a user. Returns true when the user became inactive.
-    bool disconnectUser(int user_id);
-
-    // Disconnect every canvas WebSocket connection for a user.
-    void disconnectUserCompletely(int user_id);
-
-    // Disconnect all users
-    void disconnectAll();
-
-    // WebSocket transport callbacks are supplied by WebSocketServer through CanvasPool.
-    void setWebSocketCallbacks(WebSocketCallbacks callbacks);
-
-    // Send to the user's active canvas WebSocket sessions.
-    void sendToUser(int user_id, const nlohmann::json& data);
-
-    bool isUserActive(int user_id);
-    std::set<int> getActiveUsers();
-
+    void touchQuery() { last_query_.store(std::chrono::steady_clock::now().time_since_epoch().count()); }
+    bool hasRecentQuery(std::chrono::seconds ttl = std::chrono::seconds(90)) const {
+        const auto elapsed = std::chrono::steady_clock::now().time_since_epoch().count() - last_query_.load();
+        return elapsed < std::chrono::duration_cast<std::chrono::steady_clock::duration>(ttl).count();
+    }
     int canvas_id;
     std::string canvas_name;
     int admin_user_id{0};
     std::string redis_ip;
     int redis_port;
-    std::set<int> active_users;
-    std::map<int, int> user_conn_counts;
 
     // Serializes settings mutations with the final Redis -> Elasticsearch flush.
     std::mutex settings_mutex;
@@ -117,6 +95,7 @@ public:
 private:
     struct PersistenceEntry {
         std::uint64_t ticket;
+        std::size_t bytes;
         nlohmann::json event;
         std::string request_id;
         std::string parent_request_id;
@@ -124,14 +103,14 @@ private:
 
     mutable std::mutex metadata_mutex_;
     long long settings_revision_{0};
-    std::mutex canvas_mutex;
+    std::atomic<std::chrono::steady_clock::duration::rep> last_query_{std::chrono::steady_clock::now().time_since_epoch().count()};
     std::mutex persistence_mutex_;
     std::condition_variable persistence_cv_;
     std::size_t pending_persistence_{0};
+    std::size_t queued_persistence_bytes_{0};
     std::uint64_t last_enqueued_persistence_{0};
     std::uint64_t last_completed_persistence_{0};
     std::deque<PersistenceEntry> persistence_queue_;
     bool persistence_worker_running_{false};
     bool persistence_failed_{false};
-    WebSocketCallbacks web_socket_callbacks_;
 };

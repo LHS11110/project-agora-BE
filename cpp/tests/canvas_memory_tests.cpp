@@ -1,5 +1,6 @@
-#include "CanvasMemory.hpp"
-#include "RedisCommandExecutor.hpp"
+#include "service_memory/CanvasServiceMemory.hpp"
+#include "memory/RedisCommandExecutor.hpp"
+#include "service_memory/CanvasSnapshotMemory.hpp"
 #include "TestSupport.hpp"
 #include <cstdlib>
 #include <deque>
@@ -22,13 +23,29 @@ struct ScriptedTransport final : RedisCommandExecutor {
     }
 };
 
+struct DocumentMemoryStub final : JsonDocumentStore {
+    nlohmann::json document, patch, search;
+    std::string index, id;
+    bool found{true}; bool write_result{true};
+    std::optional<nlohmann::json> getDocument(const std::string& target, const std::string& key) override {
+        index = target; id = key; return found ? std::optional<nlohmann::json>(document) : std::nullopt;
+    }
+    bool putDocument(const std::string& target, const std::string& key, const nlohmann::json& value) override {
+        index = target; id = key; document = value; return write_result;
+    }
+    bool patchDocument(const std::string&, const std::string&, const nlohmann::json& value) override {
+        patch = value; return write_result;
+    }
+    bool deleteDocument(const std::string&, const std::string&) override { return true; }
+    std::optional<nlohmann::json> searchDocuments(const std::string&, const nlohmann::json&) override { return search; }
+};
 void dirtyCacheSurvivesTransportFailureAndReplacement() {
     const std::string key = "canvas:9001";
     const std::string item = "$[\"items\"][\"hot\"]";
     const nlohmann::json document = {{"items", {{"hot", {{"value", 1}}}}}};
     auto transport = std::make_unique<ScriptedTransport>();
     auto* script = transport.get();
-    CanvasMemory memory(std::move(transport));
+    CanvasServiceMemory memory(std::move(transport));
     script->exchanges.push_back({{"JSON.SET", key, "$", document.dump()}, "OK"});
     AGORA_CHECK(memory.storeCanvas(9001, document));
     script->exchanges.push_back({{"JSON.GET", key, item + "[\"value\"]"}, "[1]"});
@@ -50,7 +67,7 @@ void dirtyCacheSurvivesTransportFailureAndReplacement() {
 
     auto replacement = std::make_unique<ScriptedTransport>();
     auto* next = replacement.get();
-    CanvasMemory another(std::move(replacement));
+    CanvasServiceMemory another(std::move(replacement));
     AGORA_CHECK(another.readItem(9001, "hot", "value") == "[2]");
     next->exchanges.push_back({{"JSON.DEL", key, item}, "1"});
     AGORA_CHECK(another.removeItem(9001, "hot"));
@@ -62,7 +79,7 @@ void dirtyCacheSurvivesTransportFailureAndReplacement() {
 void domainIdsAreEscapedBeforeStorage() {
     auto transport = std::make_unique<ScriptedTransport>();
     auto* script = transport.get();
-    CanvasMemory memory(std::move(transport));
+    CanvasServiceMemory memory(std::move(transport));
     const std::string id = "quoted\"\\id";
     const std::string path = "$[\"items\"][" + nlohmann::json(id).dump() + "]";
     script->exchanges.push_back({{"JSON.SET", "canvas:9002", path, "{\"value\":3}"}, "OK"});
@@ -72,9 +89,26 @@ void domainIdsAreEscapedBeforeStorage() {
     AGORA_CHECK(script->exchanges.empty());
 }
 
+void durableDocumentRestorationBelongsToCanvasMemory() {
+    auto backend = std::make_unique<DocumentMemoryStub>(); auto* durable = backend.get();
+    durable->document = {{"canvas-id", 9010}, {"items", nlohmann::json::object()}};
+    CanvasSnapshotMemory snapshots(std::move(backend), "canvas-index");
+    auto transport = std::make_unique<ScriptedTransport>(); auto* script = transport.get();
+    CanvasServiceMemory memory(std::move(transport));
+    auto expected = durable->document; expected["_cache_generation"] = "generation-1";
+    script->exchanges.push_back({{"JSON.SET", "canvas:9010", "$", expected.dump()}, "OK"});
+    AGORA_CHECK(memory.initializeCanvas(9010, snapshots, false, "generation-1") == expected);
+    AGORA_CHECK(durable->index == "canvas-index" && durable->id == "9010");
+    script->exchanges.push_back({{"JSON.GET", "canvas:9010"}, std::nullopt});
+    durable->id = "untouched";
+    AGORA_CHECK(!memory.initializeCanvas(9010, snapshots, true, "generation-2"));
+    AGORA_CHECK(durable->id == "untouched"); // Active data never falls back to stale snapshots.
+    AGORA_CHECK(script->exchanges.empty());
+}
 int main() {
     setenv("CPP_CANVAS_LRU_CAPACITY", "2", 1);
     setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
     return runTest("dirty cache survives failed flush and transport replacement", dirtyCacheSurvivesTransportFailureAndReplacement)
-        + runTest("domain IDs are escaped at the memory boundary", domainIdsAreEscapedBeforeStorage);
+        + runTest("domain IDs are escaped at the memory boundary", domainIdsAreEscapedBeforeStorage)
+        + runTest("canvas memory restores durable documents and protects active data", durableDocumentRestorationBelongsToCanvasMemory);
 }

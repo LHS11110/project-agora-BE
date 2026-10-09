@@ -10,6 +10,21 @@ import org.springframework.context.annotation.Configuration;
 @ConfigurationProperties(prefix = "app.elasticsearch")
 public class ElasticsearchProperties {
 
+    private String searchIndex = "canvas-search";
+    private boolean semanticSearchEnabled = true;
+    private int searchLimit = 100;
+    private int searchCandidates = 500;
+    private double searchSimilarity = .80;
+    public String getSearchIndex() { return searchIndex; }
+    public void setSearchIndex(String value) { searchIndex = value; }
+    public boolean isSemanticSearchEnabled() { return semanticSearchEnabled; }
+    public void setSemanticSearchEnabled(boolean value) { semanticSearchEnabled = value; }
+    public int getSearchLimit() { return searchLimit; }
+    public void setSearchLimit(int value) { if (value < 1 || value > 200) throw new IllegalArgumentException("Search limit must be 1..200"); searchLimit = value; }
+    public int getSearchCandidates() { return Math.max(searchCandidates, searchLimit); }
+    public void setSearchCandidates(int value) { if (value < 1 || value > 2000) throw new IllegalArgumentException("Search candidates must be 1..2000"); searchCandidates = value; }
+    public double getSearchSimilarity() { return searchSimilarity; }
+    public void setSearchSimilarity(double value) { if (!Double.isFinite(value) || value < -1 || value > 1) throw new IllegalArgumentException("Invalid cosine threshold"); searchSimilarity = value; }
     private String host = "127.0.0.1";
     private int port = 9200;
     private String scheme = "https";

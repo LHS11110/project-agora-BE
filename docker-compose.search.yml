@@ -1,0 +1,50 @@
+name: agora-search
+services:
+  search-embedding:
+    build:
+      context: ./search
+    image: project-agora-search:local
+    container_name: agora-search-embedding
+    restart: unless-stopped
+    init: true
+    read_only: true
+    mem_limit: 2g
+    cpus: 2
+    tmpfs: [/tmp:uid=10001,gid=10001,mode=700]
+    environment:
+      ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
+      ES_PORT: ${DOCKER_ES_PORT:-9200}
+      ES_INDEX: ${ES_INDEX:-canvas}
+      ES_SEARCH_INDEX: ${ES_SEARCH_INDEX:-canvas-search}
+      ES_USER_NAME: ${ES_USER_NAME:-agora_user}
+      ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Configure the ES application account}
+      ES_CA_CERT: /run/es-ca/ca.pem
+      CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Configure the internal token}
+      SERVICE_TLS_CERT: /run/tls/fullchain.pem
+      SERVICE_TLS_KEY: /run/tls/privkey.pem
+      EMBEDDING_THREADS: ${EMBEDDING_THREADS:-2}
+      SEARCH_SYNC_SECONDS: ${SEARCH_SYNC_SECONDS:-30}
+    volumes:
+      - spring-tls:/run/tls:ro
+      - type: bind
+        source: ${ES_CA_CERT:?Configure the public ES CA path}
+        target: /run/es-ca/ca.pem
+        read_only: true
+        bind: {create_host_path: false}
+    networks: [agora-services]
+    healthcheck:
+      test: [CMD, python, -c, "import ssl,urllib.request; c=ssl.create_default_context(cafile='/run/tls/ca.pem'); c.minimum_version=ssl.TLSVersion.TLSv1_3; urllib.request.urlopen('https://localhost:8445/health',context=c,timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 30
+      start_period: 30s
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+networks:
+  agora-services:
+    external: true
+    name: agora-services
+volumes:
+  spring-tls:
+    external: true
+    name: agora-spring-tls

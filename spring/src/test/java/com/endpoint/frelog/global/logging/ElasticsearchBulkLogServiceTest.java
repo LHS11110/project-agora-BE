@@ -2,64 +2,48 @@ package com.endpoint.frelog.global.logging;
 
 import com.endpoint.frelog.global.config.ElasticsearchProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.web.client.RestClient;
-
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import java.util.HashSet;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.*;
 
 class ElasticsearchBulkLogServiceTest {
-    private HttpServer server;
-    private final AtomicInteger requests = new AtomicInteger();
-
-    @BeforeEach
-    void startElasticsearchStub() throws IOException {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/agora-logs/_bulk", exchange -> {
-            exchange.getRequestBody().readAllBytes();
-            requests.incrementAndGet();
-            byte[] response = "{\"items\":[{\"create\":{\"status\":201}}]}"
-                    .getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, response.length);
-            try (var output = exchange.getResponseBody()) {
-                output.write(response);
-            }
-        });
-        server.start();
-    }
-
-    @AfterEach
-    void stopElasticsearchStub() {
-        if (server != null) server.stop(0);
-    }
-
     @Test
-    void shutdownFlushesMoreThanTheScheduledBatchLimit() {
+    void shutdownFlushesMoreThanTheScheduledBatchLimit() throws Exception {
         ElasticsearchProperties properties = new ElasticsearchProperties();
-        properties.setHost("127.0.0.1");
-        properties.setPort(server.getAddress().getPort());
         properties.setLogIndex("agora-logs");
         properties.setLogPassword("test-writer-password");
-
-        RestClient restClient = RestClient.builder().baseUrl(properties.getBaseUrl()).build();
-        ElasticsearchBulkLogService service = new ElasticsearchBulkLogService(
-                restClient, properties, new ObjectMapper(), 1);
-
+        RestClient client = mock(RestClient.class);
+        var request = mock(RestClient.RequestBodyUriSpec.class);
+        var response = mock(RestClient.ResponseSpec.class);
+        when(client.post()).thenReturn(request);
+        when(request.uri("/{index}/_bulk?refresh=false", "agora-logs")).thenReturn(request);
+        when(request.contentType(any())).thenReturn(request);
+        when(request.body(any(Object.class))).thenReturn(request);
+        when(request.retrieve()).thenReturn(response);
+        when(response.body(String.class)).thenReturn("{\"items\":[{\"create\":{\"status\":201}}]}");
+        var mapper = new ObjectMapper();
+        var service = new ElasticsearchBulkLogService(client, properties, mapper, 1);
         for (int index = 0; index < 11; index++) {
             service.record("test", "event", "INFO", "queued event", Map.of("sequence", index));
         }
-
         service.flushOnShutdown();
-
-        assertEquals(11, requests.get());
+        ArgumentCaptor<String> batches = ArgumentCaptor.forClass(String.class);
+        verify(request, times(11)).body(batches.capture());
+        var ids = new HashSet<String>();
+        for (String batch : batches.getAllValues()) {
+            assertTrue(batch.endsWith("\n"));
+            String[] lines = batch.split("\n");
+            assertEquals(2, lines.length);
+            assertTrue(ids.add(mapper.readTree(lines[0]).at("/create/_id").asText()));
+            assertTrue(mapper.readTree(lines[1]).isObject());
+        }
+        // A second shutdown must not re-send already acknowledged events.
+        service.flushOnShutdown();
+        verify(client, times(11)).post();
     }
 }

@@ -7,6 +7,9 @@ import com.endpoint.frelog.domain.user.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import com.endpoint.frelog.domain.canvas.service.CanvasRedisDocumentReader;
+import com.endpoint.frelog.domain.canvas.client.CppServerClient;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpHeaders;
@@ -25,6 +28,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 class SecurityIntegrationTest {
+
+    @MockitoBean
+    private CppServerClient cppServerClient;
+
+    @MockitoBean
+    private CanvasRedisDocumentReader canvasRedisDocumentReader;
 
     @Autowired
     private WebApplicationContext context;

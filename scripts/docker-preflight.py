@@ -28,18 +28,18 @@ def validate(build=False, gateway=False):
     for key, expected in (("DB_ENCRYPT", "true"), ("DB_TRUST_SERVER_CERTIFICATE", "false"), ("REDIS_TLS_ENABLED", "true"), ("ES_SCHEME", "https")):
         if values.get(key, expected).lower() != expected:
             raise ValueError(f'TLS configuration requires {key}={expected}.')
-    proxy_ip = values.get('NGINX_BACKEND_IP') or '172.21.0.250'
+    proxy_ip = values.get('NGINX_BACKEND_IP') or '172.23.0.250'
     address = ipaddress.ip_address(proxy_ip)
     if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified or address.is_multicast:
-        raise ValueError('NGINX_BACKEND_IP must be a private IPv4 address on agora-net.')
+        raise ValueError('NGINX_BACKEND_IP must be a private IPv4 address on agora-services.')
     inspected = subprocess.CompletedProcess([], 1, '', '')
     if gateway:
-        inspected = subprocess.run(['docker', 'network', 'inspect', 'agora-net'], capture_output=True, text=True, timeout=10)
+        inspected = subprocess.run(['docker', 'network', 'inspect', 'agora-services'], capture_output=True, text=True, timeout=10)
     if inspected.returncode == 0:
         network = json.loads(inspected.stdout)[0]
         pools = [ipaddress.ip_network(pool['Subnet']) for pool in network['IPAM']['Config'] if pool.get('Subnet')]
         if not any(address in pool and address not in (pool.network_address, pool.broadcast_address) for pool in pools):
-            raise ValueError('NGINX_BACKEND_IP is outside agora-net. Set it to a free address in the DB network subnet.')
+            raise ValueError('NGINX_BACKEND_IP is outside agora-services. Set it to a free address in the Wall service network subnet.')
         for container in network.get('Containers', {}).values():
             occupied = container.get('IPv4Address', '').split('/')[0]
             if occupied == proxy_ip and container.get('Name') != 'agora-nginx':
@@ -79,7 +79,8 @@ def validate(build=False, gateway=False):
     if gateway and explicit_proxies and proxy_ip not in [item.strip() for item in explicit_proxies.split(',')]:
         raise ValueError('CPP_TRUSTED_PROXY_IPS must include NGINX_BACKEND_IP for the managed gateway.')
     if build:
-        for relative in ('cpp/third_party/uWebSockets/LICENSE', 'cpp/third_party/uWebSockets/uSockets/src/libusockets.h', 'cpp/third_party/jwt-cpp/include/jwt-cpp/jwt.h'):
+        for relative in ('cpp/third_party/uWebSockets/src/App.h',
+                         'cpp/third_party/uWebSockets/uSockets/src/libusockets.h'):
             if not (ROOT / relative).is_file():
                 raise ValueError('Build dependencies are missing. Run git submodule update --init --recursive in the BE repository.')
     print('Backend configuration, secret presence, bind files' + (' and submodules' if build else '') + ' validated; values hidden.')

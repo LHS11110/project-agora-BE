@@ -268,29 +268,9 @@ class CanvasServiceTest {
         assertThat(response.serverId()).isEqualTo(1);
         assertThat(response.wsPort()).isEqualTo("8002");
         assertThat(response.canvasAccessToken()).isEqualTo("mock-canvas-token");
+        verifyNoInteractions(userSessionRepository);
         // assertThat(info.getIsCached()).isTrue();
         // assertThat(testUser.getIsAccessed()).isTrue();
-    }
-
-    @Test
-    @DisplayName("다른 캔버스를 이용 중인 세션은 접속 서버를 할당하기 전에 거부한다")
-    void accessCanvas_AlreadyUsingAnotherCanvas_RejectsBeforeAllocation() {
-        CanvasInfo targetCanvas = new CanvasInfo(300);
-        given(canvasInfoRepository.findByIdWithPessimisticLock(300)).willReturn(Optional.of(targetCanvas));
-
-        com.endpoint.frelog.domain.user.entity.UserSession mockSession =
-                new com.endpoint.frelog.domain.user.entity.UserSession(testUser);
-        mockSession.setIsAccessed(true);
-        mockSession.setCanvas(new CanvasInfo(299));
-        given(userSessionRepository.findByIdWithPessimisticLock(1L)).willReturn(Optional.of(mockSession));
-
-        jakarta.servlet.http.HttpServletRequest request =
-                org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
-
-        assertThatThrownBy(() -> canvasService.accessCanvas(300, request, userDetails))
-                .isInstanceOf(CustomException.class)
-                .hasFieldOrPropertyWithValue("errorCode", ErrorCode.ALREADY_CONNECTED);
-        verifyNoInteractions(loadBalancerService);
     }
 
 }

@@ -331,10 +331,6 @@ public class CanvasService {
                     "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
-        if (userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
-            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
-                    "접속 중인 사용자가 있어 캔버스를 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
-        }
         // MS SQL 삭제
         canvasInfoRepository.delete(canvasInfo);
 
@@ -388,20 +384,7 @@ public class CanvasService {
         // Redis document. A settings change must not race a cache handoff.
         CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
 
-        // Match the C++ session reservation rule before returning connection
-        // details: the same user may open several sockets on one canvas, but
-        // cannot switch canvases while their DB session is active.
-        UserSession currentSession = userSessionRepository
-                .findByIdWithPessimisticLock(currentUser.getUserId()).orElse(null);
-        if (currentSession != null && Boolean.TRUE.equals(currentSession.getIsAccessed())) {
-            Integer activeCanvasId = currentSession.getCanvas() == null
-                    ? null : currentSession.getCanvas().getCanvasId();
-            if (!canvasId.equals(activeCanvasId)) {
-                throw new CustomException(ErrorCode.ALREADY_CONNECTED,
-                        "이미 다른 캔버스를 이용 중입니다. 현재 캔버스 연결을 종료한 뒤 다시 시도해 주세요.");
-            }
-        }
-
+        // Connection presence belongs to Phoenix; C++ only owns canvas data.
         boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
         CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
 
@@ -429,12 +412,6 @@ public class CanvasService {
                 && Boolean.TRUE.equals(assignedServer.getIsActivated())
                 && assignedServer.getLastHeartbeatAt() != null
                 && assignedServer.getLastHeartbeatAt().isAfter(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15));
-
-        if (cachedCanvas && !assignedServerAvailable
-                && userSessionRepository.existsByCanvas_CanvasIdAndIsAccessedTrue(canvasId)) {
-            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
-                    "사용자가 이용 중인 캔버스의 C++ 서버 상태를 확인할 수 없습니다. 기존 연결이 종료된 뒤 다시 시도해 주세요.");
-        }
 
         if (!assignedServerAvailable) {
             if (assignedServer != null) {

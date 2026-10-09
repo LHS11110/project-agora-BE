@@ -78,9 +78,10 @@ class LoadBalancerServiceTest {
     void allocateServer_SingleServer_ReturnsDirectly() {
         ServerInfo single = new ServerInfo("127.0.0.1", "8000", "8002", "Main-Cpp");
         single.setIsActivated(true);
+        single.setServerId(1);
         single.setLastHeartbeatAt(LocalDateTime.now());
         given(serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(any(LocalDateTime.class))).willReturn(List.of(single));
-        given(cppServerClient.isHealthy("127.0.0.1", "8000")).willReturn(true);
+        given(cppServerClient.isHealthy(1)).willReturn(true);
 
         AllocateServerResponse response = loadBalancerService.allocateServer();
 
@@ -111,17 +112,19 @@ class LoadBalancerServiceTest {
         RegisterServerRequest request = new RegisterServerRequest("127.0.0.1", "8000", "8002", "Server-1");
         ServerInfo s1 = new ServerInfo(request.serverIp(), request.serverPort(), request.wsPort(), request.serverName());
         s1.setIsActivated(true);
+        s1.setServerId(1);
         ServerInfo s2 = new ServerInfo("127.0.0.1", "8001", "8003", "Server-2");
         s2.setIsActivated(true);
+        s2.setServerId(2);
         s1.setLastHeartbeatAt(LocalDateTime.now());
         s2.setLastHeartbeatAt(LocalDateTime.now());
         given(serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(any(LocalDateTime.class))).willReturn(List.of(s1, s2));
-        given(cppServerClient.isHealthy("127.0.0.1", "8000")).willReturn(true);
-        given(cppServerClient.isHealthy("127.0.0.1", "8001")).willReturn(true);
+        given(cppServerClient.isHealthy(1)).willReturn(true);
+        given(cppServerClient.isHealthy(2)).willReturn(true);
 
         // s1: 부하 10, s2: 부하 3
-        given(cppServerClient.getCanvasCountFromServer("127.0.0.1", "8000")).willReturn(10);
-        given(cppServerClient.getCanvasCountFromServer("127.0.0.1", "8001")).willReturn(3);
+        given(cppServerClient.getCanvasCountFromServer(1)).willReturn(10);
+        given(cppServerClient.getCanvasCountFromServer(2)).willReturn(3);
 
         AllocateServerResponse response = loadBalancerService.allocateServer();
 

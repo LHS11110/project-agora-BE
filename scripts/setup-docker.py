@@ -95,11 +95,21 @@ def prepare(db_dir, tls_dir, public_origin='https://localhost:8443'):
             desired[key] = secrets.token_hex(32)
     origins = [item.strip() for item in values.get('CORS_ALLOWED_ORIGINS', '').split(',') if item.strip().startswith('https://')]
     desired['CORS_ALLOWED_ORIGINS'] = ','.join(dict.fromkeys(origins + [public_origin]))
-    network = db.ipaddress.ip_network(configs['mssql'].get('AGORA_NET_SUBNET', '172.21.0.0/16'))
-    proxy_ip = str(network.network_address + 250) if first_setup else values.get('NGINX_BACKEND_IP') or str(network.network_address + 250)
+    network = db.ipaddress.ip_network(values.get('AGORA_SERVICES_SUBNET') or '172.23.0.0/16')
+    for subnet in (configs['mssql'].get('AGORA_NET_SUBNET', '172.21.0.0/16'),
+                   configs['redis'].get('REDIS_HA_SUBNET', '172.20.0.0/16')):
+        if network.overlaps(db.ipaddress.ip_network(subnet)):
+            raise ValueError('AGORA_SERVICES_SUBNET must not overlap a storage network.')
+    old_proxy = values.get('NGINX_BACKEND_IP') or ''
+    proxy_ip = str(network.network_address + 250) if old_proxy in ('', '172.21.0.250') else old_proxy
     if db.ipaddress.ip_address(proxy_ip) not in network:
-        raise ValueError('NGINX_BACKEND_IP must be in the DB AGORA_NET_SUBNET. Update the existing backend .env.')
+        raise ValueError('NGINX_BACKEND_IP must be in AGORA_SERVICES_SUBNET.')
+    desired['AGORA_SERVICES_SUBNET'] = str(network)
     desired['NGINX_BACKEND_IP'] = proxy_ip
+    trusted = values.get('CPP_TRUSTED_PROXY_IPS', '')
+    if trusted:
+        desired['CPP_TRUSTED_PROXY_IPS'] = ','.join(dict.fromkeys(
+            proxy_ip if ip.strip() == old_proxy else ip.strip() for ip in trusted.split(',') if ip.strip()))
     db.update_env_file(env_path, desired)
     previous_argv = sys.argv
     try:

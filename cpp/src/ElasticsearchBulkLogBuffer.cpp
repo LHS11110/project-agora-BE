@@ -1,5 +1,5 @@
 #include "ElasticsearchBulkLogBuffer.hpp"
-#include "ElasticsearchHttpClient.hpp"
+#include "memory/ElasticsearchHttpClient.hpp"
 #include "Environment.hpp"
 #include "RequestLogContext.hpp"
 

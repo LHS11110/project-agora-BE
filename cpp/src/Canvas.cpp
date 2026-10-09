@@ -7,25 +7,24 @@ Canvas::Canvas(int canvas_id, const std::string& redis_ip, int redis_port)
     : canvas_id(canvas_id), redis_ip(redis_ip), redis_port(redis_port) {
 }
 
-Canvas::~Canvas() {
-    // Explicit pool teardown is responsible for notifying the WebSocket
-    // server. A destructor can run later on a persistence worker after the
-    // canvas has already left the pool; calling the saved callback here would
-    // risk invoking a WebSocketServer that has already been destroyed.
-    std::lock_guard<std::mutex> lock(canvas_mutex);
-    user_conn_counts.clear();
-    active_users.clear();
-    web_socket_callbacks_ = {};
-}
+Canvas::~Canvas() = default;
 
 bool Canvas::enqueuePersistence(const nlohmann::json& event, bool& start_worker,
                                 const std::string& request_id,
                                 const std::string& parent_request_id) {
+    // Bound outstanding work before admitting a ticket. Serialization is outside
+    // the queue mutex so workers can drain while a large event is measured.
+    start_worker = false;
+    const auto bytes = event.dump().size() + request_id.size() + parent_request_id.size();
+    constexpr std::size_t max_bytes = 64 * 1024 * 1024;
     std::lock_guard<std::mutex> lock(persistence_mutex_);
+    if (pending_persistence_ >= 1024 || bytes > max_bytes
+        || queued_persistence_bytes_ > max_bytes - bytes) return false;
     if (unloading.load() || persistence_failed_) return false;
     if (last_enqueued_persistence_ == std::numeric_limits<std::uint64_t>::max()) return false;
     const auto ticket = ++last_enqueued_persistence_;
-    persistence_queue_.push_back({ticket, event, request_id, parent_request_id});
+    persistence_queue_.push_back({ticket, bytes, event, request_id, parent_request_id});
+    queued_persistence_bytes_ += bytes;
     ++pending_persistence_;
     start_worker = !persistence_worker_running_;
     persistence_worker_running_ = true;
@@ -48,6 +47,7 @@ bool Canvas::nextPersistence(nlohmann::json& event, std::uint64_t& ticket,
     event = std::move(persistence_queue_.front().event);
     if (request_id) *request_id = std::move(persistence_queue_.front().request_id);
     if (parent_request_id) *parent_request_id = std::move(persistence_queue_.front().parent_request_id);
+    queued_persistence_bytes_ -= persistence_queue_.front().bytes;
     persistence_queue_.pop_front();
     return true;
 }
@@ -61,6 +61,7 @@ void Canvas::cancelPersistenceQueue() {
         pending_persistence_ = 0;
     }
     persistence_queue_.clear();
+    queued_persistence_bytes_ = 0;
     persistence_worker_running_ = false;
     if (pending_persistence_ == 0) {
         last_completed_persistence_ = last_enqueued_persistence_;
@@ -90,110 +91,4 @@ bool Canvas::waitForPendingPersistence(std::unique_lock<std::mutex>& lock) {
         return last_completed_persistence_ >= ticket;
     });
     return !persistence_failed_;
-}
-
-void Canvas::connectUser(int user_id) {
-    std::lock_guard<std::mutex> lock(canvas_mutex);
-
-    user_conn_counts[user_id]++;
-    active_users.insert(user_id);
-
-    std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
-              << " connected (connections: " << user_conn_counts[user_id] << "). Total active users: " << active_users.size()
-              << " (WebSocket)\n";
-}
-
-bool Canvas::disconnectUser(int user_id) {
-    std::size_t remaining_users = 0;
-    bool user_became_inactive = false;
-
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex);
-
-        const bool was_active = active_users.count(user_id) > 0;
-        auto c_it = user_conn_counts.find(user_id);
-        if (c_it != user_conn_counts.end()) {
-            c_it->second--;
-            if (c_it->second <= 0) {
-                user_conn_counts.erase(c_it);
-                active_users.erase(user_id);
-            }
-        } else {
-            active_users.erase(user_id);
-        }
-
-        user_became_inactive = was_active && active_users.count(user_id) == 0;
-        remaining_users = active_users.size();
-    }
-
-    std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
-              << " disconnected. Remaining active users: " << remaining_users << "\n";
-    return user_became_inactive;
-}
-
-void Canvas::disconnectUserCompletely(int user_id) {
-    WebSocketCallbacks callbacks;
-    std::size_t remaining_users = 0;
-    bool was_active = false;
-
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex);
-        was_active = active_users.erase(user_id) > 0;
-        user_conn_counts.erase(user_id);
-
-        callbacks = web_socket_callbacks_;
-        remaining_users = active_users.size();
-    }
-
-    if (was_active && callbacks.disconnect_user) {
-        callbacks.disconnect_user(canvas_id, user_id);
-    }
-
-    std::cout << "[Canvas #" << canvas_id << "] User #" << user_id
-              << " fully disconnected. Remaining active users: " << remaining_users << "\n";
-}
-
-void Canvas::disconnectAll() {
-    WebSocketCallbacks callbacks;
-
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex);
-        user_conn_counts.clear();
-        active_users.clear();
-        callbacks = web_socket_callbacks_;
-    }
-
-    if (callbacks.disconnect_all) {
-        callbacks.disconnect_all(canvas_id);
-    }
-
-    std::cout << "[Canvas #" << canvas_id << "] All users disconnected\n";
-}
-
-void Canvas::setWebSocketCallbacks(WebSocketCallbacks callbacks) {
-    std::lock_guard<std::mutex> lock(canvas_mutex);
-    web_socket_callbacks_ = std::move(callbacks);
-}
-
-void Canvas::sendToUser(int user_id, const nlohmann::json& data) {
-    WebSocketCallbacks callbacks;
-
-    {
-        std::lock_guard<std::mutex> lock(canvas_mutex);
-        callbacks = web_socket_callbacks_;
-    }
-
-    if (callbacks.send_to_user) {
-        callbacks.send_to_user(canvas_id, user_id, data);
-    }
-}
-
-bool Canvas::isUserActive(int user_id) {
-    std::lock_guard<std::mutex> lock(canvas_mutex);
-    return active_users.count(user_id) > 0;
-}
-
-std::set<int> Canvas::getActiveUsers() {
-    std::lock_guard<std::mutex> lock(canvas_mutex);
-    return active_users;
 }

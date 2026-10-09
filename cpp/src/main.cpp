@@ -24,17 +24,18 @@
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
-#include "CanvasPool.hpp"
-#include "CanvasControlApi.hpp"
+#include "service_memory/CanvasLifecycleMemory.hpp"
+#include "service/CanvasControlService.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
-#include "HealthApi.hpp"
-#include "HttpServer.hpp"
-#include "WebSocketServer.hpp"
-#include "MssqlClient.hpp"
+#include "service/HealthService.hpp"
+#include "api/HttpApiServer.hpp"
+#include "service/CanvasQueryService.hpp"
+#include "service/BrokerQuerySocketService.hpp"
+#include "service_memory/RegistryServiceMemory.hpp"
 #include "Environment.hpp"
 
-static HttpServer* g_server = nullptr;
-static WebSocketServer* g_ws_server = nullptr;
+static HttpApiServer* g_server = nullptr;
+static BrokerQuerySocketService* g_broker_server = nullptr;
 static std::atomic<bool> g_cleanup_running{true};
 static std::mutex g_cleanup_mutex;
 static std::condition_variable g_cleanup_cv;
@@ -234,7 +235,7 @@ void installCrashTraceHandlers() {
 }
 }
 
-void stop_servers(CanvasPool& canvas_pool) {
+void stop_servers(CanvasLifecycleMemory& canvas_pool) {
     if (g_shutdown_started.exchange(true)) return;
 
     {
@@ -243,24 +244,17 @@ void stop_servers(CanvasPool& canvas_pool) {
     }
     g_cleanup_cv.notify_all();
 
-    MssqlClient(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
+    RegistryServiceMemory(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
     std::cout << "[Agora C++ Server] 서버를 DB에서 비활성화했습니다.\n";
 
-    if (g_ws_server) {
-        g_ws_server->stopAcceptingClients();
-    }
-    if (g_server) {
-        g_server->stop();
-    }
+    if (g_server) g_server->stop();
+    if (g_broker_server) g_broker_server->stop();
 
     if (!canvas_pool.saveCanvasesForShutdown()) {
         std::cerr << "[Agora C++ Server] 일부 Canvas를 Elasticsearch에 저장하지 못했습니다. "
                      "Redis 캐시는 보존한 채 종료를 계속합니다.\n";
     }
 
-    if (g_ws_server) {
-        g_ws_server->stopForRestart();
-    }
 
     // Close callbacks have now cleared SQL sessions. Uncache each saved canvas
     // so another server can load it before clients reconnect.
@@ -301,12 +295,7 @@ int main(int argc, char* argv[]) {
     if (const char* env_java_host = std::getenv("JAVA_HOST")) java_host = env_java_host;
     if (!readIntegerEnvironment("JAVA_PORT", java_port, 1, 65535)) return 1;
 
-    const char* env_jwt_secret = std::getenv("JWT_SECRET");
-    if (!env_jwt_secret || std::string(env_jwt_secret).size() < 32) {
-        std::cerr << "JWT_SECRET must be configured and at least 32 characters long\n";
-        return 1;
-    }
-    std::string jwt_secret = env_jwt_secret;
+
 
     const std::string internal_api_token = environmentValue("CPP_INTERNAL_API_TOKEN");
     if (internal_api_token.size() < 32) {
@@ -340,10 +329,10 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "========================================\n";
-    std::cout << " Agora C++ Realtime Canvas Server\n";
+    std::cout << " Agora C++ Canvas Query Server\n";
     std::cout << " Process PID:            " << getpid() << "\n";
     std::cout << " REST Listening on:      " << host << ":" << g_port << "\n";
-    std::cout << " uWS WebSocket Port:     " << host << ":" << ws_port << "\n";
+    std::cout << " Broker routing key:     " << host << ":" << ws_port << "\n";
     std::cout << " MSSQL:                  " << g_db_host << ":" << g_db_port << "\n";
     std::cout << " ES:                     " << es_host << ":" << es_port << "\n";
     std::cout << " Java API:               " << java_host << ":" << java_port << "\n";
@@ -351,7 +340,6 @@ int main(int argc, char* argv[]) {
     std::cout << " [OSS Licenses & Attributions]\n";
     std::cout << " - uWebSockets & uSockets (Apache-2.0, (c) Alex Hultman)\n";
     std::cout << " - cpp-httplib & nlohmann/json (MIT)\n";
-    std::cout << " - jwt-cpp (MIT, (c) Thalhammer)\n";
     std::cout << " - FreeTDS sybdb (LGPL-2.1+, see https://www.freetds.org/)\n";
     std::cout << " - zlib (zlib license)\n";
     std::cout << " See THIRD_PARTY_LICENSES.md for full license texts.\n";
@@ -361,31 +349,26 @@ int main(int argc, char* argv[]) {
     auto& es_log_sink = ElasticsearchBulkLogBuffer::instance();
     ElasticsearchLogStreamCapture es_log_capture(es_log_sink);
 
-    CanvasPool canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port, g_advertise_ip, g_port);
+    CanvasLifecycleMemory canvas_pool(g_db_host, g_db_port, es_host, es_port, java_host, java_port, g_advertise_ip, g_port);
 
-    MssqlClient mssql(g_db_host, g_db_port);
+    RegistryServiceMemory mssql(g_db_host, g_db_port);
     if (!mssql.registerServer(g_advertise_ip, g_port, ws_port)) {
-        std::cerr << "[MssqlClient] Failed to register server to DB.\n";
+        std::cerr << "[RegistryServiceMemory] Failed to register server to DB.\n";
         return 1;
     } else {
-        std::cout << "[MssqlClient] Successfully registered server to DB (IP: " << g_advertise_ip << ", REST: " << g_port << ", WS: " << ws_port << ")\n";
+        std::cout << "[RegistryServiceMemory] Successfully registered server to DB (IP: " << g_advertise_ip << ", REST: " << g_port << ", WS: " << ws_port << ")\n";
     }
 
-    std::vector<std::unique_ptr<HttpApiModule>> api_modules;
-    api_modules.push_back(std::make_unique<CanvasControlApi>(canvas_pool));
-    api_modules.push_back(std::make_unique<HealthApi>());
-    HttpServer server(canvas_pool, host, g_port, g_advertise_ip, jwt_secret, g_db_host, g_db_port,
-                      std::move(api_modules));
-    WebSocketServer ws_server(canvas_pool, host, ws_port, [&](const std::string& token, int canvas_id, const std::string& client_ip) {
-        return server.authenticateTokenForCanvas(token, canvas_id, client_ip, ws_port);
-    }, java_host, java_port);
-
+    std::vector<std::unique_ptr<HttpServiceModule>> api_modules;
+    api_modules.push_back(std::make_unique<CanvasControlService>(canvas_pool));
+    CanvasQueryService queries(canvas_pool, ws_port);
+    api_modules.push_back(std::make_unique<HealthService>());
+    HttpApiServer server(host, g_port, std::move(api_modules));
+    BrokerQuerySocketService broker_socket(queries, host, ws_port, environmentValue("CPP_INTERNAL_API_TOKEN"));
+    if (!broker_socket.start()) return 1;
     g_server = &server;
-    g_ws_server = &ws_server;
+    g_broker_server = &broker_socket;
 
-    // Start listeners before the signal waiter so a queued SIGINT/SIGTERM can
-    // never stop an unstarted server and then accidentally let it start later.
-    ws_server.start();
     std::thread http_server_thread([&server]() {
         server.start();
     });

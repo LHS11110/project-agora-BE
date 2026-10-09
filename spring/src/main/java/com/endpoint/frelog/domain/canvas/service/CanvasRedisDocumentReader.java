@@ -32,6 +32,8 @@ import java.util.Map;
 /** Reads the active RedisJSON document; failure is fail-closed for access checks. */
 @Component
 public class CanvasRedisDocumentReader {
+    @Value("${REDIS_BROKER_ROUTES:}")
+    private String brokerRoutes = "";
     private final ObjectMapper objectMapper;
     private final String username;
     private final String password;
@@ -187,16 +189,35 @@ public class CanvasRedisDocumentReader {
         }
     }
 
+    RedisAddress brokerDialAddress(RedisAddress identity) throws IOException {
+        if (brokerRoutes.isBlank()) return identity;
+        try {
+            var mapping = objectMapper.readTree(brokerRoutes);
+            var endpoint = mapping.get(identity.host() + ":" + identity.port());
+            if (endpoint == null || !endpoint.isObject()
+                    || !endpoint.path("host").isTextual() || endpoint.path("host").asText().isBlank()
+                    || !endpoint.path("port").isIntegralNumber() || !endpoint.path("port").canConvertToInt())
+                throw new IOException("Storage endpoint is not registered with Wall");
+            int port = endpoint.path("port").intValue();
+            if (port < 1 || port > 65535) throw new IOException("Invalid Wall storage route");
+            return new RedisAddress(endpoint.path("host").asText(), port);
+        } catch (RuntimeException e) {
+            throw new IOException("Invalid Wall storage routes", e);
+        }
+    }
+
     private Socket openSocket(RedisAddress address) throws IOException {
         Socket socket = new Socket();
         try {
-            socket.connect(new InetSocketAddress(address.host(), address.port()), 1200);
+            RedisAddress dial = brokerDialAddress(address);
+            socket.connect(new InetSocketAddress(dial.host(), dial.port()), 1200);
             socket.setSoTimeout(2000);
             if (!tlsEnabled) return socket;
 
             SSLSocket tlsSocket = (SSLSocket) redisSslContext.getSocketFactory()
                     .createSocket(socket, address.host(), address.port(), true);
             SSLParameters parameters = tlsSocket.getSSLParameters();
+            parameters.setProtocols(new String[]{"TLSv1.3"});
             parameters.setEndpointIdentificationAlgorithm("HTTPS");
             tlsSocket.setSSLParameters(parameters);
             tlsSocket.startHandshake();

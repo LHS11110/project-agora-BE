@@ -48,7 +48,9 @@ public class ElasticsearchConfig {
     }
 
     private RestClient createRestClient(String username, String password) throws Exception {
-        HttpClient.Builder httpClient = HttpClient.newBuilder()
+        var tlsParameters = new javax.net.ssl.SSLParameters();
+        tlsParameters.setProtocols(new String[]{"TLSv1.3"});
+        HttpClient.Builder httpClient = HttpClient.newBuilder().sslParameters(tlsParameters)
                 .connectTimeout(Duration.ofSeconds(2));
         if ("https".equalsIgnoreCase(properties.getScheme())
                 && properties.getCaCertificate() != null

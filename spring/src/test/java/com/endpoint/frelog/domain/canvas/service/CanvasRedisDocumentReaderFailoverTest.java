@@ -42,6 +42,20 @@ class CanvasRedisDocumentReaderFailoverTest {
     private ElasticsearchBulkLogService logService;
 
     @Test
+    void mappedRedisIdentityDialsWallAndUnknownNodesCannotBypassIt() throws Exception {
+        var reader = new CanvasRedisDocumentReader(new ObjectMapper(), "", "test", "", "agora-master", "", "", false, "", logService);
+        org.springframework.test.util.ReflectionTestUtils.setField(reader, "brokerRoutes",
+                "{\"172.20.0.7:6379\":{\"host\":\"agora-storage-broker\",\"port\":16380}}");
+        var identity = new CanvasRedisDocumentReader.RedisAddress("172.20.0.7", 6379);
+        assertThat(reader.brokerDialAddress(identity)).isEqualTo(
+                new CanvasRedisDocumentReader.RedisAddress("agora-storage-broker", 16380));
+        assertThat(identity.host()).isEqualTo("172.20.0.7");
+        assertThatThrownBy(() -> reader.brokerDialAddress(
+                new CanvasRedisDocumentReader.RedisAddress("172.20.0.9", 6379)))
+                .isInstanceOf(IOException.class).hasMessageContaining("not registered");
+    }
+
+    @Test
     void recoversWhenSentinelPromotesAnotherRedisPrimary() throws Exception {
         ObjectMapper objectMapper = new ObjectMapper();
         try (FakeSentinelCluster cluster = new FakeSentinelCluster(objectMapper)) {

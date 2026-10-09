@@ -68,7 +68,7 @@ docker compose -p project-agora-db -f docker-compose.yml \
 
 printf 'Starting Elasticsearch and waiting for health...\n'
 docker compose -p project-agora-db -f docker-compose.yml \
-    up -d --wait --wait-timeout "$WAIT_SECONDS" elasticsearch
+    up -d --build --wait --wait-timeout "$WAIT_SECONDS" elasticsearch
 
 printf 'Checking Elasticsearch index and log schema...\n'
 "$DB_DIR/elasticsearch/ensure-elasticsearch-initialized.sh"
@@ -82,7 +82,17 @@ printf 'Preparing the default Redis Sentinel HA stack...\n'
 printf 'Applying Redis HA ACLs, search index, and SQL registration...\n'
 "$DB_DIR/redis/init-redis-sentinel.sh"
 
+WALL_DIR="${AGORA_WALL_DIR:-$PROJECT_DIR/../project-agora-Wall}"
+[[ -f "$WALL_DIR/scripts/storage-broker-docker.sh" ]] || die "Wall repository is required; configure it before starting backends."
+printf 'Starting Wall storage broker...\n'
+AGORA_BE_DIR="$PROJECT_DIR" "$WALL_DIR/scripts/storage-broker-docker.sh" up
+
 printf 'Starting backend containers...\n'
 env -u DOCKER_DB_HOST -u DOCKER_DB_PORT -u DOCKER_ES_HOST -u DOCKER_ES_PORT \
     -u REDIS_SENTINELS -u REDIS_SENTINEL_MASTER_NAME \
     "$SCRIPT_DIR/backend-docker.sh" up
+
+
+printf 'Starting self-hosted E5 search projection...\n'
+docker compose --project-directory "$PROJECT_DIR" --env-file "$ENV_FILE" \
+    -f "$PROJECT_DIR/docker-compose.search.yml" up -d --build --wait --wait-timeout "$WAIT_SECONDS" search-embedding

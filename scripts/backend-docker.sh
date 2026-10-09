@@ -40,13 +40,13 @@ cd "$PROJECT_DIR"
 compose() {
     local network_gateway proxy_ip configured_proxies custom_sql_ca
     local compose_files=(--file "$COMPOSE_FILE")
-    proxy_ip="$(python3 "$SCRIPT_DIR/docker-preflight.py" --setting NGINX_BACKEND_IP --default 172.21.0.250)"
+    proxy_ip="$(python3 "$SCRIPT_DIR/docker-preflight.py" --setting NGINX_BACKEND_IP --default 172.23.0.250)"
     configured_proxies="$(python3 "$SCRIPT_DIR/docker-preflight.py" --setting CPP_TRUSTED_PROXY_IPS)"
     custom_sql_ca="$(python3 "$SCRIPT_DIR/docker-preflight.py" --setting CPP_SQL_CA_CERT_HOST_PATH)"
     if [[ -n "$custom_sql_ca" ]]; then
         compose_files+=(--file "$PROJECT_DIR/docker-compose.sql-ca.yml")
     fi
-    network_gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' agora-net 2>/dev/null || true)"
+    network_gateway="$(docker network inspect --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}' agora-services 2>/dev/null || true)"
     if [[ -z "$configured_proxies" ]]; then
         export CPP_TRUSTED_PROXY_IPS="${network_gateway:+$network_gateway,}$proxy_ip"
     fi
@@ -63,7 +63,7 @@ require_network() {
     local network_name="$1"
     docker info >/dev/null 2>&1 || die "Docker engine is unavailable or access is denied. Check the Docker daemon and socket permissions."
     docker network inspect "$network_name" >/dev/null 2>&1 \
-        || die "Docker network '$network_name' is missing. Start the matching DB/Sentinel Compose stack first."
+        || die "Docker network '$network_name' is missing. Start Wall storage-broker first."
 }
 
 backend_network_references_are_stale() {
@@ -71,7 +71,7 @@ backend_network_references_are_stale() {
 
     for container_name in agora-spring agora-cpp; do
         docker inspect "$container_name" >/dev/null 2>&1 || continue
-        for network_name in agora-net agora-redis-ha; do
+        for network_name in agora-services; do
             current_network_id="$(docker network inspect --format '{{.Id}}' "$network_name")"
             container_network_id="$(docker inspect --format "{{with index .NetworkSettings.Networks \"$network_name\"}}{{.NetworkID}}{{end}}" "$container_name")"
             if [[ -n "$container_network_id" && "$container_network_id" != "$current_network_id" ]]; then
@@ -107,9 +107,8 @@ wait_for_healthy_container() {
 }
 
 check_dependencies() {
-    require_network agora-net
-
-    require_network agora-redis-ha
+    require_network agora-services
+    wait_for_healthy_container agora-storage-broker
 
     for container_name in \
         agora-mssql \

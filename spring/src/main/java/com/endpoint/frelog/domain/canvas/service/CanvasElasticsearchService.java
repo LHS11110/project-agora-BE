@@ -32,6 +32,7 @@ public class CanvasElasticsearchService {
     private static final Logger log = LoggerFactory.getLogger(CanvasElasticsearchService.class);
     private static final int ITEMS_CHUNK_BYTES = 8190;
 
+    private final CanvasSearchService searchService;
     private final RestClient restClient;
     private final ElasticsearchProperties properties;
     private final ObjectMapper objectMapper;
@@ -40,9 +41,16 @@ public class CanvasElasticsearchService {
             @Qualifier("elasticsearchRestClient") RestClient restClient,
             ElasticsearchProperties properties,
             ObjectMapper objectMapper) {
+        this(restClient, properties, objectMapper, new CanvasSearchService(restClient, properties, objectMapper, null));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CanvasElasticsearchService(@Qualifier("elasticsearchRestClient") RestClient restClient,
+            ElasticsearchProperties properties, ObjectMapper objectMapper, CanvasSearchService searchService) {
         this.restClient = restClient;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.searchService = searchService;
     }
 
     private String encodeCanvasDocument(CanvasDocument document) throws Exception {
@@ -228,18 +236,12 @@ public class CanvasElasticsearchService {
      */
     public List<CanvasDocument> searchCanvasesByName(String canvasName) {
         try {
-            Map<String, Object> queryBody;
-            if (canvasName == null || canvasName.isBlank()) {
-                queryBody = Map.of(
-                        "query", Map.of("match_all", Map.of()),
-                        "size", 1000
-                );
-            } else {
-                queryBody = Map.of(
-                        "query", Map.of("match", Map.of("canvas-name", canvasName)),
-                        "size", 1000
-                );
-            }
+            if (canvasName != null && !canvasName.isBlank()) return searchService.search(canvasName);
+            Map<String, Object> queryBody = Map.of(
+                    "query", Map.of("match_all", Map.of()),
+                    "_source", List.of("canvas-id", "canvas-name", "description", "people"),
+                    "size", 1000
+            );
             String queryJson = objectMapper.writeValueAsString(queryBody);
 
             String rawJson = restClient.post()
@@ -264,7 +266,7 @@ public class CanvasElasticsearchService {
             }
             return Collections.emptyList();
         } catch (Exception e) {
-            log.warn("Elasticsearch 캔버스 이름 검색 실패 ('{}'): {}", canvasName, e.getMessage());
+            log.warn("Elasticsearch 캔버스 검색 실패: {}", e.getClass().getSimpleName());
             return Collections.emptyList();
         }
     }

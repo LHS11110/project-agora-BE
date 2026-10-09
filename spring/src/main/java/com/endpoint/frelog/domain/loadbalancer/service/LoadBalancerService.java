@@ -66,7 +66,7 @@ public class LoadBalancerService {
         LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15);
         List<ServerInfo> servers = serverInfoRepository.findByIsActivatedTrueAndLastHeartbeatAtAfter(cutoff)
                 .stream()
-                .filter(s -> cppServerClient.isHealthy(s.getServerIp(), s.getServerPort()))
+                .filter(s -> cppServerClient.isHealthy(s.getServerId()))
                 .toList();
 
         if (servers.isEmpty()) {
@@ -193,7 +193,7 @@ public class LoadBalancerService {
     }
 
     private int getActiveCanvasCount(ServerInfo server) {
-        return cppServerClient.getCanvasCountFromServer(server.getServerIp(), server.getServerPort());
+        return cppServerClient.getCanvasCountFromServer(server.getServerId());
     }
 
     @Transactional

@@ -1,6 +1,6 @@
 # Project Agora BE
 
-Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring Boot는 인증, 캔버스 메타데이터, 서버 할당을 담당하고 C++ 서버는 WebSocket 연결과 실시간 이벤트를 처리합니다.
+Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring Boot는 인증, 캔버스 메타데이터, 서버 할당을 담당하고 C++ 서버는 Phoenix 브로커와 지속 WSS 소켓으로 통신하며 캔버스 권한 데이터 조회·쿼리·저장을 처리합니다. 브라우저 접속·피어·호스트·브로드캐스트는 Wall의 Phoenix가 담당합니다.
 
 저장소 인프라는 [Project Agora DB](../project-agora-DB)에서 실행합니다.
 
@@ -26,26 +26,20 @@ flowchart LR
 | --- | --- | --- |
 | `spring/` | REST API, JWT, 사용자·캔버스 관리, 서버 할당 | `127.0.0.1:8080` |
 | `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | 기본 `HOST=0.0.0.0`, REST `8000`, WS `8002`; 아래 운영 예시는 loopback 바인드 |
-| `nginx/` | HTTPS/WSS 역방향 프록시 | `:443` |
+| `../project-agora-Wall/` | HTTPS/WSS 역방향 프록시 | `:443` |
 | MS SQL Server AG listener | 계정, 세션, 캔버스 배정, 서버 메타데이터 | 로컬 `127.0.0.1:1433`; 운영에서는 listener DNS/VIP |
 | Redis Stack HA | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | 필수 Sentinel seed로 현재 primary 탐색 |
 | Elasticsearch | 캔버스 문서 영구 저장소 | `127.0.0.1:9200` |
 
 ## 캔버스 접속 흐름
 
-1. 사용자는 `POST /api/auth/login`으로 일반 JWT를 받습니다.
-2. `POST /api/canvases/{canvasId}/access`가 캔버스 비밀번호를 확인하고 DB heartbeat 및 C++ `GET /api/canvas/count` 확인을 통과한 서버 중 실시간 활성 캔버스 수가 적은 서버를 선택한 뒤 설정 revision을 담은 캔버스 전용 JWT를 발급합니다. 참여 권한 확인은 C++ WebSocket 연결 시 수행합니다.
-3. 클라이언트는 응답의 `ws_port`를 사용해 캔버스 WebSocket에 연결합니다. 이 연결 하나가 캔버스 이벤트의 송신과 수신을 모두 처리합니다.
-4. C++ 서버는 JWT를 확인한 뒤 캐시 할당이나 세션 예약 전에 Redis/Elasticsearch에서 참여자와 설정 revision을 한 번 검증합니다. 통과한 경우에만 사용자 세션을 예약하고 캔버스를 로드합니다. 로드 직후에는 참여자 권한을 재검사하지 않고 revision만 비교해 확인과 로드 사이의 설정 변경을 막습니다.
-5. 항목 이벤트는 권한 그룹을 확인한 뒤 RedisJSON에 저장됩니다. 항목 변경은 다른 캔버스 접속자에게 실시간 브로드캐스트하지 않으며, 최신 상태는 재접속 후 `init_items`에서 받습니다. 마지막 사용자가 나가면 Redis 문서를 Elasticsearch에 저장한 뒤 캐시 배정을 해제합니다.
+1. Spring이 로그인과 `/api/canvases/{canvasId}/access`에서 서버 할당 및 캔버스 접속 JWT를 제공합니다.
+2. 브라우저는 기존 `/wss/port/{wsPort}/canvas/{canvasId}`와 RTC 경로로 접속하고 Nginx가 Phoenix로 전달합니다.
+3. Phoenix는 사용자 JWT를 검증한 뒤 C++ `/broker/queries` 지속 WSS로 검증된 principal을 전달합니다. C++는 현재 참여자·settings revision과 권한별 최신 문서를 반환하며 Phoenix가 결과까지 확인한 후 WebSocket 업그레이드를 허용합니다.
+4. Phoenix는 브라우저 요청을 캔버스별로 순서대로 C++에 전달합니다. C++는 Service → Service Memory → Memory 계층으로 처리하고 `route`, 간단한 `response`, 권한별 `broadcasts`를 반환합니다. Phoenix가 응답과 방송을 전달합니다.
+5. C++는 브라우저 연결이나 SQL `user_sessions`를 관리하지 않습니다. Phoenix lease와 최근 쿼리로 캔버스 사용 여부를 판단하며 유휴 캔버스는 Elasticsearch 스냅샷 후 정리합니다.
 
-일반 캔버스 이벤트의 전체·그룹 브로드캐스트와 임의 payload relay는 제공하지 않습니다. 설정 변경 알림(`canvas_settings_changed`)은 유지되고, RTC는 별도 신호 채널에서 피어 상태를 알리거나 지정된 피어 한 명에게 신호를 전달합니다. 정상 종료 때는 저장을 마친 뒤 각 연결에 재접속 신호를 보냅니다.
-
-WebRTC를 사용할 때 클라이언트는 별도의 RTC 신호 WebSocket도 엽니다. 캔버스와 RTC 신호 연결은 같은 `ws_port`를 쓰지만 서로 다른 URL 경로와 독립된 WebSocket 연결입니다. 캔버스 WebSocket의 `init_items.rtc_canvas_connection_id`와 `rtc_canvas_connection_hash`를 RTC 신호 연결의 `rtc_join` 이벤트에 함께 보내면 서버가 해시를 검증한 뒤 해당 캔버스 WebSocket과 RTC 피어를 연결합니다. 피어 목록과 신호 대상은 캔버스별로 분리됩니다. 캔버스 WebSocket이 닫히면 그 연결에 묶인 RTC 피어만 즉시 해제하며 RTC 신호 WebSocket은 열린 상태로 남습니다. `rtc_disconnect`도 피어 등록만 해제하고 RTC 신호 WebSocket을 닫지 않습니다. 두 경우 모두 실제 WebRTC 연결을 닫는 것은 클라이언트의 책임입니다. `user_sessions`와 캔버스 활성 상태는 캔버스 WebSocket만 기준으로 갱신됩니다. C++ 서버는 SDP와 ICE 정보만 지정 피어에게 전달하며 실제 WebRTC 미디어·데이터 패킷을 경유시키지 않습니다. 외부 TURN 사용 여부는 클라이언트의 ICE 설정에 달려 있습니다.
-
-캔버스 이벤트는 하나의 양방향 WebSocket으로 송수신합니다. 과거 RX/TX TCP 소켓 구현은 제거되었습니다.
-
-C++ 서버는 5초마다 `cpp_server.last_heartbeat_at`을 갱신합니다. Spring은 최근 15초 heartbeat를 후보 필터로 사용하고, 서버의 실시간 활성 캔버스 수는 C++ `GET /api/canvas/count`에서 조회해 할당 부하로 사용합니다. 다른 C++ 제어 API는 Spring에서 호출하지 않습니다.
+프런트엔드의 호스트 승인 및 WebRTC 데이터 채널 동작은 유지합니다. HTTPS 제어 API는 상태·부하 조회 등에 남아 있으며 CRUD는 HTTP로 전달하지 않습니다. 자세한 내부 계약은 [Wall 브로커 프로토콜](../project-agora-Wall/BROKER_PROTOCOL.md), 실행은 [Wall README](../project-agora-Wall/README.md)를 참고하세요.
 
 ## 사전 요구 사항
 
@@ -80,7 +74,7 @@ python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/
 
 `CPP_INTERNAL_API_TOKEN`은 Spring에서 C++ REST 관리 API를 호출할 때 보내는 내부 Bearer 성격의 공유 토큰입니다. 최소 32바이트의 무작위 값을 사용하세요. C++ `/api/**` 경로는 이 값이 맞지 않으면 요청을 거부하며, Docker Compose는 `.env` 전체를 컨테이너에 전달하지 않고 각 서비스가 필요한 환경 변수만 전달합니다.
 
-C++ 캐시는 캔버스별 `Poco::LRUCache`에 아이템 문서를 저장합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 보관할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0으로 설정하면 아이템 캐시를 끕니다. `CPP_CANVAS_LRU_CAPACITY`는 프로세스가 유지할 캔버스별 캐시 수이며 기본값은 256, 최대값은 4096입니다. 새 아이템은 Redis에 먼저 만들며 생성 요청에서 바로 캐시하지 않습니다. 첫 조회는 요청된 경로만 Redis에서 읽고, 반복 조회로 자주 사용되는 아이템만 전체 문서로 LRU에 승격합니다. LRU에 들어 있는 아이템은 조회와 변경을 캐시 사본 기준으로 수행합니다. 변경 사본은 dirty 상태로 보관하며 LRU에서 밀려나거나 명시적으로 동기화하거나 캔버스를 반환·종료할 때 전체 아이템을 Redis에 기록해 Redis의 이전 값을 덮어씁니다. 동기화 실패 시 dirty 사본을 버리지 않고 캔버스 반환을 중단합니다. 삭제는 Redis에 반영된 뒤 LRU에서도 제거합니다. 전체 캔버스 조회는 dirty LRU 사본을 Redis 문서에 합쳐 최신 데이터를 반환합니다. 한 아이템이 256 KiB를 넘으면 캐시에 두지 않으며, 채팅 기록 배열도 크기 변동이 커 Redis에서 직접 읽습니다. 채팅방 메타데이터를 flush할 때는 Redis의 기록 배열을 보존합니다.
+C++ 캐시는 `CanvasServiceMemory → MemoryClass → LruMemory / RedisMemory` 구조이며, 범용 `MemoryClass`가 캔버스별 `LruMemory`에 아이템 문서를 저장합니다. `CPP_CANVAS_LRU_ITEMS_PER_CANVAS`는 캔버스 하나당 보관할 아이템 수이며 기본값은 64, 최대값은 4096입니다. 0으로 설정하면 아이템 캐시를 끕니다. `CPP_CANVAS_LRU_CAPACITY`는 프로세스가 유지할 캔버스별 캐시 수이며 기본값은 256, 최대값은 4096입니다. 새 아이템은 Redis에 먼저 만들며 생성 요청에서 바로 캐시하지 않습니다. 첫 조회는 요청된 경로만 Redis에서 읽고, 반복 조회로 자주 사용되는 아이템만 전체 문서로 LRU에 승격합니다. LRU에 들어 있는 아이템은 조회와 변경을 캐시 사본 기준으로 수행합니다. 변경 사본은 dirty 상태로 보관하며 LRU에서 밀려나거나 명시적으로 동기화하거나 캔버스를 반환·종료할 때 전체 아이템을 Redis에 기록해 Redis의 이전 값을 덮어씁니다. 동기화 실패 시 dirty 사본을 버리지 않고 캔버스 반환을 중단합니다. 삭제는 Redis에 반영된 뒤 LRU에서도 제거합니다. 전체 캔버스 조회는 dirty LRU 사본을 Redis 문서에 합쳐 최신 데이터를 반환합니다. 한 아이템이 256 KiB를 넘으면 캐시에 두지 않으며, 채팅 기록 배열도 크기 변동이 커 Redis에서 직접 읽습니다. 채팅방 메타데이터를 flush할 때는 Redis의 기록 배열을 보존합니다.
 
 운영 HA 설정에서는 `DB_HOST`/`DB_PORT`를 각 SQL 노드가 아닌 AG listener에 맞추고 `DB_MULTI_SUBNET_FAILOVER=true`를 설정합니다. Spring JDBC는 listener를 통해 읽기/쓰기 primary에 연결하며 풀은 끊긴 연결을 폐기하고 새 연결을 만듭니다. C++ FreeTDS 연결 풀도 끊긴 연결을 버리고 listener에 새 연결을 최대 3회, 짧은 backoff로 엽니다. 두 경로 모두 이미 전송한 SQL 쓰기/트랜잭션을 자동 재실행하지 않습니다. 응답이 불명확한 쓰기는 호출자에게 실패로 돌려보내고, 애플리케이션 요청 수준에서 안전성을 판단하도록 합니다.
 
@@ -106,7 +100,7 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 
 ## Docker로 백엔드 실행
 
-`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소 루트의 기본 `docker compose up`은 SQL Server·Elasticsearch·Redis Sentinel HA를 시작합니다. 같은 Docker 엔진에서 DB와 백엔드는 `agora-net` 및 `agora-redis-ha` 네트워크 이름으로 연결됩니다. 두 네트워크는 겹치지 않는 고정 서브넷을 사용합니다. 컨테이너 이름과 네트워크가 준비되면 Docker DNS가 자동으로 이름을 찾으므로, 별도 네트워크 설정 파일을 백엔드에 복사할 필요는 없습니다. DB 환경 파일의 계정·Sentinel 주소가 바뀌면 백엔드 `.env`에도 반영한 뒤 컨테이너를 재생성해야 합니다. 아래 시작 스크립트가 DB 볼륨을 확인하고, 이전 Sentinel Compose 프로젝트에서 전환이 필요한 경우 기존 HA 볼륨을 보존하며 프로젝트를 옮긴 뒤 연결값을 동기화합니다. Elasticsearch가 healthy가 된 뒤 인덱스 또는 로그 alias가 없으면 스키마를 초기화하고, 캔버스·로그 계정과 역할을 동기화한 다음 Spring을 시작합니다.
+`docker-compose.backend.yml`은 Spring과 C++ 백엔드 컨테이너만 관리합니다. DB 저장소 루트의 기본 `docker compose up`은 SQL Server·Elasticsearch·Redis Sentinel HA를 시작합니다. 백엔드는 Wall의 `agora-services`에만 연결됩니다. Wall 저장소 브로커가 SQL/ES의 `agora-net` 및 Redis의 `agora-redis-ha`에 연결되어 저장소 접근을 중계합니다. 세 네트워크는 겹치지 않는 서브넷을 사용합니다. 컨테이너 이름과 네트워크가 준비되면 Docker DNS가 자동으로 이름을 찾으므로, 별도 네트워크 설정 파일을 백엔드에 복사할 필요는 없습니다. DB 환경 파일의 계정·Sentinel 주소가 바뀌면 백엔드 `.env`에도 반영한 뒤 컨테이너를 재생성해야 합니다. 아래 시작 스크립트가 DB 볼륨을 확인하고, 이전 Sentinel Compose 프로젝트에서 전환이 필요한 경우 기존 HA 볼륨을 보존하며 프로젝트를 옮긴 뒤 연결값을 동기화합니다. Elasticsearch가 healthy가 된 뒤 인덱스 또는 로그 alias가 없으면 스키마를 초기화하고, 캔버스·로그 계정과 역할을 동기화한 다음 Spring을 시작합니다.
 
 백엔드 Compose는 프로젝트 루트 `.env`의 `ES_CA_CERT`와 `REDIS_TLS_CA_CERT`를 호스트의 CA 파일 경로로 사용해 컨테이너에 읽기 전용으로 마운트합니다. 컨테이너 안에서는 각각 `/run/certs/elasticsearch-ca.crt`, `/run/certs/redis-ca.crt`로 참조합니다. TLS 연결을 위해 Elasticsearch는 HTTPS, Redis/Sentinel은 TLS를 사용하며 `REDIS_SENTINELS`에는 세 Sentinel 주소를 설정해야 합니다. 이미지에는 `.env`나 인증서를 복사하지 않습니다.
 
@@ -141,7 +135,7 @@ cd /path/to/project-agora-BE
 ./scripts/backend-docker.sh health
 ```
 
-`up`은 `agora-net`, `agora-redis-ha` 네트워크와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. DB 스택이 Docker 네트워크를 교체해 기존 백엔드 컨테이너가 사라진 네트워크 ID를 참조하면, 스크립트가 백엔드 컨테이너를 새 네트워크에 다시 연결합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 네트워크 주소나 AG listener를 쓸 때는 `.env`에 `DOCKER_DB_HOST`/`DOCKER_DB_PORT`, `DOCKER_ES_HOST`/`DOCKER_ES_PORT`를 지정하세요. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
+`up`은 `agora-services`, Wall 저장소 브로커와 MSSQL·Elasticsearch·Redis primary/replica/Sentinel 컨테이너들의 health 상태를 확인하고, Spring을 먼저 준비한 뒤 C++을 시작합니다. 의존 컨테이너가 없거나 아직 healthy 상태가 아니면 구체적인 컨테이너를 표시하고 중단합니다. DB 스택이 Docker 네트워크를 교체해 기존 백엔드 컨테이너가 사라진 네트워크 ID를 참조하면, 스크립트가 백엔드 컨테이너를 새 네트워크에 다시 연결합니다. Compose 파일에서 `DOCKER_DB_HOST`와 `DOCKER_ES_HOST`의 기본값은 `agora-mssql`, `agora-elasticsearch`입니다. 다른 저장소 주소나 AG listener를 쓸 때는 Wall의 `STORAGE_MSSQL_UPSTREAM`, `STORAGE_ES_UPSTREAM`을 지정하세요. 서비스 네트워크의 SQL/ES 이름은 브로커 별칭으로 유지합니다. SQL 인증서 검증을 사용하는 환경에서는 DB 주소가 SQL 인증서 SAN과 일치해야 합니다.
 
 컨테이너는 non-root 사용자로 실행하고 root 파일시스템을 읽기 전용으로 둡니다. Spring 캔버스 이미지는 `agora-backend-spring-resources` 볼륨에 저장되어 컨테이너를 재생성해도 유지됩니다. Spring API는 호스트 `127.0.0.1:8080`, C++ REST API는 `127.0.0.1:8000`, C++ WebSocket은 `127.0.0.1:8002`에만 게시합니다. Spring은 컨테이너 내부에서 `0.0.0.0:8080`에 바인딩하고, C++은 DB에 `agora-cpp` 주소를 등록해 같은 Docker 네트워크의 Spring이 호출할 수 있도록 합니다. 백엔드 Nginx 컨테이너는 Docker 서비스 주소로 프록시합니다. `backend-docker.sh`는 Docker 게이트웨이와 Nginx 고정 IP를 C++의 `CPP_TRUSTED_PROXY_IPS`에 전달합니다. 직접 Compose로 실행하면 기본 Nginx IP를 신뢰합니다. 호스트 프록시를 추가하면 해당 주소도 명시해야 합니다.
 
@@ -233,7 +227,7 @@ ss -ltnp | rg ':(8080|8000|8002)\b'
 
 터미널을 계속 열어 두기 어렵거나 부팅 후 자동 시작이 필요하면 아래 [systemd 운영 예시](#systemd-운영-예시)를 사용하세요. 임의의 `pkill` 명령으로 Java나 C++ 프로세스를 종료하면 다른 실행 인스턴스까지 영향을 줄 수 있으므로, 로컬 전경 실행은 `Ctrl+C`, systemd 실행은 `systemctl`로 관리합니다.
 
-채팅은 `items[room_id]`의 `chat_room` 아이템으로 관리됩니다. 메시지는 해당 아이템의 `data` 배열에 방별 순번과 함께 저장되며, `{"type":"chat","room_id":"general","text":"test"}` 이벤트로 보냅니다. 서버는 요청한 소켓에만 응답하고 다른 참여자에게 실시간 브로드캐스트하지 않습니다. 각 참여자는 `chat_history` 이벤트의 `limit` 또는 `from_sequence`/`to_sequence`로 저장된 내역을 조회할 수 있습니다. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
+채팅은 `items[room_id]`의 `chat_room` 아이템으로 관리됩니다. 메시지는 해당 아이템의 `data` 배열에 방별 순번과 함께 저장되며, `{"type":"chat","room_id":"general","text":"test"}` 이벤트로 보냅니다. C++는 저장 후 응답과 권한별 방송 정보를 반환하고 Phoenix가 요청자와 참여자에게 전달합니다. 각 참여자는 `chat_history` 이벤트의 `limit` 또는 `from_sequence`/`to_sequence`로 저장된 내역을 조회할 수 있습니다. WebSocket 공개 이벤트에는 내부 DB `user_id`나 `sender_id`를 포함하지 않습니다. 캔버스 권한·세션 처리에는 내부 사용자 ID를 서버에서만 사용합니다.
 
 캔버스 설정은 비활성 상태에서는 Spring REST API로, 활성 상태에서는 C++ 서버의 `canvas_settings_get`/`canvas_settings_update` 이벤트로 변경합니다. 활성 캔버스에 Spring 수정 요청을 보내면 `409 CANVAS_006`과 접속 후 설정에서 변경하라는 안내를 반환합니다. WebSocket 변경에는 최신 `settings_revision`을 `expected_revision`으로 보내야 하며, 충돌 시 `SETTINGS_CONFLICT`가 반환됩니다. C++ 서버는 캐시 할당과 세션 예약 전에 Redis 또는 Elasticsearch 문서에서 참여자와 revision을 확인하고, 설정 업데이트에서는 사용자 활성 상태·서버 할당·참여자·`admin-group` 권한을 검사합니다. 성공한 설정 변경은 Redis와 Elasticsearch에 즉시 반영되며, Elasticsearch 업데이트는 설정 필드만 패치해 실시간 아이템을 덮어쓰지 않습니다. 성공하면 요청자에게 `canvas_settings_result`를 보내고, 요청자를 제외한 현재 인증된 참여자에게 비밀번호 해시가 없는 `canvas_settings_changed` 알림을 전송합니다. 비밀번호는 Spring에서 BCrypt, C++에서 PBKDF2-HMAC-SHA256 해시로 저장되며 평문이나 해시는 WebSocket 응답에 포함되지 않습니다. 접속 토큰은 설정 revision에 묶여 변경 전 발급된 토큰은 새 연결에 사용할 수 없습니다.
 
@@ -304,58 +298,16 @@ docker exec agora-cpp curl -fsS --cacert /run/tls/ca.pem https://localhost:8000/
 
 ## Nginx와 WSS
 
-Nginx는 이 저장소에서만 관리합니다. [nginx/agora.conf.example](nginx/agora.conf.example)이 유일한 설정 파일이며 [docker-compose.nginx.yml](docker-compose.nginx.yml)이 이를 Nginx Docker 이미지의 템플릿으로 마운트합니다. 컨테이너 시작 시 `FRONTEND_MODE`와 `NGINX_HTTPS_PORT`만 치환하고 Nginx의 `$uri`, `$host` 등은 보존합니다. 호스트 Nginx 설치는 필요하지 않습니다.
-
-| 요청 | 처리 |
-| --- | --- |
-| `/api/` | `agora-spring:8080`으로 프록시 |
-| `/wss/port/8002/canvas/:id` 및 `/rtc/canvas/:id` | `agora-cpp:8002`로 WebSocket 프록시 |
-| SPA 페이지 | 배포 시 공유 볼륨의 `index.html` fallback, 개발 시 Vite로 프록시 |
-| `/assets/`, `.mjs` | 파일 제공, 배포 자산 캐시 및 JavaScript MIME |
-| `/mathjax/`, `/pdfjs/` | 로컬 자산 제공 및 WASM MIME |
-| Vite HMR | 개발 모드에서 Upgrade 헤더를 유지해 Vite로 프록시 |
-
-### TLS 인증서
-
-Nginx와 내부 서비스는 TLS 인증서가 필수입니다. [TLS 초기 설정 안내](TLS_SETUP.md)에 따라 직접 인증서를 넣고 `setup-docker.py`로 경로와 연결 설정을 준비하세요. 사설 CA는 브라우저 또는 시스템의 신뢰 저장소에 직접 등록합니다. 개인 키는 Git과 Docker 빌드에서 제외하며 CA 개인 키는 컨테이너에 전달하지 않습니다.
-
-### 개발 실행
-
-DB 스택과 백엔드가 먼저 실행되어야 합니다. Nginx를 시작하면 FE와 공유하는 `agora-web` 네트워크가 생성됩니다.
+Nginx 설정과 실행 파일은 [project-agora-Wall](../project-agora-Wall/README.md)로 이전했습니다. HTTPS/WSS 라우팅, TLS 인증서 마운트, FE 공유 볼륨과 Nginx 개발·운영 실행은 Wall에서 관리합니다.
 
 ```bash
-cd /path/to/project-agora-BE
 ./scripts/backend-docker.sh up
+cd ../project-agora-Wall
+python3 scripts/setup.py --tls-dir /path/to/certificates
 ./scripts/nginx-docker.sh development
-cd ../project-agora-FE
-docker compose -f compose.dev.yaml up -d --build --remove-orphans
 ```
 
-브라우저 주소는 **https://localhost:8443** 또는 **https://127.0.0.1:8443**입니다. HTTP 4173 포트는 닫혀 있으며 리다이렉트도 제공하지 않습니다. Nginx는 FE 소스를 직접 마운트하지 않고 `agora-web` 네트워크의 `agora-frontend-dev:5173`에 연결합니다. API와 C++는 DB가 생성한 `agora-net` 네트워크로 연결합니다.
-
-### 빌드 배포
-
-```bash
-cd /path/to/project-agora-FE
-docker compose -f compose.dev.yaml down --remove-orphans
-docker compose build frontend-build
-docker compose run --rm frontend-build
-cd ../project-agora-BE
-./scripts/nginx-docker.sh production
-curl -fsS https://localhost:8443/
-```
-
-FE 빌드 컨테이너는 `agora-frontend-dist` 볼륨에 `dist/`를 내보내고 종료합니다. Nginx는 같은 볼륨을 읽기 전용으로 사용합니다. FE에 남아 있는 이전 `agora-frontend` 컨테이너는 `docker rm -f agora-frontend`로 제거해 포트 충돌을 해소합니다. 빌드 내보내기는 `current` 링크를 원자적으로 바꾸고 실패 시 이전 배포를 유지합니다. 새 FE exporter와 Nginx 설정을 함께 적용해야 하며 예전 볼륨의 최상위 파일은 새 배포에서 사용하지 않습니다.
-
-BE `.env` 또는 실행 환경에서 `NGINX_PORT`(HTTP, 기본 4173), `NGINX_HTTPS_PORT`(HTTPS, 기본 8443), `NGINX_TLS_CERT_DIR`(인증서 디렉터리), `NGINX_BACKEND_IP`(기본 172.21.0.250), `FRONTEND_MODE`(기본 production)를 설정할 수 있습니다. Docker 개발 WebSocket은 현재 브라우저 origin을 자동으로 사용합니다. 별도 WebSocket 도메인만 FE `VITE_WS_BASE_URL`로 지정하세요. Nginx 고정 IP는 C++의 `CPP_TRUSTED_PROXY_IPS`에 포함되어야 하며 기본 Compose와 실행 스크립트에 반영되어 있습니다. DB의 `agora-net` 서브넷을 변경하면 Nginx IP와 C++ 신뢰 IP를 함께 변경하세요. 현재 Docker C++ 서비스는 8002만 사용합니다. 추가 포트를 운영하려면 해당 C++ 서비스의 리스닝 포트와 라우팅 주소를 함께 구성해야 합니다.
-
-```bash
-docker compose -f docker-compose.nginx.yml exec nginx nginx -t
-docker compose -f docker-compose.nginx.yml logs -f
-docker compose -f docker-compose.nginx.yml down
-```
-
-기본 구성은 로컬 개발용 HTTP이며 loopback에만 게시됩니다. 기존 HTTPS 설정의 인증서 경로·TLS 프로토콜·HSTS 예시는 단일 설정 파일의 주석에 보존했습니다. 외부 운영 공개 시 CA 발급 `fullchain.pem`·`privkey.pem`을 `/etc/nginx/ssl/agora/`에 읽기 전용 마운트하고 해당 TLS 설정과 443 포트 게시를 활성화하며 HTTP→HTTPS 리디렉션을 적용하세요. FE에는 장기 비밀값을 넣지 않습니다.
+BE의 `NGINX_TLS_CERT_DIR`는 내부 서비스 인증서 초기화에 사용하므로 유지합니다. Wall의 `NGINX_BACKEND_IP`와 BE의 `CPP_TRUSTED_PROXY_IPS`를 맞추세요. 외부와 내부 통신은 HTTPS/WSS만 사용합니다.
 
 WSS 주소는 두 용도로 나뉘며, 둘 다 `/access` 응답의 같은 `ws_port`와 `canvas_access_token`을 사용합니다.
 
@@ -364,7 +316,7 @@ wss://<domain>/wss/port/<wsPort>/canvas/<canvasId>?token=<canvasAccessToken>
 wss://<domain>/wss/port/<wsPort>/rtc/canvas/<canvasId>?token=<canvasAccessToken>
 ```
 
-첫 번째는 캔버스 이벤트 송수신용이고, 두 번째는 WebRTC 피어 등록과 SDP/ICE 신호 교환용입니다. Nginx가 URL 경로에 따라 같은 포트의 C++ WebSocket 핸들러로 전달합니다. 직접 접속할 때는 각각 `/ws/canvas/<canvasId>`와 `/ws/rtc/canvas/<canvasId>` 경로를 사용합니다. 이전 `/wss/server/...` 형식은 사용하지 않습니다. WSS 포트 범위를 제한해 역방향 프록시가 임의 내부 포트 프록시가 되지 않도록 합니다.
+첫 번째는 캔버스 이벤트 송수신용이고, 두 번째는 WebRTC 피어 등록과 SDP/ICE 신호 교환용입니다. Nginx가 두 경로를 Phoenix의 `/broker/websocket`으로 전달합니다. C++에는 브라우저 직접 접속 경로가 없으며 내부 `/broker/queries`는 브로커 토큰이 필요합니다. 이전 `/wss/server/...` 형식은 사용하지 않습니다. WSS 포트 범위를 제한해 역방향 프록시가 임의 내부 포트 프록시가 되지 않도록 합니다.
 
 ## 주요 API
 
@@ -432,7 +384,7 @@ python3 tests/test_storages.py
 ```text
 spring/       Spring Boot API와 정적 테스트 페이지
 cpp/          C++ REST·WebSocket 서버
-nginx/        TLS/WSS 프록시 예시
+../project-agora-Wall/nginx/  TLS/WSS 프록시
 ```
 
 ## 라이선스
@@ -445,13 +397,13 @@ C++ 실행 파일을 배포할 때는 실행 파일만 복사하지 말고 `cmak
 
 - 호스트: Docker Compose v2, Bash 3.2 이상, Python 3.10 이상. Python은 기존 DB 설정 도구와 공통인 표준 라이브러리만 사용합니다. 호스트 Java·Node·Nginx·sqlcmd 설치는 Docker 기동에 필요하지 않습니다.
 - 저장소: BE·DB·FE는 독립 디렉터리에 둘 수 있습니다. DB 자동 재기동 스크립트만 기본 sibling 경로를 사용하며 다른 배치는 `AGORA_DB_DIR`로 지정합니다. `sync-docker-env.py --db-dir <DB 경로> --backend-env <BE .env>`가 비밀번호와 공개 CA를 동기화합니다. 저장소 이동이나 CA 교체 뒤에는 다시 실행하세요.
-- 네트워크: Nginx IP는 `agora-net` 서브넷 안의 빈 주소여야 합니다. `.env` 또는 실행 환경의 `NGINX_BACKEND_IP`를 C++ 신뢰 IP와 동일하게 반영하며 실행 시 실제 서브넷을 검사합니다. FE와 Nginx는 같은 Docker 엔진을 사용해야 합니다.
+- 네트워크: Nginx IP는 `agora-services` 서브넷 안의 빈 주소여야 합니다. `.env` 또는 실행 환경의 `NGINX_BACKEND_IP`를 C++ 신뢰 IP와 동일하게 반영하며 실행 시 실제 서브넷을 검사합니다. FE와 Nginx는 같은 Docker 엔진을 사용해야 합니다.
 - 인증: DB health가 정상이어도 로그 계정이 준비되지 않을 수 있습니다. `backend-docker.sh`의 기동·health 검사는 Spring 컨테이너에서 로그 계정 인증도 확인합니다. 실패하면 DB 계정 동기화 후 컨테이너를 재생성해야 합니다.
 
 ```bash
 python3 scripts/docker-preflight.py --build
 python3 scripts/checks/runtime_checks.py
-./scripts/nginx-docker.sh config
+(cd ../project-agora-Wall && ./scripts/nginx-docker.sh config)
 ```
 
 사전 점검은 비밀값을 출력하지 않습니다. 실제 컨테이너 빌드·`nginx -t`·헬스 체크에는 Docker 소켓 접근이 필요합니다.
@@ -469,3 +421,19 @@ Use `docker exec agora-spring curl --cacert /run/tls/ca.pem https://localhost:80
 References: [Spring PEM TLS](https://docs.spring.io/spring-boot/3.5/how-to/webserver.html), [Redis Insight HTTPS](https://redis.io/docs/latest/operate/redisinsight/configuration/).
 
 For a fresh stack, generate the certificates and run only `service-tls-init` before starting the DB root Compose stack (MSSQL and Redis Insight consume its external TLS volumes). Start the backend services afterward. SQL health and initialization commands verify the SQL issuing CA via SSL_CERT_FILE. Benchmark tools use HTTPS and TLS WebSocket sockets; run internal endpoints on the shared Docker network and set SERVICE_TLS_CA to the public CA certificate path.
+
+C++의 Service·API·Service Memory·Memory 계층과 기능 추가 방식은 [cpp/API_DEVELOPMENT.md](cpp/API_DEVELOPMENT.md)에 정리되어 있습니다.
+
+메모리 계층 책임과 다른 서비스의 사용 방법은 [cpp/MEMORY.md](cpp/MEMORY.md)를 참고하세요.
+
+## Wall을 통한 C++ 제어 API
+
+Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/servers/{serverId}/api/canvas/count`로 서버 부하를 조회합니다. C++ 주소를 직접 호출하거나 장애 시 직접 연결로 우회하지 않습니다. ID별 실제 주소·TLS 인증서 이름은 [Wall 라우팅 설정](../project-agora-Wall/nginx/cpp-routes.conf)에서 관리합니다. 실제 DB 등록 ID를 map에 추가해야 서버 할당이 가능합니다. [실행·설정 방법](../project-agora-Wall/README.md)을 참고하세요.
+
+사용자 JWT 키는 Spring과 Wall 브로커에만 전달합니다. C++의 JWT 검증·capability 발급 코드와 Docker JWT_SECRET 설정은 제거했습니다. C++는 내부 브로커 인증 토큰과 검증된 identity를 사용합니다. [브로커 인증·캔버스 격리](../project-agora-Wall/README.md)를 참고하세요.
+
+## 저장소 브로커
+
+기본 Docker 구성에서 Spring·C++는 저장소와 직접 연결하지 않습니다. Wall 저장소 브로커를 먼저 시작해야 합니다. SQL/ES 호스트명은 브로커 별칭이며 Redis/Sentinel은 `REDIS_BROKER_ROUTES`의 허용 목록으로 접속 주소만 바꾸고 원래 TLS 검증 대상을 유지합니다. [Wall 구성 및 전환 안내](../project-agora-Wall/STORAGE_BROKER.md)를 참고하세요.
+
+캔버스 이름 검색은 Nori 한국어·동의어·오타·띄어쓰기 분석과 자체 호스팅 E5 k-NN을 결합합니다. E5 worker는 `docker-compose.search.yml`로 실행하며 [검색 구성 및 운영](../project-agora-DB/elasticsearch/SEARCH.md)에 모델·TLS·동기화·설정을 설명했습니다. Orchestra의 개발/배포 스크립트는 이 worker를 포함합니다.

@@ -83,3 +83,7 @@ Do not assume that a different dependency version has the same terms.
 The Docker Compose services download separate vendor images. This repository
 does not redistribute those images; distributing an image requires reviewing
 that image's own license and included notices separately.
+
+## Self-hosted search embeddings
+
+The separate search image contains [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT), revision `614241f622f53c4eeff9890bdc4f31cfecc418b3`. The pinned model card is retained at `/models/e5/MODEL_CARD.md`. No remote model code is executed. Runtime Python distributions and their installed license notices include NumPy (BSD-3-Clause), ONNX Runtime (MIT), Hugging Face Tokenizers (Apache-2.0), and Requests (Apache-2.0). Keep their wheel `.dist-info` license files when distributing this image. The E5 model is downloaded at image build time, while corpus and query inference remain local.

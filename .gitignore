@@ -142,12 +142,8 @@ htmlcov/
 
 # Local testing scratch files
 scratch/
-test_*.py
 *test.html
 test.html
-tests/
-!cpp/tests/
-!cpp/tests/**
 
 
 # ==============================================================================
@@ -206,13 +202,26 @@ bin/
 # ==============================================================================
 # Project Specific Rules
 # ==============================================================================
-*.txt
-!requirements.txt
-!**/requirements.txt
-!CMakeLists.txt
-!**/CMakeLists.txt
 
 # Nginx
 nginx/ssl/
 nginx/agora.conf
-*.groovy
+
+# Local credentials, certificate material, caches and generated files
+.env-*
+*.der
+*.p8
+*.ppk
+*.kdbx
+*.crt
+*.cer
+*.cert
+.local-certs/
+.local-https/
+certificates/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.bak
+*.tmp

@@ -117,6 +117,7 @@ def main() -> int:
         "DB_USER": mssql.get("MSSQL_USER", "agora_user"),
         "DB_PASSWORD": mssql.get("MSSQL_PASSWORD", ""),
         "ES_INDEX": elasticsearch.get("ES_INDEX", "canvas"),
+        "ES_SEARCH_INDEX": elasticsearch.get("ES_SEARCH_INDEX", "canvas-search"),
         "ES_USER_NAME": elasticsearch.get("ES_USER_NAME", "agora_user"),
         "ES_USER_PASSWORD": elasticsearch.get("ES_USER_PASSWORD", ""),
         "ES_LOG_INDEX": elasticsearch.get("ES_LOG_INDEX", "agora-logs"),
@@ -143,6 +144,22 @@ def main() -> int:
     if len(set(sentinel_ips)) != 3:
         raise ValueError("Local Redis Sentinel IP addresses must be unique.")
     desired["REDIS_SENTINELS"] = ",".join(f"{address}:26379" for address in sentinel_ips)
+    routes = {}
+    for address, source_port, broker_port in [
+        (redis.get("REDIS_PRIMARY_IP", "172.20.0.2"), 6379, 16379),
+        (redis.get("REDIS_REPLICA_1_IP", "172.20.0.7"), 6379, 16380),
+        (redis.get("REDIS_REPLICA_2_IP", "172.20.0.5"), 6379, 16381),
+        *[(address, 26379, 26379 + index) for index, address in enumerate(sentinel_ips)],
+    ]:
+        ipaddress.ip_address(address)
+        key = f"{address}:{source_port}"
+        if key in routes:
+            raise ValueError("Storage broker endpoints must be unique.")
+        routes[key] = {"host": "agora-storage-broker", "port": broker_port}
+    desired["REDIS_BROKER_ROUTES"] = json.dumps(routes, separators=(",", ":"))
+    desired.update(DOCKER_DB_HOST="agora-mssql", DOCKER_DB_PORT="1433",
+                   DOCKER_ES_HOST="agora-elasticsearch", DOCKER_ES_PORT="9200")
+
 
     if elasticsearch.get("ES_HTTP_TLS_ENABLED", "false").lower() != "true" or elasticsearch.get("ES_SCHEME", "http") != "https":
         raise ValueError("Local backend Docker requires Elasticsearch HTTPS. Prepare its TLS configuration before synchronizing.")

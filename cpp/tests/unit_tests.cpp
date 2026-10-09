@@ -1,6 +1,7 @@
 #include "Canvas.hpp"
 #include "CanvasPassword.hpp"
-#include "SqlCommand.hpp"
+#include "memory/SqlCommand.hpp"
+#include "memory/StorageEndpointRoutes.hpp"
 #include "TestSupport.hpp"
 
 #include <functional>
@@ -8,6 +9,16 @@
 #include <vector>
 
 namespace {
+void brokerRoutesDoNotFallBackToDirectStorage() {
+    const std::string routes = R"({"172.20.0.7:6379":{"host":"agora-storage-broker","port":16380}})";
+    auto dial = resolveStorageDialAddress(routes, "172.20.0.7", 6379);
+    AGORA_CHECK(dial && dial->host == "agora-storage-broker" && dial->port == 16380);
+    AGORA_CHECK(!resolveStorageDialAddress(routes, "172.20.0.9", 6379));
+    AGORA_CHECK(!resolveStorageDialAddress("invalid", "172.20.0.7", 6379));
+    AGORA_CHECK(!resolveStorageDialAddress(R"({"node:6379":{"host":"wall","port":1.5}})", "node", 6379));
+    AGORA_CHECK(!resolveStorageDialAddress(R"({"node:6379":{"host":"wall","port":4294967297}})", "node", 6379));
+}
+
 void passwordHashFormatsAreValidatedAndNormalized() {
     const std::string encoded =
             "pbkdf2$310000$0123456789abcdef0123456789abcdef$"
@@ -22,23 +33,6 @@ void passwordHashFormatsAreValidatedAndNormalized() {
     AGORA_CHECK(normalized->rfind("pbkdf2$310000$", 0) == 0);
     AGORA_CHECK(isCanvasPasswordHash(*normalized));
     AGORA_CHECK(normalizeCanvasPassword("") == std::string{});
-}
-
-void canvasTracksMultipleSocketsPerUser() {
-    Canvas canvas(73);
-    canvas.connectUser(9);
-    canvas.connectUser(9);
-    canvas.connectUser(10);
-
-    AGORA_CHECK(canvas.isUserActive(9));
-    AGORA_CHECK(canvas.user_conn_counts.at(9) == 2);
-    AGORA_CHECK(canvas.getActiveUsers().size() == 2);
-    AGORA_CHECK(!canvas.disconnectUser(9));
-    AGORA_CHECK(canvas.isUserActive(9));
-    AGORA_CHECK(canvas.disconnectUser(9));
-    AGORA_CHECK(!canvas.isUserActive(9));
-    AGORA_CHECK(!canvas.disconnectUser(9));
-    AGORA_CHECK(canvas.getActiveUsers().size() == 1);
 }
 
 void persistenceQueuePreservesOrderAndBarrier() {
@@ -64,6 +58,27 @@ void persistenceQueuePreservesOrderAndBarrier() {
     std::unique_lock<std::mutex> settings_lock(canvas.settings_mutex);
     AGORA_CHECK(canvas.waitForPendingPersistence(settings_lock));
     AGORA_CHECK(!canvas.enqueuePersistence({{"sequence", 3}}, start_worker));
+}
+
+void persistenceQueueRejectsOverloadWithoutLosingAcceptedWork() {
+    Canvas canvas(75);
+    bool start = false;
+    for (int i = 0; i < 1024; ++i)
+        AGORA_CHECK(canvas.enqueuePersistence({{"sequence", i}}, start));
+    const auto barrier = canvas.persistenceBarrier();
+    AGORA_CHECK(!canvas.enqueuePersistence({{"sequence", 1024}}, start));
+    AGORA_CHECK(!start && canvas.persistenceBarrier() == barrier);
+    nlohmann::json event; std::uint64_t ticket = 0;
+    AGORA_CHECK(canvas.nextPersistence(event, ticket));
+    AGORA_CHECK(event["sequence"] == 0);
+    canvas.endPersistence(ticket, true);
+    AGORA_CHECK(canvas.enqueuePersistence({{"sequence", 1024}}, start));
+    for (int i = 1; i <= 1024; ++i) {
+        AGORA_CHECK(canvas.nextPersistence(event, ticket));
+        AGORA_CHECK(event["sequence"] == i);
+        canvas.endPersistence(ticket, true);
+    }
+    AGORA_CHECK(!canvas.nextPersistence(event, ticket));
 }
 
 void sqlCommandKeepsUntrustedTextOutsideTheStatement() {
@@ -92,9 +107,11 @@ void sqlCommandKeepsUntrustedTextOutsideTheStatement() {
 
 int main() {
     int failures = 0;
+    failures += runTest("storage routes fail closed for unknown nodes", brokerRoutesDoNotFallBackToDirectStorage);
     failures += runTest("password hash format and legacy normalization", passwordHashFormatsAreValidatedAndNormalized);
-    failures += runTest("multiple websocket sessions per user", canvasTracksMultipleSocketsPerUser);
+
     failures += runTest("canvas persistence ordering and barrier", persistenceQueuePreservesOrderAndBarrier);
+    failures += runTest("persistence queue overload and recovery", persistenceQueueRejectsOverloadWithoutLosingAcceptedWork);
     failures += runTest("SQL values stay separate from query text", sqlCommandKeepsUntrustedTextOutsideTheStatement);
     return failures == 0 ? 0 : 1;
 }
