@@ -43,7 +43,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             if (tokenIp != null && !tokenIp.equals(currentIp)) {
                 RequestLogAttributes.markFailure(request, ErrorCode.INVALID_TOKEN.getCode(),
                         new SecurityException("Token client IP mismatch"));
-                response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "IP address mismatch. Token stolen or environment changed.");
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+                response.setCharacterEncoding("UTF-8");
+                response.getWriter().write(
+                        "{\"status\":401,\"error\":\"UNAUTHORIZED\",\"code\":\"AUTH_004\",\"reason\":\"CLIENT_IP_CHANGED\",\"message\":\"접속 네트워크가 변경되었습니다. 다시 로그인해주세요.\"}"
+                );
                 return;
             }
 

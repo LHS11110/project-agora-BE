@@ -92,6 +92,25 @@ class CanvasRedisDocumentReaderFailoverTest {
     }
 
     @Test
+    void authorizationReadsOnlyMetadataEvenWhenItemsExceed16MB() throws Exception {
+        var mapper = new ObjectMapper();
+        try (var cluster = new FakeSentinelCluster(mapper, 20 * 1024 * 1024)) {
+            cluster.start();
+            var reader = new CanvasRedisDocumentReader(mapper, "", "test-password",
+                    "127.0.0.1:" + cluster.sentinelPort(), "agora-master", SENTINEL_USER, SENTINEL_PASSWORD,
+                    false, "", logService);
+            var doc = reader.read(new CanvasInfo(42));
+            assertThat(doc.getCanvasName()).isEqualTo("primary-a");
+            assertThat(doc.getPeople()).containsExactly(100L);
+            assertThat(doc.getCanvasPasswordHash()).isEqualTo("protected-test-hash");
+            assertThat(doc.getSettingsRevision()).isEqualTo(7L);
+            assertThat(doc.getItems()).isEmpty();
+            assertThat(cluster.nodeA.lastReplyBytes).isLessThan(16_384);
+            assertThat(cluster.nodeA.canvasJson.length()).isGreaterThan(16 * 1024 * 1024);
+        }
+    }
+
+    @Test
     @EnabledIfEnvironmentVariable(named = "AGORA_REDIS_TLS_SMOKE", matches = "true")
     void queriesEveryConfiguredSentinelAndVerifiesThePrimaryOverTls() throws Exception {
         String sentinelAddresses = System.getenv("REDIS_SENTINELS");
@@ -128,8 +147,11 @@ class CanvasRedisDocumentReaderFailoverTest {
         private final FakeSentinel sentinel;
 
         private FakeSentinelCluster(ObjectMapper mapper) throws IOException {
-            nodeA = new FakeRedisNode("primary-a", mapper);
-            nodeB = new FakeRedisNode("primary-b", mapper);
+            this(mapper, 0);
+        }
+        private FakeSentinelCluster(ObjectMapper mapper, int itemBytes) throws IOException {
+            nodeA = new FakeRedisNode("primary-a", mapper, itemBytes);
+            nodeB = new FakeRedisNode("primary-b", mapper, itemBytes);
             sentinel = new FakeSentinel(nodeA.port());
         }
 
@@ -267,10 +289,19 @@ class CanvasRedisDocumentReaderFailoverTest {
     private static final class FakeRedisNode extends FakeRespServer {
         private final String canvasName;
         private final String canvasJson;
+        private final ObjectMapper mapper;
+        private volatile int lastReplyBytes;
 
         private FakeRedisNode(String canvasName, ObjectMapper mapper) throws IOException {
+            this(canvasName, mapper, 0);
+        }
+        private FakeRedisNode(String canvasName, ObjectMapper mapper, int itemBytes) throws IOException {
+            this.mapper = mapper;
             this.canvasName = canvasName;
             CanvasDocument document = new CanvasDocument(canvasName, 42, 100L, null, "default");
+            document.setCanvasPasswordHash("protected-test-hash");
+            document.setSettingsRevision(7L);
+            if (itemBytes > 0) for (int i = 0; i < 100; i++) document.getItems().put("large" + i, "x".repeat(itemBytes / 100));
             this.canvasJson = mapper.writeValueAsString(document);
         }
 
@@ -282,7 +313,21 @@ class CanvasRedisDocumentReaderFailoverTest {
                 switch (command.get(0).toUpperCase()) {
                     case "AUTH" -> writeSimple(output, "OK");
                     case "ROLE" -> writeMasterRole(output);
-                    case "JSON.GET" -> writeBulk(output, canvasJson);
+                    case "JSON.GET" -> {
+                        String reply = canvasJson;
+                        if (command.size() > 2) {
+                            var source = mapper.readTree(canvasJson);
+                            var projection = mapper.createObjectNode();
+                            for (String path : command.subList(2, command.size())) {
+                                String field = mapper.readValue(path.substring(2, path.length() - 1), String.class);
+                                var values = projection.putArray(path);
+                                if (source.has(field)) values.add(source.get(field));
+                            }
+                            reply = mapper.writeValueAsString(projection);
+                        }
+                        lastReplyBytes = reply.getBytes(StandardCharsets.UTF_8).length;
+                        writeBulk(output, reply);
+                    }
                     default -> writeError(output, "unexpected redis command");
                 }
             }

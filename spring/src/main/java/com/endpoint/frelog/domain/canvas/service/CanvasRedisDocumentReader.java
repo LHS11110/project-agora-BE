@@ -32,6 +32,13 @@ import java.util.Map;
 /** Reads the active RedisJSON document; failure is fail-closed for access checks. */
 @Component
 public class CanvasRedisDocumentReader {
+    // Access/settings checks must not fetch the potentially huge items map.
+    private static final List<String> METADATA_FIELDS = List.of(
+            "canvas-name", "canvasName", "canvas_name", "canvas-id", "canvasId", "canvas_id",
+            "admin-user-id", "admin", "adminUserId", "admin_user_id", "description",
+            "canvas-password-hash", "canvasPassword", "canvas_password_hash", "canvas-password",
+            "people", "peoples", "inner-group", "innerGroup", "inner_group",
+            "init-group", "initGroup", "init_group", "settings-revision");
     @Value("${REDIS_BROKER_ROUTES:}")
     private String brokerRoutes = "";
     private final ObjectMapper objectMapper;
@@ -180,12 +187,21 @@ public class CanvasRedisDocumentReader {
                 }
             }
 
-            writeCommand(out, "JSON.GET", key);
+            List<String> command = new ArrayList<>(List.of("JSON.GET", key));
+            for (String field : METADATA_FIELDS) command.add("$[" + objectMapper.writeValueAsString(field) + "]");
+            writeCommand(out, command.toArray(String[]::new));
             Object reply = readReply(in);
             if (!(reply instanceof String json) || json.isBlank()) {
                 throw new IOException("Canvas document is missing");
             }
-            return json;
+            var projection = objectMapper.readTree(json);
+            var metadata = objectMapper.createObjectNode();
+            for (int i = 0; i < METADATA_FIELDS.size(); i++) {
+                var values = projection.get(command.get(i + 2));
+                if (values != null && values.isArray() && !values.isEmpty()) metadata.set(METADATA_FIELDS.get(i), values.get(0));
+            }
+            if (metadata.isEmpty()) throw new IOException("Canvas metadata is missing");
+            return objectMapper.writeValueAsString(metadata);
         }
     }
 

@@ -26,9 +26,9 @@ nlohmann::json encodeItems(const nlohmann::json& items) {
     return chunks;
 }
 
-std::optional<nlohmann::json> restoreItems(nlohmann::json source) {
-    if (!source.is_object() || !source.contains("items-b64")) return source;
-    const auto& chunks = source["items-b64"];
+std::optional<nlohmann::json> restoreItems(nlohmann::json source, const std::string& field="items", const std::string& encoded_field="items-b64") {
+    if (!source.is_object() || !source.contains(encoded_field)) return source;
+    const auto& chunks = source[encoded_field];
     if (!chunks.is_array() || chunks.empty()) return std::nullopt;
     std::string raw;
     for (const auto& chunk : chunks) {
@@ -52,12 +52,16 @@ std::optional<nlohmann::json> restoreItems(nlohmann::json source) {
     try {
         auto items = nlohmann::json::parse(raw);
         if (!items.is_object()) return std::nullopt;
-        source["items"] = std::move(items);
-        source.erase("items-b64");
+        source[field] = std::move(items);
+        source.erase(encoded_field);
         return source;
     } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }
+}
+std::optional<nlohmann::json> restoreDocument(nlohmann::json source) {
+    auto document=restoreItems(std::move(source));
+    return document?restoreItems(std::move(*document),"__broker_sync","broker-sync-b64"):std::nullopt;
 }
 
 }
@@ -72,13 +76,13 @@ CanvasSnapshotMemory::CanvasSnapshotMemory(std::unique_ptr<JsonDocumentStore> st
 std::optional<nlohmann::json> CanvasSnapshotMemory::getCanvasDocument(int canvasId) {
     if (index_.empty()) return std::nullopt;
     if (const auto document = storage_->getDocument(index_, std::to_string(canvasId)))
-        return restoreItems(*document);
+        return restoreDocument(*document);
     const nlohmann::json query = {{"query", {{"term", {{"canvas-id", canvasId}}}}}, {"size", 1}};
     const auto response = storage_->searchDocuments(index_, query);
     if (!response) return std::nullopt;
     try {
         const auto& hits = response->at("hits").at("hits");
-        if (hits.is_array() && !hits.empty()) return restoreItems(hits.front().at("_source"));
+        if (hits.is_array() && !hits.empty()) return restoreDocument(hits.front().at("_source"));
     } catch (const nlohmann::json::exception&) {}
     return std::nullopt;
 }
@@ -92,6 +96,13 @@ bool CanvasSnapshotMemory::saveCanvasDocument(int canvasId, const nlohmann::json
         }
         safe_doc["items-b64"] = encodeItems(safe_doc["items"]);
         safe_doc.erase("items");
+    }
+    // Client IDs are arbitrary keys: encode the receipt ledger to avoid an
+    // Elasticsearch mapping field per browser session and preserve retry state.
+    if (safe_doc.contains("__broker_sync")) {
+        if (!safe_doc["__broker_sync"].is_object()) return false;
+        safe_doc["broker-sync-b64"] = encodeItems(safe_doc["__broker_sync"]);
+        safe_doc.erase("__broker_sync");
     }
     if (safe_doc.contains("canvas-password-hash") && safe_doc["canvas-password-hash"].is_string()) {
         auto normalized = normalizeCanvasPassword(safe_doc["canvas-password-hash"].get<std::string>());

@@ -21,6 +21,16 @@ thread_local int lastSqlServerMessageSeverity = 0;
 thread_local int lastSqlServerMessageState = 0;
 thread_local int lastSqlServerMessageLine = 0;
 
+int captureSqlClientError(DBPROCESS*, int severity, int number, int os_number,
+                          char* message, char*) {
+    std::cerr << "[MssqlClient] DB-Library error " << number
+              << " (severity=" << severity << ", os=" << os_number << "): "
+              << (message ? message : "unknown") << '\n';
+    // The default FreeTDS handler returns INT_EXIT and terminates the server.
+    // Cancel this operation so the caller can discard its failed connection.
+    return INT_CANCEL;
+}
+
 int captureSqlServerMessage(DBPROCESS*, DBINT message_number, int message_state,
                             int severity, char*, char*, char*, int line) {
     if (severity >= 11 && lastSqlServerMessageNumber == 0) {
@@ -127,7 +137,9 @@ bool executeSql(DBPROCESS* dbproc, const SqlCommand& command) {
         std::cerr << "[MssqlClient] Could not send sp_executesql RPC.\n";
         return false;
     }
-    return true;
+    // Complete the RPC response before processing result sets or reusing
+    // this session. dbrpcsend only sends the request.
+    return dbsqlok(dbproc) == SUCCEED;
 }
 
 std::string readSqlServerName(DBPROCESS* dbproc) {
@@ -195,6 +207,7 @@ public:
                 setenv("FREETDSCONF", freetds_config.c_str(), 1);
             }
             dbinit();
+            dberrhandle(captureSqlClientError);
             dbmsghandle(captureSqlServerMessage);
             // Authentication runs on the uWebSockets event-loop thread.  Bound
             // DB waits prevent a database/network fault from stalling every
@@ -232,10 +245,10 @@ public:
         return dbproc;
     }
 
-    void release(DBPROCESS* conn) {
+    void release(DBPROCESS* conn, bool reusable = true) {
         if (!conn) return;
         std::lock_guard<std::mutex> lock(mtx_);
-        if (DBDEAD(conn)) {
+        if (!reusable || DBDEAD(conn)) {
             // A failover breaks pooled TCP sessions. Never hand a dead session
             // to the next request; the next acquisition opens through DB_HOST,
             // which is configured as the AG listener.
@@ -314,13 +327,17 @@ private:
 
 class PooledConnection {
     DBPROCESS* conn_;
+    bool reusable_{true};
 public:
     PooledConnection() {
         conn_ = MssqlConnectionPool::getInstance().acquire();
     }
     ~PooledConnection() {
-        MssqlConnectionPool::getInstance().release(conn_);
+        MssqlConnectionPool::getInstance().release(conn_, reusable_);
     }
+    PooledConnection(const PooledConnection&) = delete;
+    PooledConnection& operator=(const PooledConnection&) = delete;
+    void invalidate() { reusable_ = false; }
     DBPROCESS* get() { return conn_; }
     operator DBPROCESS*() { return conn_; }
 };
@@ -375,6 +392,7 @@ std::optional<SqlQueryResult> MssqlMemory::query(const SqlCommand& command) {
     PooledConnection dbproc;
     if (!dbproc.get() || user_.empty() || pass_.empty() || db_.empty()) return std::nullopt;
     if (!executeSql(dbproc, command)) {
+        dbproc.invalidate();
         (void)dbcancel(dbproc);
         return std::nullopt;
     }
@@ -420,6 +438,7 @@ std::optional<SqlQueryResult> MssqlMemory::query(const SqlCommand& command) {
     }
 
     if (!succeeded) {
+        dbproc.invalidate();
         (void)dbcancel(dbproc);
         return std::nullopt;
     }
@@ -430,6 +449,7 @@ bool MssqlMemory::execute(const SqlCommand& command) {
     PooledConnection dbproc;
     if (!dbproc.get() || user_.empty() || pass_.empty() || db_.empty()) return false;
     if (!executeSql(dbproc, command)) {
+        dbproc.invalidate();
         (void)dbcancel(dbproc);
         return false;
     }
@@ -450,7 +470,7 @@ bool MssqlMemory::execute(const SqlCommand& command) {
         }
         if (!succeeded) break;
     }
-    if (!succeeded) (void)dbcancel(dbproc);
+    if (!succeeded) { dbproc.invalidate(); (void)dbcancel(dbproc); }
     return succeeded;
 }
 

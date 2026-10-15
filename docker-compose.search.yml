@@ -10,7 +10,7 @@ services:
     read_only: true
     mem_limit: 2g
     cpus: 2
-    tmpfs: [/tmp:uid=10001,gid=10001,mode=700]
+    tmpfs: ["/tmp:uid=10001,gid=10001,mode=700"]
     environment:
       ES_HOST: ${DOCKER_ES_HOST:-agora-elasticsearch}
       ES_PORT: ${DOCKER_ES_PORT:-9200}

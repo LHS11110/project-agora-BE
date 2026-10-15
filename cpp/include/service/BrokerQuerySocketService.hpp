@@ -8,9 +8,11 @@
 #include <vector>
 #include <unordered_map>
 #include <atomic>
+#include <functional>
 class BrokerQuerySocketService final {
 public:
-    BrokerQuerySocketService(CanvasQueryService& queries, std::string host, int port, std::string token);
+    using Executor = std::function<nlohmann::json(const nlohmann::json&)>;
+    BrokerQuerySocketService(CanvasQueryService& queries, std::string host, int port, std::string token, Executor executor = {});
     ~BrokerQuerySocketService();
     bool start();
     void stop();
@@ -18,6 +20,12 @@ private:
     struct Work { std::uint64_t connection; std::string payload; };
     void run();
     void worker();
+    void enqueueReply(std::uint64_t connection, std::string reply);
+    void drainReplies(std::uint64_t connection);
+    struct Reply { std::string data; std::size_t offset{0}; };
+    std::unordered_map<std::uint64_t, std::deque<Reply>> replies_;
+    std::size_t reply_bytes_{0};
+    Executor executor_;
     CanvasQueryService& queries_;
     std::string host_, token_; int port_;
     std::thread listener_; std::vector<std::thread> workers_;

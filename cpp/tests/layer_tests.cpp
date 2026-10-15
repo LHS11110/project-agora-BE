@@ -81,7 +81,9 @@ void snapshotsOwnEncodingAndStorageSeesOnlyDocuments() {
     auto storage = std::make_unique<DocumentMemoryStub>(); auto* stub = storage.get();
     CanvasSnapshotMemory snapshots(std::move(storage), "canvas-index");
     nlohmann::json doc = {{"canvas-id", 7}, {"items", {{"large", {{"text", std::string(20000, 'x')}}}}}};
+    doc["__broker_sync"]={{"revision",17},{"clients",{{"user:tab",{{"count",3},{"revision",17},{"digest","digest"},{"request_id","request"}}}}}};
     AGORA_CHECK(snapshots.saveCanvasDocument(7, doc));
+    AGORA_CHECK(!stub->document.contains("__broker_sync") && stub->document["broker-sync-b64"].is_array());
     AGORA_CHECK(stub->index == "canvas-index" && stub->id == "7");
     AGORA_CHECK(!stub->document.contains("items") && stub->document["items-b64"].size() > 1);
     AGORA_CHECK(snapshots.getCanvasDocument(7) == doc);

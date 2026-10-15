@@ -2,8 +2,8 @@
 #include <openssl/crypto.h>
 #include <iostream>
 
-BrokerQuerySocketService::BrokerQuerySocketService(CanvasQueryService& queries, std::string host, int port, std::string token)
-    : queries_(queries), host_(std::move(host)), token_(std::move(token)), port_(port) {}
+BrokerQuerySocketService::BrokerQuerySocketService(CanvasQueryService& queries, std::string host, int port, std::string token, Executor executor)
+    : executor_(std::move(executor)), queries_(queries), host_(std::move(host)), token_(std::move(token)), port_(port) {}
 BrokerQuerySocketService::~BrokerQuerySocketService() { stop(); }
 bool BrokerQuerySocketService::start() {
     accepting_ = true;
@@ -36,7 +36,7 @@ void BrokerQuerySocketService::run() {
     behavior.compression = uWS::DISABLED;
     behavior.maxPayloadLength = 12 * 1024 * 1024;
     behavior.maxBackpressure = 16 * 1024 * 1024;
-    behavior.closeOnBackpressureLimit = true;
+    behavior.closeOnBackpressureLimit = false;
     behavior.idleTimeout = 60;
     behavior.sendPingsAutomatically = true;
     behavior.upgrade = [this](auto* response, auto* request, auto* context) {
@@ -49,12 +49,22 @@ void BrokerQuerySocketService::run() {
             request->getHeader("sec-websocket-protocol"), request->getHeader("sec-websocket-extensions"), context);
     };
     behavior.open = [this](auto* socket) { connections_[socket->getUserData()->id] = socket; };
-    behavior.close = [this](auto* socket, int, std::string_view) { connections_.erase(socket->getUserData()->id); };
+    behavior.close = [this](auto* socket, int, std::string_view) {
+        const auto id=socket->getUserData()->id;
+        for(const auto& reply:replies_[id])reply_bytes_-=reply.data.size();
+        replies_.erase(id);connections_.erase(id);
+    };
+    behavior.drain = [this](auto* socket) { drainReplies(socket->getUserData()->id); };
     behavior.message = [this](auto* socket, std::string_view payload, uWS::OpCode opcode) {
         if (opcode != uWS::TEXT || !accepting_) { socket->end(1008, "Broker text query required"); return; }
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.size() >= 128 || queued_bytes_ + payload.size() > 32 * 1024 * 1024) {
-            socket->end(1013, "Query queue full"); return;
+            try {
+                auto route=nlohmann::json::parse(payload).at("route");
+                auto reply=nlohmann::json{{"route",route},{"response",{{"type","error"},{"code","BROKER_BUSY"},{"request_id",route.value("request_id","")}}}}.dump();
+                loop_->defer([this,id=socket->getUserData()->id,reply=std::move(reply)]{enqueueReply(id,reply);});
+            }catch(...) { /* Invalid internal requests cannot be correlated. */ }
+            return;
         }
         queued_bytes_ += payload.size();
         queue_.push_back({socket->getUserData()->id, std::string(payload)});
@@ -81,17 +91,42 @@ void BrokerQuerySocketService::worker() {
         std::string reply;
         try {
             auto input = nlohmann::json::parse(entry.payload);
-            reply = queries_.execute(input).dump();
+            reply = (executor_ ? executor_(input) : queries_.execute(input)).dump();
         } catch (...) {
             // A malformed envelope cannot be correlated safely.
             reply.clear();
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (loop_) loop_->defer([this, connection = entry.connection, reply = std::move(reply)] {
-            const auto found = connections_.find(connection);
-            if (found == connections_.end()) return;
-            if (reply.empty() || reply.size() > 16 * 1024 * 1024) { found->second->end(1009, "Invalid query response"); return; }
-            found->second->send(reply, uWS::TEXT);
+        if (loop_) loop_->defer([this, connection = entry.connection, reply = std::move(reply)]() mutable {
+            enqueueReply(connection,std::move(reply));
         });
+    }
+}
+
+void BrokerQuerySocketService::enqueueReply(std::uint64_t connection, std::string reply) {
+    if(!connections_.count(connection) || reply.empty())return;
+    if(reply.size()>128*1024*1024 || reply_bytes_+reply.size()>256*1024*1024){
+        try {
+            const auto route=nlohmann::json::parse(reply).at("route");
+            reply=nlohmann::json{{"route",route},{"response",{{"type","error"},{"code","BROKER_BUSY"},{"request_id",route.value("request_id","")}}}}.dump();
+        }catch(...){return;}
+    }
+    reply_bytes_+=reply.size();replies_[connection].push_back({std::move(reply),0});
+    drainReplies(connection);
+}
+
+void BrokerQuerySocketService::drainReplies(std::uint64_t connection) {
+    const auto found=connections_.find(connection);if(found==connections_.end())return;
+    auto* socket=found->second;auto& queue=replies_[connection];
+    while(!queue.empty() && socket->getBufferedAmount()<256*1024){
+        auto& reply=queue.front();const auto count=std::min<std::size_t>(128*1024,reply.data.size()-reply.offset);
+        const std::string_view chunk(reply.data.data()+reply.offset,count);
+        const bool first=reply.offset==0,last=reply.offset+count==reply.data.size();
+        const auto status=first ? (last ? socket->send(chunk,uWS::TEXT) : socket->sendFirstFragment(chunk,uWS::TEXT))
+            : (last ? socket->sendLastFragment(chunk) : socket->sendFragment(chunk));
+        if(status==BrokerSocketApi::Socket::DROPPED)return;
+        reply.offset+=count;
+        if(last){reply_bytes_-=reply.data.size();queue.pop_front();}
+        if(status==BrokerSocketApi::Socket::BACKPRESSURE)return;
     }
 }

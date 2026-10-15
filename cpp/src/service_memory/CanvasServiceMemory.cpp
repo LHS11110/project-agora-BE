@@ -393,3 +393,92 @@ std::optional<nlohmann::json> CanvasServiceMemory::initializeCanvas(int id, Canv
     if (!storeCanvas(id, *document)) return {};
     return document;
 }
+
+std::optional<nlohmann::json> CanvasServiceMemory::brokerSyncState(int id,const std::string& client) {
+    const auto revision=memory_->read(canvasKey(id), "$[\"__broker_sync\"][\"revision\"]");
+    if(!revision)return std::nullopt;
+    const auto values=nlohmann::json::parse(*revision);
+    nlohmann::json result{{"revision",values.empty()?0:values[0].get<long long>()},{"receipt",nullptr}};
+    if(!client.empty()){
+        const auto raw=memory_->read(canvasKey(id),"$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]");
+        if(!raw)return std::nullopt;
+        const auto entries=nlohmann::json::parse(*raw);if(!entries.empty())result["receipt"]=entries[0];
+    }
+    return result;
+}
+std::optional<nlohmann::json> CanvasServiceMemory::applyBrokerBatch(int id,const std::string& client,
+    long long count,const std::string& request,const std::string& digest,
+    const nlohmann::json& items,const nlohmann::json& expected) {
+    static const std::string script=R"LUA(local key=KEYS[1]
+if redis.call('EXISTS',key)==0 then return cjson.encode({error='CANVAS_NOT_READY'}) end
+local function read(path)
+ local raw=redis.call('JSON.GET',key,path)
+ if not raw then return nil end
+ return cjson.decode(raw)[1]
+end
+local meta='$["__broker_sync"]'
+if not read(meta) then redis.call('JSON.SET',key,meta,'{"revision":0,"clients":{}}') end
+local receiptPath=ARGV[1]
+local count=tonumber(ARGV[2])
+local previous=read(receiptPath)
+local last=previous and tonumber(previous.count) or 0
+local revision=tonumber(read(meta..'["revision"]')) or 0
+if count==last and previous then
+ if previous.digest~=ARGV[4] or previous.request_id~=ARGV[3] then return cjson.encode({error='CLIENT_REQUEST_MISMATCH'}) end
+ return cjson.encode({duplicate=true,revision=previous.revision,server_revision=revision,accepted_count=last})
+end
+if count~=last+1 then return cjson.encode({error='CLIENT_SEQUENCE_CONFLICT',accepted_count=last}) end
+local changes=cjson.decode(ARGV[5])
+local expected=cjson.decode(ARGV[6])
+for id,wanted in pairs(expected) do
+ local current=read('$["items"]['..cjson.encode(id)..']')
+ local actual=current and (tonumber(current.__broker_revision) or 0) or -1
+ if actual~=wanted then return cjson.encode({error='CANVAS_WRITE_CONFLICT'}) end
+end
+if not previous then
+ local clients=read(meta..'["clients"]') or {}
+ local total=0;for _ in pairs(clients) do total=total+1 end
+ if total>=4096 then return cjson.encode({error='CANVAS_CLIENT_LIMIT'}) end
+end
+revision=revision+1
+if revision>=9007199254740991 then return cjson.encode({error='CANVAS_REVISION_LIMIT'}) end
+for id,item in pairs(changes) do
+ local path='$["items"]['..cjson.encode(id)..']'
+ if item==cjson.null then redis.call('JSON.DEL',key,path)
+ else
+  redis.call('JSON.SET',key,path,item)
+  redis.call('JSON.SET',key,path..'["__broker_revision"]',tostring(revision))
+ end
+end
+redis.call('JSON.SET',key,meta..'["revision"]',tostring(revision))
+redis.call('JSON.SET',key,receiptPath,cjson.encode({count=count,revision=revision,digest=ARGV[4],request_id=ARGV[3]}))
+return cjson.encode({duplicate=false,revision=revision,server_revision=revision,accepted_count=count})
+)LUA";
+    const auto path="$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]";
+    std::vector<std::string> changed={"$[\"__broker_sync\"]"};
+    for(const auto& entry:items.items())changed.push_back(canvasItemJsonPath(entry.key()));
+    // Keep each item's original JSON encoding. Lua cjson turns [] into {},
+    // which would corrupt CRDT histories, empty tables, and drawing arrays.
+    nlohmann::json encoded=nlohmann::json::object();
+    for(const auto& entry:items.items())encoded[entry.key()]=entry.value().is_null()?nlohmann::json():nlohmann::json(entry.value().dump());
+    const auto response=memory_->executeAtomic(canvasKey(id),{"EVAL",script,"1",canvasKey(id),path,
+        std::to_string(count),request,digest,encoded.dump(),expected.dump()},changed);
+    if(!response)return std::nullopt;
+    try{return nlohmann::json::parse(*response);}catch(...){return std::nullopt;}
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::readBrokerItems(int id,const std::vector<std::string>& ids) {
+    nlohmann::json items=nlohmann::json::object();if(ids.empty())return items;
+    std::vector<std::string> command={"JSON.GET",canvasKey(id)};
+    for(const auto& item:ids)command.push_back(canvasItemJsonPath(item));
+    const auto raw=memory_->executeAtomic(canvasKey(id),command,{});if(!raw)return std::nullopt;
+    try{
+        const auto result=nlohmann::json::parse(*raw);
+        for(std::size_t i=0;i<ids.size();++i){
+            const auto values=ids.size()==1?result:result.at(command[i+2]);
+            if(!values.is_array())return std::nullopt;
+            items[ids[i]]=values.empty()?nlohmann::json():values[0];
+        }
+        return items;
+    }catch(...){return std::nullopt;}
+}

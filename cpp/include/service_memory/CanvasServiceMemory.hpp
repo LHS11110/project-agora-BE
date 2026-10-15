@@ -49,6 +49,11 @@ public:
     CompareSetResult compareAndSetFields(int canvas_id, long long revision,
         const std::vector<std::pair<std::string, nlohmann::json>>& fields);
 
+    std::optional<nlohmann::json> readBrokerItems(int canvas_id, const std::vector<std::string>& ids);
+    std::optional<nlohmann::json> brokerSyncState(int canvas_id, const std::string& client_key = {});
+    std::optional<nlohmann::json> applyBrokerBatch(int canvas_id, const std::string& client_key,
+        long long count, const std::string& request_id, const std::string& digest,
+        const nlohmann::json& items, const nlohmann::json& expected);
     bool patchItemField(int canvas_id, const std::string& item_id, const std::string& field,
                         const nlohmann::json& value);
     bool clearItems(int canvas_id);

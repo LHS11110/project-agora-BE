@@ -105,10 +105,36 @@ void durableDocumentRestorationBelongsToCanvasMemory() {
     AGORA_CHECK(durable->id == "untouched"); // Active data never falls back to stale snapshots.
     AGORA_CHECK(script->exchanges.empty());
 }
+struct BrokerTransport final : RedisCommandExecutor {
+    std::vector<std::string> last;
+    bool connect() override{return true;}void disconnect() override{}
+    std::optional<std::string> execute(const std::vector<std::string>& command) override{
+        last=command;
+        if(command[0]=="JSON.GET"){
+            if(command.size()==3)return "[{\"kind\":\"shape\"}]";
+            return nlohmann::json({{command[2],nlohmann::json::array({{{"kind","shape"}}})},{command[3],nlohmann::json::array()}}).dump();
+        }
+        return "{\"revision\":1,\"server_revision\":1,\"accepted_count\":1,\"duplicate\":false}";
+    }
+};
+void brokerStoragePreservesJsonAndReadsObjectsTogether(){
+    auto transport=std::make_unique<BrokerTransport>();auto* wire=transport.get();CanvasServiceMemory memory(std::move(transport));
+    const nlohmann::json item={{"kind","text"},{"automerge_changes",nlohmann::json::array()},{"x",0.1234567890123456}};
+    auto result=memory.applyBrokerBatch(9997,"7:tab",1,"request","digest",{{"text",item}},{{"text",-1}});
+    AGORA_CHECK(result&&(*result)["revision"]==1);
+    AGORA_CHECK(wire->last[0]=="EVAL");
+    const auto encoded=nlohmann::json::parse(wire->last[8]);
+    AGORA_CHECK(encoded["text"].is_string()&&nlohmann::json::parse(encoded["text"].get<std::string>())==item);
+    const auto selected=memory.readBrokerItems(9997,{"escaped\"id","missing"});
+    AGORA_CHECK(selected&&(*selected)["escaped\"id"]["kind"]=="shape"&&(*selected)["missing"].is_null());
+    AGORA_CHECK(wire->last.size()==4&&wire->last[2]=="$[\"items\"][\"escaped\\\"id\"]");
+    const auto single=memory.readBrokerItems(9997,{"one"});AGORA_CHECK(single&&(*single)["one"]["kind"]=="shape");
+}
 int main() {
     setenv("CPP_CANVAS_LRU_CAPACITY", "2", 1);
     setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
-    return runTest("dirty cache survives failed flush and transport replacement", dirtyCacheSurvivesTransportFailureAndReplacement)
+    return runTest("broker JSON encoding and grouped reads",brokerStoragePreservesJsonAndReadsObjectsTogether)
+        + runTest("dirty cache survives failed flush and transport replacement", dirtyCacheSurvivesTransportFailureAndReplacement)
         + runTest("domain IDs are escaped at the memory boundary", domainIdsAreEscapedBeforeStorage)
         + runTest("canvas memory restores durable documents and protects active data", durableDocumentRestorationBelongsToCanvasMemory);
 }

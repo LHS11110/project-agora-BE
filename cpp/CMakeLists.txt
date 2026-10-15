@@ -78,6 +78,12 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/LICEN
 # fake Redis Sentinel/primary pair on loopback and needs no external services.
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(agora_cpp_broker_operations_tests tests/broker_operations_tests.cpp)
+    add_test(NAME agora_cpp_broker_operations_tests COMMAND agora_cpp_broker_operations_tests)
+    add_executable(agora_cpp_mssql_recovery_integration tests/mssql_recovery_integration.cpp)
+    target_link_libraries(agora_cpp_mssql_recovery_integration PRIVATE agora_memory)
+    add_test(NAME agora_cpp_mssql_recovery_integration COMMAND agora_cpp_mssql_recovery_integration)
+    set_tests_properties(agora_cpp_mssql_recovery_integration PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
     add_executable(agora_cpp_storage_broker_fixture tests/storage_broker_fixture.cpp)
     target_link_libraries(agora_cpp_storage_broker_fixture PRIVATE agora_memory)
     target_compile_options(agora_cpp_storage_broker_fixture PRIVATE ${HTTPLIB_CFLAGS_OTHER})
