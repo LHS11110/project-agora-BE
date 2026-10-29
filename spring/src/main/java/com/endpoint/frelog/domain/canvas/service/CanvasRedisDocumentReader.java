@@ -38,7 +38,7 @@ public class CanvasRedisDocumentReader {
             "admin-user-id", "admin", "adminUserId", "admin_user_id", "description",
             "canvas-password-hash", "canvasPassword", "canvas_password_hash", "canvas-password",
             "people", "peoples", "inner-group", "innerGroup", "inner_group",
-            "init-group", "initGroup", "init_group", "settings-revision");
+            "init-group", "initGroup", "init_group", "settings-revision", "visibility");
     @Value("${REDIS_BROKER_ROUTES:}")
     private String brokerRoutes = "";
     private final ObjectMapper objectMapper;

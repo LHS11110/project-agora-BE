@@ -7,8 +7,11 @@
 #include "service_memory/RegistryServiceMemory.hpp"
 #include <chrono>
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 #include <openssl/sha.h>
 #include "service/CanvasBrokerOperations.hpp"
+#include "service/CanvasMentions.hpp"
 
 namespace {
 using Json = nlohmann::json;
@@ -31,6 +34,14 @@ std::optional<Json> readItem(CanvasServiceMemory& memory, int id, const std::str
     const auto matches = Json::parse(*raw);
     if (!matches.is_array()) throw std::runtime_error("STORAGE_UNAVAILABLE");
     return matches.empty() ? std::nullopt : std::optional<Json>(matches.front());
+}
+std::string commentRoomId(const std::string& object_id) {
+    unsigned char digest[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(object_id.data()), object_id.size(), digest);
+    std::ostringstream result;
+    result << "object-comment-" << std::hex << std::setfill('0');
+    for (auto byte : digest) result << std::setw(2) << static_cast<unsigned>(byte);
+    return result.str();
 }
 }
 Json CanvasQueryService::execute(const Json& input) {
@@ -77,7 +88,7 @@ Json CanvasQueryService::join(const Json& input) {
     Json visible = Json::object();
     if (input.value("include_items",true) && doc.contains("items") && doc["items"].is_object()) for (const auto& entry : doc["items"].items())
         if (entry.value().value("kind", "") != "host-tombstone" && queryCanAccess(entry.value(), groups, admin)) {
-            auto item = entry.value(); if (agora::canvas::isChatRoomItem(item)) item.erase("data"); visible[entry.key()] = std::move(item);
+            auto item = entry.value(); if (agora::canvas::isChatRoomItem(item)) { item.erase("data"); item.erase("requests"); } visible[entry.key()] = std::move(item);
         }
     const auto client = input.value("client_id", "");
     const auto sync = memory.brokerSyncState(id, std::to_string(user_id) + ":" + client);
@@ -126,7 +137,7 @@ Json CanvasQueryService::query(const Json& input) {
             const auto source=doc.value("items",Json::object());
             for (const auto& entry : source.items())
                 if (entry.value().value("kind", "") != "host-tombstone" && queryCanAccess(entry.value(),groups,admin)) {
-                    auto item=entry.value();if(agora::canvas::isChatRoomItem(item))item.erase("data");items[entry.key()]=std::move(item);
+                    auto item=entry.value();if(agora::canvas::isChatRoomItem(item)){item.erase("data");item.erase("requests");}items[entry.key()]=std::move(item);
                 }
             return envelope(route, {{"type","canvas_snapshot"},{"sync_protocol",2},{"sync_user_id",identity["user_id"]},{"items",items},{"revision",(*sync)["revision"]},{"client_id",client},{"accepted_count",accepted}});
         }
@@ -187,34 +198,105 @@ Json CanvasQueryService::query(const Json& input) {
         if (result.changed) broadcasts.push_back({{"event", {{"type", "server_reconnect"}, {"reason", "settings_changed"}, {"retry_after_ms", 100}}}, {"all", true}, {"close", true}});
         return envelope(route, result.response, broadcasts);
     }
+    if (type == "mentions_get" || type == "mention_read") {
+        const auto user_id = identity["user_id"].get<long long>();
+        const auto states = memory.readMentionStates(id, user_id);
+        if (!states || !states->is_object()) throw std::runtime_error("STORAGE_UNAVAILABLE");
+        auto accessible = [&](const Json& note) {
+            const auto object_id = note.value("object_id", "");
+            const auto key = object_id.empty() ? note.value("room_id", "") : object_id;
+            if (!validQueryItemId(key)) return false;
+            const auto target = readItem(memory, id, key);
+            return target && target->value("kind", "") != "host-tombstone" && queryCanAccess(*target, groups, admin);
+        };
+        if (type == "mention_read") {
+            const auto mention_id = event.value("mention_id", "");
+            if (!states->contains(mention_id) || !accessible((*states)[mention_id])) throw std::invalid_argument("MENTION_NOT_FOUND");
+            if (!memory.storeMentionState(id, user_id, mention_id, (*states)[mention_id], false) || !memory.flushCanvas(id)) throw std::runtime_error("STORAGE_UNAVAILABLE");
+            return envelope(route, {{"type", "mention_read"}, {"ok", true}, {"mention_id", mention_id}},
+                Json::array({{{"user_ids", Json::array({user_id})}, {"event", {{"type", "mentions_changed"}}}}}));
+        }
+        std::vector<Json> candidates;
+        for (const auto& entry : states->items()) if (entry.value().is_object() && entry.value().value("unread", false)) candidates.push_back(entry.value());
+        std::sort(candidates.begin(), candidates.end(), [](const Json& a, const Json& b) {
+            if (a.value("created_at", 0LL) != b.value("created_at", 0LL)) return a.value("created_at", 0LL) > b.value("created_at", 0LL);
+            return a.value("mention_id", "") > b.value("mention_id", "");
+        });
+        Json notifications = Json::array();
+        for (const auto& note : candidates) {
+            if (accessible(note)) notifications.push_back(note);
+            if (notifications.size() >= 100) break;
+        }
+        return envelope(route, {{"type", "mentions_snapshot"}, {"notifications", notifications}});
+    }
     if (type == "chat" || type == "chat_history") {
-        const auto room_id = event.value("room_id", ""); if (!validQueryItemId(room_id)) throw std::invalid_argument("CHAT_INVALID_ROOM");
+        const auto object_id = event.value("object_id", "");
+        auto room_id = event.value("room_id", "");
+        std::optional<Json> target;
+        if (!object_id.empty()) {
+            if (!validQueryItemId(object_id)) throw std::invalid_argument("ITEM_ID_INVALID");
+            target = readItem(memory, id, object_id);
+            if (!target) throw std::invalid_argument("ITEM_ACCESS_DENIED");
+            queryCommentPermission(*target, groups, admin);
+            room_id = commentRoomId(object_id);
+        } else if (room_id.rfind("object-comment-", 0) == 0) {
+            throw std::invalid_argument("ITEM_ACCESS_DENIED");
+        }
+        if (!validQueryItemId(room_id)) throw std::invalid_argument("CHAT_INVALID_ROOM");
         auto room = readItem(memory, id, room_id);
-        if (room && (!agora::canvas::isChatRoomItem(*room) || !queryCanAccess(*room, groups, admin))) throw std::invalid_argument("ITEM_ACCESS_DENIED");
+        if (room && (!agora::canvas::isChatRoomItem(*room) || (!target && !queryCanAccess(*room, groups, admin)))) throw std::invalid_argument("ITEM_ACCESS_DENIED");
         if (type == "chat_history") {
-            if (!room) return envelope(route, {{"type", "chat_history"}, {"room_id", room_id}, {"messages", Json::array()}, {"total", 0}, {"has_more", false}});
+            if (!room) {
+                Json response{{"type", "chat_history"}, {"room_id", room_id}, {"messages", Json::array()}, {"total", 0}, {"has_more", false}};
+                if (target) response["object_id"] = object_id;
+                return envelope(route, response);
+            }
             std::optional<std::uint64_t> from, to;
             if (event.contains("from_sequence") && event["from_sequence"].is_number_integer() && event["from_sequence"].get<long long>() > 0) from = event["from_sequence"].get<std::uint64_t>();
             if (event.contains("to_sequence") && event["to_sequence"].is_number_integer() && event["to_sequence"].get<long long>() > 0) to = event["to_sequence"].get<std::uint64_t>();
             auto page = memory.readChatPage(id, room_id, from, to, event.value("limit", 50ULL));
             if (!page) throw std::runtime_error("STORAGE_UNAVAILABLE");
             auto response = Json::parse(*page); response["type"] = "chat_history"; response["room_id"] = room_id;
+            if (target) response["object_id"] = object_id;
             if (response.contains("from_sequence")) response["next_to_sequence"] = response["from_sequence"].get<long long>() - 1;
-            if (response.contains("messages")) for (auto& message : response["messages"]) message.erase("sender_user_id");
+            if (response.contains("messages")) for (auto& message : response["messages"]) { message.erase("sender_user_id"); message.erase("mentions"); }
             return envelope(route, response);
         }
         const auto text = event.value("text", ""); if (text.empty() || text.size() > 4096 || groups.empty()) throw std::invalid_argument("CHAT_INVALID_MESSAGE");
-        Json permission = room ? (*room)["permission"] : Json(groups);
+        Json permission = target ? queryCommentPermission(*target, groups, admin) : room ? (*room)["permission"] : Json(groups);
         const auto sequence = room ? agora::canvas::chatRoomNextSequence(*room) : 1ULL;
         Json message{{"type", "chat"}, {"room_id", room_id}, {"text", text}, {"sender", identity["nickname"]},
             {"tag_number", identity["tag_number"]}, {"sender_user_id", identity["user_id"]}, {"sequence", sequence},
             {"created_at", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()},
             {"request_id", route["request_id"]}};
-        if (!room) { message["room_created"] = true; message["room_permission"] = permission; }
-        if (!CanvasEventMemory::apply(canvas, message) || !memory.flushCanvas(id)) throw std::runtime_error("STORAGE_UNAVAILABLE");
-        message.erase("sender_user_id"); message.erase("room_permission");
+        if (target) message["object_id"] = object_id;
+        message["mentions"] = Json::object();
+        const auto handles = parseMentionHandles(text);
+        if (!handles.empty()) {
+            const auto raw = memory.loadCanvas(id);
+            if (!raw) throw std::runtime_error("STORAGE_UNAVAILABLE");
+            const auto doc = Json::parse(*raw);
+            RegistryServiceMemory registry(pool_.getDbHost(), pool_.getDbPort());
+            for (const auto& [nickname, tag] : handles) {
+                const auto resolved = registry.getActiveUserIdChecked(nickname, tag);
+                if (!resolved) throw std::runtime_error("STORAGE_UNAVAILABLE");
+                const auto recipient = *resolved;
+                if (recipient <= 0 || recipient == identity["user_id"].get<int>()) continue;
+                if (!canvasIsPublic(doc) && !canvasHasMember(doc, recipient)) continue;
+                const auto [recipient_groups, recipient_admin] = groupsForUser(doc, recipient);
+                if (queryCanAccess(Json{{"permission", permission}}, recipient_groups, recipient_admin)) message["mentions"][std::to_string(recipient)] = true;
+            }
+        }
+        const auto committed = memory.commitChatMessage(id, room_id, permission, message);
+        if (!committed || !memory.flushCanvas(id)) throw std::runtime_error("STORAGE_UNAVAILABLE");
+        message = *committed;
+        Json recipients = Json::array();
+        const auto recipient_states = message.value("mentions", Json::object());
+        for (const auto& entry : recipient_states.items()) recipients.push_back(std::stoll(entry.key()));
+        message.erase("sender_user_id"); message.erase("mentions");
         Json broadcasts = Json::array({{{"event", message}, {"permission", permission}}});
-        if (!room) broadcasts.insert(broadcasts.begin(), {{"event", {{"type", "item_update"}, {"item_id", room_id}, {"item", {{"type", "chat_room"}, {"permission", permission}, {"next_sequence", sequence + 1}}}}}, {"permission", permission}});
+        if (!room) broadcasts.insert(broadcasts.begin(), queryChatRoomBroadcast(room_id, permission, sequence + 1));
+        if (!recipients.empty()) broadcasts.push_back({{"user_ids", recipients}, {"event", {{"type", "mentions_changed"}}}});
         return envelope(route, {{"type", "event_ack"}, {"ok", true}, {"event_type", type}}, broadcasts);
     }
     const bool batch = type == "host_item_batch" || type == "crud_batch";

@@ -19,6 +19,20 @@ inline bool queryCanAccess(const nlohmann::json& item, const std::unordered_set<
 inline bool validQueryItemId(const std::string& id) {
     return !id.empty() && id.size() <= 128 && id != "__proto__" && id != "prototype" && id != "constructor";
 }
+inline nlohmann::json queryCommentPermission(const nlohmann::json& target,
+        const std::unordered_set<std::string>& groups, bool admin) {
+    if (!target.is_object() || target.value("type", "") == "chat_room"
+        || target.value("kind", "") == "host-tombstone" || !queryCanAccess(target, groups, admin))
+        throw std::invalid_argument("ITEM_ACCESS_DENIED");
+    return target.value("permission", nlohmann::json::array());
+}
+inline nlohmann::json queryChatRoomBroadcast(const std::string& room_id,
+        const nlohmann::json& permission, std::uint64_t next_sequence) {
+    using Json = nlohmann::json;
+    return Json{{"event", {{"type", "item_update"}, {"item_id", room_id},
+        {"item", {{"type", "chat_room"}, {"permission", permission}, {"next_sequence", next_sequence}}}}},
+        {"permission", permission}};
+}
 inline nlohmann::json queryUpdatedItem(const nlohmann::json& previous, const nlohmann::json& input,
         const std::unordered_set<std::string>& groups, bool admin) {
     if (!input.is_object() || input.empty()) throw std::invalid_argument("ITEM_INVALID");

@@ -8,8 +8,8 @@ namespace agora::broker {
 using Json=nlohmann::json;
 struct Mutation {Json items=Json::object(),previous=Json::object(),expected=Json::object(),translations=Json::array();bool only_translations=true;};
 inline void validate(const Json& item){
- static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","image","link","connector","stroke","pdf","user-group"};
- static const std::unordered_set<std::string> fields={"kind","text","code","formula","format","filename","language","shapeType","visualStyle","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
+ static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","chart","image","link","connector","stroke","pdf","user-group"};
+ static const std::unordered_set<std::string> fields={"kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
  if(!item.is_object()||!kinds.count(item.value("kind","")))throw std::invalid_argument("ITEM_KIND_INVALID");
  for(const auto& field:item.items()){
   if(!fields.count(field.key()))throw std::invalid_argument("ITEM_FIELD_INVALID");
@@ -17,6 +17,29 @@ inline void validate(const Json& item){
  }
  for(const auto* field:{"x","y","width","height","rotation","fontSize","strokeWidth","depth","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity"})if(item.contains(field)&&!item[field].is_number())throw std::invalid_argument("ITEM_NUMBER_INVALID");
  for(const auto* field:{"width","height","fontSize","strokeWidth"})if(item.contains(field)&&item[field].get<double>()<=0)throw std::invalid_argument("ITEM_SIZE_INVALID");
+ if(item.contains("volumeStyle")&&(!item["volumeStyle"].is_string()||(item["volumeStyle"]!="solid"&&item["volumeStyle"]!="wireframe")))throw std::invalid_argument("ITEM_VOLUME_STYLE_INVALID");
+ if(item.contains("runtimeRole")&&(item.value("kind","")!="shape"||!item["runtimeRole"].is_string()||(item["runtimeRole"]!="executor"&&item["runtimeRole"]!="output")))throw std::invalid_argument("ITEM_RUNTIME_ROLE_INVALID");
+ if(item.contains("runtimeResults")) {
+  const auto& results=item["runtimeResults"];
+  if(item.value("runtimeRole","")!="output"||!results.is_array()||results.size()>32||results.dump().size()>524288)throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+  static const std::unordered_set<std::string> result_fields={"runId","codeId","createdAt","output","error","exitCode","timedOut","truncated"};
+  for(const auto& entry:results){
+   if(!entry.is_object()||!entry.contains("runId")||!entry["runId"].is_string()||entry["runId"].get<std::string>().size()>256||!entry.contains("codeId")||!entry["codeId"].is_string()||entry["codeId"].get<std::string>().size()>128||!entry.contains("createdAt")||!entry["createdAt"].is_number_integer()||entry["createdAt"].get<long long>()<0)throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+   for(const auto& field:entry.items())if(!result_fields.count(field.key()))throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+   for(const auto* field:{"output","error"})if(entry.contains(field)&&!entry[field].is_string())throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+   if(entry.contains("exitCode")&&!entry["exitCode"].is_number_integer())throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+   for(const auto* field:{"timedOut","truncated"})if(entry.contains(field)&&!entry[field].is_boolean())throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
+  }
+ }
+ if(item.value("kind","")=="chart"){
+  static const std::unordered_set<std::string> chart_types={"bar","line","area","pie","donut","scatter"};
+  if(!item.contains("chartType")||!item["chartType"].is_string()||!chart_types.count(item["chartType"].get<std::string>()))throw std::invalid_argument("ITEM_CHART_TYPE_INVALID");
+  if(item.contains("title")&&(!item["title"].is_string()||item["title"].get<std::string>().size()>480))throw std::invalid_argument("ITEM_CHART_DATA_INVALID");
+  if(!item.contains("columns")||!item["columns"].is_array()||item["columns"].size()<2||item["columns"].size()>12||!item.contains("rows")||!item["rows"].is_array()||item["rows"].empty()||item["rows"].size()>100)throw std::invalid_argument("ITEM_CHART_DATA_INVALID");
+  for(const auto& cell:item["columns"])if(!cell.is_string()||cell.get<std::string>().size()>4000)throw std::invalid_argument("ITEM_CHART_DATA_INVALID");
+  for(const auto& row:item["rows"]){if(!row.is_array()||row.size()!=item["columns"].size())throw std::invalid_argument("ITEM_CHART_DATA_INVALID");for(const auto& cell:row)if(!cell.is_string()||cell.get<std::string>().size()>4000)throw std::invalid_argument("ITEM_CHART_DATA_INVALID");}
+  if(item["columns"].dump().size()+item["rows"].dump().size()>300000)throw std::invalid_argument("ITEM_CHART_DATA_INVALID");
+ }
  if(item.contains("bendPoints")){
   const auto& points=item["bendPoints"];const int count=item.value("bendPointCount",1);
   if(!points.is_array()||count<1||count>32||points.size()!=static_cast<std::size_t>(count))throw std::invalid_argument("ITEM_BEND_INVALID");

@@ -16,8 +16,12 @@ public record CanvasSummaryResponse(
         String canvasName,
 
         @JsonProperty("user_count")
-        Integer userCount
+        Integer userCount,
+        @JsonProperty("visibility") String visibility
 ) {
+    public CanvasSummaryResponse(Integer id, String image, String description, String name, Integer count) {
+        this(id, image, description, name, count, "private");
+    }
     public static CanvasSummaryResponse of(CanvasDocument doc, String imagePath) {
         int count = (doc.getPeople() != null) ? doc.getPeople().size() : 0;
         return new CanvasSummaryResponse(
@@ -25,7 +29,8 @@ public record CanvasSummaryResponse(
                 imagePath,
                 doc.getDescription() != null ? doc.getDescription() : "",
                 doc.getCanvasName(),
-                count
+                count,
+                doc.getVisibility()
         );
     }
 }

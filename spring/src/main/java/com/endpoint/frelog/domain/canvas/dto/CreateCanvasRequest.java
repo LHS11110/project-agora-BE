@@ -25,9 +25,11 @@ public record CreateCanvasRequest(
         String description,
 
         @JsonAlias({"init-group", "initGroup"})
-        String initGroup
+        String initGroup,
+
+        String visibility
 ) {
     public CreateCanvasRequest(String canvasName) {
-        this(canvasName, null, null, null);
+        this(canvasName, null, null, null, null);
     }
 }

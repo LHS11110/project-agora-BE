@@ -61,7 +61,8 @@ std::optional<nlohmann::json> restoreItems(nlohmann::json source, const std::str
 }
 std::optional<nlohmann::json> restoreDocument(nlohmann::json source) {
     auto document=restoreItems(std::move(source));
-    return document?restoreItems(std::move(*document),"__broker_sync","broker-sync-b64"):std::nullopt;
+    if (document) document=restoreItems(std::move(*document),"__broker_sync","broker-sync-b64");
+    return document?restoreItems(std::move(*document),"mention-states","mention-states-b64"):std::nullopt;
 }
 
 }
@@ -103,6 +104,12 @@ bool CanvasSnapshotMemory::saveCanvasDocument(int canvasId, const nlohmann::json
         if (!safe_doc["__broker_sync"].is_object()) return false;
         safe_doc["broker-sync-b64"] = encodeItems(safe_doc["__broker_sync"]);
         safe_doc.erase("__broker_sync");
+    }
+    // Notification and user identifiers are private dynamic keys, not ES fields.
+    if (safe_doc.contains("mention-states")) {
+        if (!safe_doc["mention-states"].is_object()) return false;
+        safe_doc["mention-states-b64"] = encodeItems(safe_doc["mention-states"]);
+        safe_doc.erase("mention-states");
     }
     if (safe_doc.contains("canvas-password-hash") && safe_doc["canvas-password-hash"].is_string()) {
         auto normalized = normalizeCanvasPassword(safe_doc["canvas-password-hash"].get<std::string>());

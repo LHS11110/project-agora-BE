@@ -87,6 +87,13 @@ public class CanvasService {
             String canvasPassword,
             MultipartFile imageFile,
             CustomUserDetails currentUser) {
+        return createCanvas(canvasName, description, canvasPassword, imageFile, currentUser, null);
+    }
+
+    @Transactional
+    public CanvasSummaryResponse createCanvas(
+            String canvasName, String description, String canvasPassword, MultipartFile imageFile,
+            CustomUserDetails currentUser, String visibility) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "캔버스 생성은 로그인한 사용자만 가능합니다.");
         }
@@ -99,6 +106,10 @@ public class CanvasService {
         if (canvasPassword != null && canvasPassword.getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
+        if (visibility != null && !visibility.equals("public") && !visibility.equals("private"))
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 설정을 확인하세요.");
+        if ("public".equals(visibility) && canvasPassword != null && !canvasPassword.isBlank())
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
 
         Long userId = currentUser.getUserId();
 
@@ -119,6 +130,7 @@ public class CanvasService {
                 "default"
         );
         document.setDescription(description != null ? description : "");
+        document.setVisibility(visibility);
         try {
             if (!canvasElasticsearchService.saveCanvas(document)) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "캔버스 저장에 실패했습니다.");
@@ -146,6 +158,14 @@ public class CanvasService {
 
         List<CanvasDocument> docs = canvasElasticsearchService.searchCanvasesByName(canvasName);
         return docs.stream()
+                .filter(doc -> CanvasVisibility.allows(doc, currentUser))
+                .filter(doc -> {
+                    try {
+                        var info = canvasInfoRepository.findById(doc.getCanvasId());
+                        return info.isPresent() && (!Boolean.TRUE.equals(info.get().getIsCached())
+                                || CanvasVisibility.allows(redisDocumentReader.read(info.get()), currentUser));
+                    } catch (RuntimeException unavailable) { return false; }
+                })
                 .map(doc -> CanvasSummaryResponse.of(doc, "/api/canvases/" + doc.getCanvasId() + "/image"))
                 .toList();
     }
@@ -155,13 +175,15 @@ public class CanvasService {
      * - 로그인한 사용자만 허용
      * - 캔버스 아이디를 기반으로 조회를 수행하며 제공하는 데이터는 캔버스 검색과 동일
      */
+    @Transactional(readOnly = true)
     public CanvasSummaryResponse getCanvasSummary(Integer canvasId, CustomUserDetails currentUser) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        CanvasDocument doc = canvasElasticsearchService.getCanvasDocumentById(canvasId)
-                .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
+        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
 
         return CanvasSummaryResponse.of(doc, "/api/canvases/" + canvasId + "/image");
     }
@@ -169,13 +191,16 @@ public class CanvasService {
     /**
      * 캔버스 문서 원본 단건 조회 (내부 및 도큐먼트 검증용)
      */
+    @Transactional(readOnly = true)
     public CanvasDocument getCanvasDocument(Integer canvasId, CustomUserDetails currentUser) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        return canvasElasticsearchService.getCanvasDocumentById(canvasId)
-                .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
+        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
+        return doc;
     }
 
     @Transactional
@@ -186,8 +211,7 @@ public class CanvasService {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED);
         }
-        boolean systemAdmin = currentUser.getUser() != null && currentUser.getUser().getRole() == Role.ROLE_ADMIN;
-        if (!systemAdmin && (doc.getPeople() == null || !doc.getPeople().contains(currentUser.getUserId()))) {
+        if (!CanvasVisibility.allows(doc, currentUser)) {
             throw new CustomException(ErrorCode.ACCESS_DENIED);
         }
         if (!cachedCanvas) doc = migrateLegacyCanvasPassword(doc);
@@ -199,7 +223,7 @@ public class CanvasService {
                 .map(users::get).filter(java.util.Objects::nonNull).toList();
         return new CanvasUpdateDtos.SettingsResponse(canvasId, doc.getCanvasName(), doc.getDescription(),
                 doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
-                doc.getSettingsRevision(), participants);
+                doc.getSettingsRevision(), participants, doc.getVisibility());
     }
 
     @Transactional
@@ -232,6 +256,7 @@ public class CanvasService {
     public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
         CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
         if (password == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
+        if ("public".equals(doc.getVisibility()) && !password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
         if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
@@ -387,6 +412,7 @@ public class CanvasService {
         // Connection presence belongs to Phoenix; C++ only owns canvas data.
         boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
         CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
 
         String storedPassword = doc.getCanvasPasswordHash();
         long settingsRevision = doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision();

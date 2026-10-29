@@ -2,7 +2,6 @@ package com.endpoint.frelog.domain.canvas.service;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
-import com.endpoint.frelog.domain.user.entity.Role;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
@@ -32,14 +31,14 @@ public class CanvasPreviewService {
         CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? redis.read(info)
                 : elasticsearch.getCanvasDocumentById(canvasId)
                     .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND));
-        boolean systemAdmin = user.getUser() != null && user.getUser().getRole() == Role.ROLE_ADMIN;
-        if (!systemAdmin && (doc.getPeople() == null || !doc.getPeople().contains(user.getUserId())))
+        if (!CanvasVisibility.allows(doc, user))
             throw new CustomException(ErrorCode.ACCESS_DENIED);
         Set<String> groups = new HashSet<>();
         if (doc.getInnerGroup() != null) doc.getInnerGroup().forEach((group, members) -> {
             if (members != null && members.contains(user.getUserId())) groups.add(group);
         });
-        boolean admin = systemAdmin || groups.contains("admin-group");
+        if ("public".equals(doc.getVisibility()) && doc.getInitGroup() != null && !doc.getInitGroup().equals("admin-group")) groups.add(doc.getInitGroup());
+        boolean admin = groups.contains("admin-group");
         Map<String, Object> items = new LinkedHashMap<>();
         if (doc.getItems() != null) doc.getItems().forEach((id, raw) -> {
             if (!(raw instanceof Map<?, ?> item) || (!admin && !allowed(item.get("permission"), groups))) return;

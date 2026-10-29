@@ -2,7 +2,7 @@ from pathlib import Path
 import subprocess,json,uuid,os
 root=Path(__file__).resolve().parents[1]
 db=Path(os.environ.get('AGORA_DB_DIR',str(root.parent.parent/'project-agora-DB')))
-s=(root/'src/service_memory/CanvasServiceMemory.cpp').read_text().split('R"LUA(')[-1].split(')LUA"')[0]
+s=(root/'src/service_memory/CanvasServiceMemory.cpp').read_text().split('CanvasServiceMemory::applyBrokerBatch',1)[1].split('R"LUA(',1)[1].split(')LUA"')[0]
 cli=[str(db/'redis/redis-ha-cli.sh'),'--raw']
 key='canvas:sync-test-'+str(uuid.uuid4())
 def call(*args):return subprocess.check_output(cli+list(args),text=True)

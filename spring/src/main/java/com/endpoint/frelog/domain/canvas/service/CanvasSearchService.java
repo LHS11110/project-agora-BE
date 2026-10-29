@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class CanvasSearchService {
     private static final Logger log = LoggerFactory.getLogger(CanvasSearchService.class);
-    private static final List<String> SUMMARY_FIELDS = List.of("canvas-id", "canvas-name", "description", "people");
+    private static final List<String> SUMMARY_FIELDS = List.of("canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility");
     private final RestClient es;
     private final ElasticsearchProperties properties;
     private final ObjectMapper mapper;

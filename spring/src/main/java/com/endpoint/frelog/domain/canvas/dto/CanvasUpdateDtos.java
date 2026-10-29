@@ -57,7 +57,8 @@ public class CanvasUpdateDtos {
             String description,
             @JsonProperty("password_protected") boolean passwordProtected,
             @JsonProperty("settings_revision") Long settingsRevision,
-            List<ParticipantResponse> participants
+            List<ParticipantResponse> participants,
+            String visibility
     ) {}
 
     public record GroupRequest(

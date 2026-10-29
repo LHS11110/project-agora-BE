@@ -65,9 +65,10 @@ public class CanvasController {
             @RequestParam("canvasName") String canvasName,
             @RequestParam(value = "description", required = false) String description,
             @RequestParam(value = "canvasPassword", required = false) String canvasPassword,
+            @RequestParam(value = "visibility", required = false) String visibility,
             @RequestPart(value = "image", required = false) MultipartFile image,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
-        CanvasSummaryResponse response = canvasService.createCanvas(canvasName, description, canvasPassword, image, currentUser);
+        CanvasSummaryResponse response = canvasService.createCanvas(canvasName, description, canvasPassword, image, currentUser, visibility);
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
@@ -76,7 +77,7 @@ public class CanvasController {
             @Valid @RequestBody CreateCanvasRequest body,
             @AuthenticationPrincipal CustomUserDetails currentUser) {
         CanvasSummaryResponse response = canvasService.createCanvas(
-                body.canvasName(), body.description(), body.canvasPassword(), null, currentUser);
+                body.canvasName(), body.description(), body.canvasPassword(), null, currentUser, body.visibility());
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 

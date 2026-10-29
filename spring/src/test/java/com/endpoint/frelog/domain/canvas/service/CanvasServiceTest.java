@@ -184,6 +184,7 @@ class CanvasServiceTest {
         doc.setPeople(List.of(1L, 2L));
 
         given(canvasElasticsearchService.searchCanvasesByName("Agora")).willReturn(List.of(doc));
+        given(canvasInfoRepository.findById(50)).willReturn(Optional.of(new CanvasInfo(50)));
 
         // when
         List<CanvasSummaryResponse> results = canvasService.searchCanvases("Agora", userDetails);
@@ -206,6 +207,7 @@ class CanvasServiceTest {
         doc.setPeople(List.of(1L));
 
         given(canvasElasticsearchService.getCanvasDocumentById(10)).willReturn(Optional.of(doc));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(10)).willReturn(Optional.of(new CanvasInfo(10)));
 
         // when
         CanvasSummaryResponse summary = canvasService.getCanvasSummary(10, userDetails);
@@ -215,6 +217,44 @@ class CanvasServiceTest {
         assertThat(summary.canvasId()).isEqualTo(10);
         assertThat(summary.canvasName()).isEqualTo("Solo Canvas");
         assertThat(summary.userCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("비공개 캔버스는 초대받지 않은 사용자에게 검색이나 상세 조회로 노출되지 않는다")
+    void privateCanvas_IsHiddenFromNonParticipants() {
+        CanvasDocument hidden = new CanvasDocument("Private", 77, 2L, null, "default");
+        given(canvasElasticsearchService.searchCanvasesByName("Private")).willReturn(List.of(hidden));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(77)).willReturn(Optional.of(new CanvasInfo(77)));
+        given(canvasElasticsearchService.getCanvasDocumentById(77)).willReturn(Optional.of(hidden));
+        assertThat(canvasService.searchCanvases("Private", userDetails)).isEmpty();
+        assertThatThrownBy(() -> canvasService.getCanvasSummary(77, userDetails))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_NOT_FOUND);
+        assertThatThrownBy(() -> canvasService.accessCanvas(77, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class), userDetails))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_NOT_FOUND);
+    }
+
+    @Test
+    @DisplayName("공개 캔버스는 로그인한 비참가자도 검색과 상세 조회를 할 수 있다")
+    void publicCanvas_IsVisibleToSignedInUsers() {
+        CanvasDocument doc = new CanvasDocument("Public", 78, 2L, null, "default"); doc.setVisibility("public");
+        given(canvasElasticsearchService.searchCanvasesByName("Public")).willReturn(List.of(doc));
+        given(canvasInfoRepository.findById(78)).willReturn(Optional.of(new CanvasInfo(78)));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(78)).willReturn(Optional.of(new CanvasInfo(78)));
+        given(canvasElasticsearchService.getCanvasDocumentById(78)).willReturn(Optional.of(doc));
+        assertThat(canvasService.searchCanvases("Public", userDetails)).extracting(CanvasSummaryResponse::visibility).containsExactly("public");
+        assertThat(canvasService.getCanvasSummary(78, userDetails).visibility()).isEqualTo("public");
+    }
+
+    @Test
+    @DisplayName("활성 캔버스 검색은 Redis의 최신 비공개 설정을 확인한다")
+    void searchUsesActiveVisibility() {
+        CanvasDocument stale = new CanvasDocument("Changed", 79, 2L, null, "default"); stale.setVisibility("public");
+        CanvasDocument live = new CanvasDocument("Changed", 79, 2L, null, "default");
+        CanvasInfo info = new CanvasInfo(79); info.setIsCached(true);
+        given(canvasElasticsearchService.searchCanvasesByName("Changed")).willReturn(List.of(stale));
+        given(canvasInfoRepository.findById(79)).willReturn(Optional.of(info));
+        given(redisDocumentReader.read(info)).willReturn(live);
+        assertThat(canvasService.searchCanvases("Changed", userDetails)).isEmpty();
     }
 
 

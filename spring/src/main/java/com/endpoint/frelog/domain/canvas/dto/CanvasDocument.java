@@ -32,6 +32,13 @@ public class CanvasDocument {
     @JsonProperty("description")
     private String description = "";
 
+    // Existing documents had participant-only access, so absent/invalid values fail closed.
+    @JsonProperty("visibility")
+    private String visibility = "private";
+
+    public String getVisibility() { return "public".equals(visibility) ? "public" : "private"; }
+    public void setVisibility(String value) { visibility = "public".equals(value) ? "public" : "private"; }
+
     @JsonProperty("canvas-password-hash")
     @JsonAlias({"canvasPassword", "canvas_password_hash", "canvas-password"})
     private String canvasPasswordHash;

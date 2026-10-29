@@ -32,6 +32,7 @@ static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, Registry
         {"canvas_name", doc.value("canvas-name", "")},
         {"description", doc.value("description", "")},
         {"password_protected", protected_canvas},
+        {"visibility", canvasIsPublic(doc) ? "public" : "private"},
         {"settings_revision", doc.value("settings-revision", 0LL)},
         {"participants", participants}
     };
@@ -61,7 +62,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         return reject("CANVAS_NOT_READY");
     }
     if (db.getActiveUserId(nickname, tag_number) != user_id
-        || !isCanvasParticipant(doc, user_id)) return reject("SETTINGS_ACCESS_DENIED");
+        || (!isCanvasParticipant(doc, user_id) && !canvasIsPublic(doc))) return reject("SETTINGS_ACCESS_DENIED");
 
     const std::string type = event.value("type", "");
     if (type == "canvas_settings_get") {
@@ -97,7 +98,13 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         es_changes[document_field] = value;
     };
 
-    if (field == "name" || field == "description" || field == "password") {
+    if (field == "visibility") {
+        if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
+        const auto value = event["value"].get<std::string>();
+        if (value != "public" && value != "private") return reject("SETTINGS_INVALID_INPUT");
+        if (value == "public" && doc.contains("canvas-password-hash") && doc["canvas-password-hash"].is_string() && !doc["canvas-password-hash"].get<std::string>().empty()) return reject("SETTINGS_INVALID_INPUT");
+        rememberOriginal("visibility"); doc["visibility"] = value; addChange("visibility", value);
+    } else if (field == "name" || field == "description" || field == "password") {
         if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
         const std::string value = event["value"].get<std::string>();
         if ((field == "name" && value.empty()) || value.size() > (field == "description" ? 4000U : 256U)) {
@@ -112,6 +119,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             doc["description"] = value;
             addChange("description", value);
         } else {
+            if (canvasIsPublic(doc) && value.find_first_not_of(" \t\n\r\f\v") != std::string::npos) return reject("SETTINGS_INVALID_INPUT");
             rememberOriginal("canvas-password-hash");
             nlohmann::json hash = nullptr;
             if (value.find_first_not_of(" \t\n\r\f\v") != std::string::npos) {

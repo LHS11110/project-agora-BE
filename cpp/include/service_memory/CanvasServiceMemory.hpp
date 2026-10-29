@@ -57,6 +57,11 @@ public:
     bool patchItemField(int canvas_id, const std::string& item_id, const std::string& field,
                         const nlohmann::json& value);
     bool clearItems(int canvas_id);
+    bool storeMentionState(int canvas_id, long long user_id, const std::string& mention_id,
+                           const nlohmann::json& notification, bool unread);
+    std::optional<nlohmann::json> readMentionStates(int canvas_id, long long user_id);
+    std::optional<nlohmann::json> commitChatMessage(int canvas_id, const std::string& room_id,
+        const nlohmann::json& permission, const nlohmann::json& message);
 
 private:
     std::unique_ptr<MemoryClass> memory_;

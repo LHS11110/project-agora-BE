@@ -1,6 +1,7 @@
 #include "service_memory/CanvasLifecycleMemory.hpp"
 #include "service_memory/CanvasServiceMemory.hpp"
 #include "CanvasPassword.hpp"
+#include "service/CanvasAccessRules.hpp"
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -34,15 +35,7 @@ bool documentAuthorizesCanvasAccess(const nlohmann::json& doc, int user_id, long
         }
     }
     if (current_revision != settings_revision) return false;
-    for (const auto& member : doc["people"]) {
-        if (!member.is_number_integer()) continue;
-        try {
-            if (member.get<long long>() == user_id) return true;
-        } catch (...) {
-            // Ignore malformed participant IDs and fail closed for them.
-        }
-    }
-    return false;
+    return canvasIsPublic(doc) || canvasHasMember(doc, user_id);
 }
 }
 

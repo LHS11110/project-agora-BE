@@ -1,0 +1,9 @@
+services:
+  spring:
+    volumes:
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false

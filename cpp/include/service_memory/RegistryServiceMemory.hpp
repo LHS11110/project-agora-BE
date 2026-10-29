@@ -55,6 +55,7 @@ public:
 
     // Resolve an active user from the nickname and tag in the canvas token.
     int getActiveUserId(const std::string& nickname, int tagNumber);
+    std::optional<int> getActiveUserIdChecked(const std::string& nickname, int tagNumber);
     std::optional<std::pair<std::string, int>> getUserHandle(int userId);
     bool isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort);
     std::optional<CanvasStorageAssignment> getCanvasStorageAssignment(int canvasId);

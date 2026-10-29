@@ -482,3 +482,103 @@ std::optional<nlohmann::json> CanvasServiceMemory::readBrokerItems(int id,const 
         return items;
     }catch(...){return std::nullopt;}
 }
+
+bool CanvasServiceMemory::storeMentionState(int id, long long user_id, const std::string& mention_id,
+        const nlohmann::json& notification, bool unread) {
+    if (user_id <= 0 || mention_id.empty() || mention_id.size() > 256 || !notification.is_object()) return false;
+    const auto key = canvasKey(id);
+    const std::string user_path = "$[\"mention-states\"][" + nlohmann::json(std::to_string(user_id)).dump() + "]";
+    const std::string path = user_path + "[" + nlohmann::json(mention_id).dump() + "]";
+    static const std::string script = R"LUA(
+if redis.call('EXISTS', KEYS[1]) == 0 then return 'MISSING' end
+redis.call('JSON.SET', KEYS[1], '$["mention-states"]', '{}', 'NX')
+redis.call('JSON.SET', KEYS[1], ARGV[1], '{}', 'NX')
+local existing = redis.call('JSON.GET', KEYS[1], ARGV[2])
+if ARGV[4] == 'read' then
+  if not existing then return 'MISSING' end
+  local matches = cjson.decode(existing)
+  if not matches[1] then return 'MISSING' end
+  matches[1].unread = false
+  redis.call('JSON.SET', KEYS[1], ARGV[2], cjson.encode(matches[1]))
+  local note = matches[1]
+  if note.room_id and note.sequence then
+   local message_path = '$["items"][' .. cjson.encode(note.room_id) .. ']["data"][' .. (tonumber(note.sequence)-1) .. ']["mentions"][' .. cjson.encode(ARGV[5]) .. ']'
+   redis.call('JSON.SET', KEYS[1], message_path, 'false', 'XX')
+  end
+else
+  redis.call('JSON.SET', KEYS[1], ARGV[2], ARGV[3], 'NX')
+end
+return 'OK'
+)LUA";
+    auto record = notification;
+    record["unread"] = unread;
+    std::vector<std::string> changed{"$[\"mention-states\"]"};
+    if (!unread && notification.contains("room_id")) changed.push_back(canvasItemJsonPath(notification["room_id"].get<std::string>()));
+    const auto reply = memory_->executeAtomic(key, {"EVAL", script, "1", key, user_path, path,
+        record.dump(), unread ? "create" : "read", std::to_string(user_id)}, changed);
+    return reply == "OK";
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::readMentionStates(int id, long long user_id) {
+    if (user_id <= 0) return std::nullopt;
+    const auto path = "$[\"mention-states\"][" + nlohmann::json(std::to_string(user_id)).dump() + "]";
+    const auto raw = memory_->read(canvasKey(id), path);
+    if (!raw) return std::nullopt;
+    try {
+        const auto matches = nlohmann::json::parse(*raw);
+        if (!matches.is_array()) return std::nullopt;
+        return std::optional<nlohmann::json>(std::in_place, matches.empty() ? nlohmann::json::object() : matches.front());
+    } catch (const nlohmann::json::exception&) { return std::nullopt; }
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::commitChatMessage(int id, const std::string& room_id,
+        const nlohmann::json& permission, const nlohmann::json& message) {
+    const auto key = canvasKey(id), path = canvasItemJsonPath(room_id);
+    const auto receipt = path + "[\"requests\"][" + nlohmann::json(std::to_string(message.value("sender_user_id", 0LL)) + ":" + message.value("request_id", "")).dump() + "]";
+    nlohmann::json room{{"type", "chat_room"}, {"permission", permission}, {"data", nlohmann::json::array()}, {"requests", nlohmann::json::object()}, {"next_sequence", 1}};
+    static const std::string script = R"LUA(
+if redis.call('EXISTS', KEYS[1]) == 0 then return 'MISSING' end
+local root = ARGV[1]
+local msg = cjson.decode(ARGV[4])
+local received = redis.call('JSON.GET', KEYS[1], ARGV[2])
+if received then
+ local seq = cjson.decode(received)[1]
+ if seq then
+  local old = redis.call('JSON.GET', KEYS[1], root .. '["data"][' .. (seq - 1) .. ']')
+  if old then
+   local previous = cjson.decode(old)[1]
+   if previous.text ~= msg.text or previous.object_id ~= msg.object_id or previous.sender_user_id ~= msg.sender_user_id then return 'CLIENT_REQUEST_MISMATCH' end
+   return cjson.encode(previous)
+  end
+ end
+end
+local room_type = redis.call('JSON.GET', KEYS[1], root .. '["type"]')
+if not room_type or not cjson.decode(room_type)[1] then
+ redis.call('JSON.SET', KEYS[1], root, ARGV[3], 'NX')
+elseif cjson.decode(room_type)[1] ~= 'chat_room' then return 'BAD_ROOM' end
+local next_raw = redis.call('JSON.GET', KEYS[1], root .. '["next_sequence"]')
+local next_seq = next_raw and tonumber(cjson.decode(next_raw)[1]) or nil
+if not next_seq or next_seq ~= tonumber(msg.sequence) then return 'SEQUENCE_CONFLICT' end
+redis.call('JSON.ARRAPPEND', KEYS[1], root .. '["data"]', ARGV[4])
+redis.call('JSON.SET', KEYS[1], root .. '["next_sequence"]', tostring(next_seq + 1))
+redis.call('JSON.SET', KEYS[1], root .. '["requests"]', '{}', 'NX')
+redis.call('JSON.SET', KEYS[1], ARGV[2], tostring(next_seq))
+if msg.mentions and next(msg.mentions) then
+ redis.call('JSON.SET', KEYS[1], '$["mention-states"]', '{}', 'NX')
+ local mid = msg.room_id .. ':' .. tostring(msg.sequence)
+ for uid, unread in pairs(msg.mentions) do
+  local user_path = '$["mention-states"][' .. cjson.encode(tostring(uid)) .. ']'
+  redis.call('JSON.SET', KEYS[1], user_path, '{}', 'NX')
+  local notification = {mention_id=mid, room_id=msg.room_id, object_id=msg.object_id,
+   sequence=msg.sequence, sender=msg.sender, tag_number=msg.tag_number, text=msg.text,
+   created_at=msg.created_at, unread=true}
+  redis.call('JSON.SET', KEYS[1], user_path .. '[' .. cjson.encode(mid) .. ']', cjson.encode(notification), 'NX')
+ end
+end
+return ARGV[4]
+)LUA";
+    const auto result = memory_->executeAtomic(key, {"EVAL", script, "1", key, path, receipt, room.dump(), message.dump()}, {path, "$[\"mention-states\"]"});
+    if (!result) return std::nullopt;
+    try { auto parsed = nlohmann::json::parse(*result); if (!parsed.is_object()) return std::nullopt; return std::optional<nlohmann::json>(std::in_place, parsed); }
+    catch (...) { return std::nullopt; }
+}

@@ -239,7 +239,7 @@ public class CanvasElasticsearchService {
             if (canvasName != null && !canvasName.isBlank()) return searchService.search(canvasName);
             Map<String, Object> queryBody = Map.of(
                     "query", Map.of("match_all", Map.of()),
-                    "_source", List.of("canvas-id", "canvas-name", "description", "people"),
+                    "_source", List.of("canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility"),
                     "size", 1000
             );
             String queryJson = objectMapper.writeValueAsString(queryBody);

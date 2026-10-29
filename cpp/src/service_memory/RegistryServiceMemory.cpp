@@ -296,10 +296,16 @@ bool RegistryServiceMemory::updateCanvasUncached(int canvasId, const std::string
 }
 
 int RegistryServiceMemory::getActiveUserId(const std::string& nickname, int tagNumber) {
+    return getActiveUserIdChecked(nickname, tagNumber).value_or(-1);
+}
+
+std::optional<int> RegistryServiceMemory::getActiveUserIdChecked(const std::string& nickname, int tagNumber) {
     if (nickname.empty() || tagNumber < 0) return -1;
     SqlCommand sql("SELECT user_id FROM users WHERE nickname = @nickname AND tag_number = @tag AND status = 'ACTIVE';");
     sql.addText("@nickname", nickname).addInt("@tag", tagNumber);
-    return scalar(storage_->query(sql)).value_or(-1);
+    const auto result = storage_->query(sql);
+    if (!result) return std::nullopt;
+    return scalar(result).value_or(-1);
 }
 
 std::optional<std::pair<std::string, int>> RegistryServiceMemory::getUserHandle(int userId) {

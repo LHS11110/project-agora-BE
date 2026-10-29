@@ -63,7 +63,7 @@ class CanvasControllerTest {
         CanvasSummaryResponse response = new CanvasSummaryResponse(
                 100, "/api/canvases/100/image", "My description", "New Canvas", 1
         );
-        given(canvasService.createCanvas(eq("New Canvas"), eq("My description"), any(), any(), any())).willReturn(response);
+        given(canvasService.createCanvas(eq("New Canvas"), eq("My description"), any(), any(), any(), any())).willReturn(response);
 
         // when & then
         mockMvc.perform(post("/api/canvases")
