@@ -21,7 +21,7 @@ import java.util.Set;
 
 @Service
 public class CanvasRuntimeService {
-    private static final Set<String> LANGUAGES = Set.of("python", "javascript", "c", "cpp", "bash");
+    private static final Set<String> LANGUAGES = Set.of("python", "javascript", "c", "cpp", "bash", "java");
     private static final int MAX_CODE_BYTES = 65536;
     private static final int MAX_RESPONSE_BYTES = 400000;
     private final ObjectMapper json = new ObjectMapper();
@@ -36,14 +36,57 @@ public class CanvasRuntimeService {
                 code.getBytes(StandardCharsets.UTF_8).length > MAX_CODE_BYTES) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "지원하는 언어와 64KB 이하의 코드를 입력하세요.");
         }
+        return exchange(Map.of("canvasId", canvasId, "language", language, "code", code));
+    }
+
+    public Map<String, Object> settings(Integer canvasId) {
+        return exchange(Map.of("canvasId", canvasId, "action", "settings_get"));
+    }
+
+    public Map<String, Object> configure(Integer canvasId, String language, Map<String, Object> config, Long revision) {
+        if (language == null || !LANGUAGES.contains(language) || config == null || config.size() > 12 || revision == null || revision < 0) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "실행 언어와 옵션, 설정 버전을 확인하세요.");
+        }
+        return exchange(Map.of("canvasId", canvasId, "action", "settings_set", "language", language, "config", config, "revision", revision));
+    }
+
+    public Map<String, Object> resources(Integer canvasId, String template, Long revision) {
+        if (template == null || !Set.of("small", "medium", "large").contains(template) || revision == null || revision < 0) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "VM 리소스 템플릿과 설정 버전을 확인하세요.");
+        }
+        return exchange(Map.of("canvasId", canvasId, "action", "resources_set", "template", template, "revision", revision));
+    }
+
+    public Map<String, Object> disk(Integer canvasId, Integer sizeGiB, Long revision) {
+        if (sizeGiB == null || !Set.of(6, 12, 24).contains(sizeGiB) || revision == null || revision < 0) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "디스크 용량과 설정 버전을 확인하세요.");
+        }
+        return exchange(Map.of("canvasId", canvasId, "action", "disk_set", "sizeGiB", sizeGiB, "revision", revision));
+    }
+
+    public Map<String, Object> installJavaDependencies(Integer canvasId) {
+        return exchange(Map.of("canvasId",canvasId,"action","java_dependencies"));
+    }
+
+    public void delete(Integer canvasId) {
+        if (!Boolean.TRUE.equals(exchange(Map.of("canvasId",canvasId,"action","delete")).get("deleted"))) {
+            throw new CustomException(ErrorCode.NO_SERVER_AVAILABLE, "실행 환경 삭제를 완료하지 못했습니다.");
+        }
+    }
+
+    public Map<String, Object> reset(Integer canvasId) {
+        return exchange(Map.of("canvasId", canvasId, "action", "reset"));
+    }
+
+    private Map<String, Object> exchange(Map<String, Object> payload) {
         try (SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
              Selector selector = Selector.open()) {
             channel.configureBlocking(false);
             channel.connect(UnixDomainSocketAddress.of(socketPath));
-            long deadline = System.nanoTime() + 55_000_000_000L;
+            long deadline = System.nanoTime() + ("java_dependencies".equals(payload.get("action")) ? 220_000_000_000L : 55_000_000_000L);
             channel.register(selector, SelectionKey.OP_CONNECT);
             while (!channel.finishConnect()) waitFor(selector, deadline);
-            byte[] request = (json.writeValueAsString(Map.of("canvasId", canvasId, "language", language, "code", code)) + "\n")
+            byte[] request = (json.writeValueAsString(payload) + "\n")
                     .getBytes(StandardCharsets.UTF_8);
             ByteBuffer output = ByteBuffer.wrap(request);
             channel.keyFor(selector).interestOps(SelectionKey.OP_WRITE);
@@ -62,6 +105,9 @@ public class CanvasRuntimeService {
                     byte b = input.get();
                     if (b == '\n') {
                         Map<String, Object> result = json.readValue(response.toByteArray(), new TypeReference<>() {});
+                        if ("RUNTIME_CONFIG_INVALID".equals(result.get("error"))) {
+                            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, String.valueOf(result.getOrDefault("message", "실행 환경 설정을 확인하세요.")));
+                        }
                         if (result.containsKey("error")) throw new IOException("Runtime unavailable");
                         return result;
                     }

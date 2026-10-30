@@ -72,6 +72,8 @@ class CanvasServiceTest {
     @Mock
     private com.endpoint.frelog.global.security.JwtTokenProvider jwtTokenProvider;
 
+    @Mock private com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue;
+    @Mock private org.springframework.context.ApplicationEventPublisher events;
     @InjectMocks
     private CanvasService canvasService;
 
@@ -274,6 +276,28 @@ class CanvasServiceTest {
         assertThatThrownBy(() -> canvasService.deleteCanvas(200, userDetails))
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.CANVAS_ACTIVE);
+    }
+
+    @Test void deleteCanvasQueuesCleanupAndPublishesOnlyAfterDocumentDeletion() {
+        var doc = new CanvasDocument("Delete",201,1L,null,"default");
+        var info = new CanvasInfo(201);
+        given(canvasInfoRepository.findByIdWithPessimisticLock(201)).willReturn(Optional.of(info));
+        given(canvasElasticsearchService.getCanvasDocumentById(201)).willReturn(Optional.of(doc));
+        given(canvasElasticsearchService.deleteCanvas(201,"Delete")).willReturn(true);
+        canvasService.deleteCanvas(201,userDetails);
+        var order=org.mockito.Mockito.inOrder(runtimeCleanupQueue,canvasInfoRepository,canvasElasticsearchService,events);
+        order.verify(runtimeCleanupQueue).enqueue(201);
+        order.verify(canvasInfoRepository).delete(info);
+        order.verify(canvasElasticsearchService).deleteCanvas(201,"Delete");
+        order.verify(events).publishEvent(new com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupCoordinator.Deleted(201));
+    }
+
+    @Test void failedDocumentDeleteDoesNotPublishCleanupEvent() {
+        var doc = new CanvasDocument("Delete",202,1L,null,"default");
+        given(canvasInfoRepository.findByIdWithPessimisticLock(202)).willReturn(Optional.of(new CanvasInfo(202)));
+        given(canvasElasticsearchService.getCanvasDocumentById(202)).willReturn(Optional.of(doc));
+        assertThatThrownBy(()->canvasService.deleteCanvas(202,userDetails)).isInstanceOf(CustomException.class);
+        verifyNoInteractions(events);
     }
 
     @Test

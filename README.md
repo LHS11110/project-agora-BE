@@ -437,3 +437,22 @@ Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/serve
 기본 Docker 구성에서 Spring·C++는 저장소와 직접 연결하지 않습니다. Wall 저장소 브로커를 먼저 시작해야 합니다. SQL/ES 호스트명은 브로커 별칭이며 Redis/Sentinel은 `REDIS_BROKER_ROUTES`의 허용 목록으로 접속 주소만 바꾸고 원래 TLS 검증 대상을 유지합니다. [Wall 구성 및 전환 안내](../project-agora-Wall/STORAGE_BROKER.md)를 참고하세요.
 
 캔버스 이름 검색은 Nori 한국어·동의어·오타·띄어쓰기 분석과 자체 호스팅 E5 k-NN을 결합합니다. E5 worker는 `docker-compose.search.yml`로 실행하며 [검색 구성 및 운영](../project-agora-DB/elasticsearch/SEARCH.md)에 모델·TLS·동기화·설정을 설명했습니다. Orchestra의 개발/배포 스크립트는 이 worker를 포함합니다.
+
+## 캔버스 삭제와 VM 정리
+
+캔버스 삭제 시 소유자/관리자 권한과 비활성 상태를 확인한 뒤 SQL 트랜잭션 안에서
+`dbo.canvas_runtime_cleanup` 작업을 저장합니다. 커밋 후 실행 관리자에 VM 삭제를
+요청합니다. SQL 트랜잭션이 롤백되면 VM 파일을 삭제하지 않습니다.
+
+정상 경로에서는 DELETE 응답 전에 VM·네트워크를 종료하고 작업 디스크, 언어/리소스/
+디스크 설정, launch 환경 파일, systemd 리소스 override와 해당 VM의 rollback 디스크
+백업을 삭제합니다. 공용 OS 이미지와 다른 캔버스 파일은 보존합니다. 실행 중인 코드나
+실행 관리자 장애로 정리하지 못하면 SQL 작업을 남겨 전용 스케줄러가 30초 주기로
+재시도합니다. 이 경우 캔버스는 삭제되어도 VM 공간 회수는 잠시 지연될 수 있습니다.
+서버 재시작 후에도 대기 작업은 유지됩니다. 작업을 처리하기 전에 캔버스 SQL 행이
+실제로 없는지 다시 확인합니다. 삭제 요청 자체는 기존 `/api/canvases/{id}`를 사용합니다.
+
+기존 DB를 갱신할 때는 Spring 재시작 전에 DB 저장소의 관리자 전용
+`project-agora-DB/mssql/migrations/20261031_runtime_cleanup.sql`을 실행해야 합니다.
+새 DB 초기화 스크립트에도 테이블 생성이 포함되어 있습니다. Spring 런타임 계정에는
+DDL 권한을 추가하지 않습니다. 시작 시 큐 테이블의 스키마를 검증합니다.

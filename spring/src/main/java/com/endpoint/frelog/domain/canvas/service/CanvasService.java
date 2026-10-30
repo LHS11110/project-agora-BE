@@ -49,6 +49,8 @@ public class CanvasService {
     private final UserSessionRepository userSessionRepository;
     private final JwtTokenProvider jwtTokenProvider;
     private final CanvasRedisDocumentReader redisDocumentReader;
+    private final com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue;
+    private final org.springframework.context.ApplicationEventPublisher events;
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
@@ -60,7 +62,9 @@ public class CanvasService {
             ServerInfoRepository serverInfoRepository,
             UserSessionRepository userSessionRepository,
             JwtTokenProvider jwtTokenProvider,
-            CanvasRedisDocumentReader redisDocumentReader) {
+            CanvasRedisDocumentReader redisDocumentReader,
+            com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue,
+            org.springframework.context.ApplicationEventPublisher events) {
         this.canvasInfoRepository = canvasInfoRepository;
         this.userRepository = userRepository;
         this.canvasElasticsearchService = canvasElasticsearchService;
@@ -71,6 +75,8 @@ public class CanvasService {
         this.userSessionRepository = userSessionRepository;
         this.jwtTokenProvider = jwtTokenProvider;
         this.redisDocumentReader = redisDocumentReader;
+        this.runtimeCleanupQueue = runtimeCleanupQueue;
+        this.events = events;
     }
 
     /**
@@ -356,6 +362,8 @@ public class CanvasService {
                     "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
+        // Persist cleanup in the same SQL transaction; rollback must preserve VM files.
+        runtimeCleanupQueue.enqueue(canvasId);
         // MS SQL 삭제
         canvasInfoRepository.delete(canvasInfo);
 
@@ -368,7 +376,8 @@ public class CanvasService {
         // 비정형 리소스 디렉터리 정리
         canvasResourceService.deleteCanvasResourceDirectory(canvasId);
 
-        log.info("캔버스 #{} 전체 영구 삭제 완료", canvasId);
+        events.publishEvent(new com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupCoordinator.Deleted(canvasId));
+        log.info("캔버스 #{} 삭제 완료; VM 정리는 커밋 후 수행", canvasId);
     }
 
     // =========================================================================
