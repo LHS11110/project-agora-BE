@@ -101,7 +101,6 @@ services:
       ES_LOG_BATCH_SIZE: ${ES_LOG_BATCH_SIZE:-100}
       ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
       HA_FAILOVER_MONITOR_INTERVAL_MS: ${HA_FAILOVER_MONITOR_INTERVAL_MS:-10000}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       WALL_CPP_API_ORIGIN: ${WALL_CPP_API_ORIGIN:-https://agora-nginx:8444}
       CPP_WS_PORT_OFFSET: ${CPP_WS_PORT_OFFSET:-2}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
@@ -114,9 +113,14 @@ services:
       REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/google}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     networks:
       - agora-services
+      - oauth-egress
     depends_on:
       service-tls-init:
         condition: service_completed_successfully
@@ -239,6 +243,11 @@ services:
         max-file: "5"
 
 networks:
+  # Spring needs outbound HTTPS for the OIDC token, JWKS and userinfo endpoints.
+  # No ports are published; DB/C++ stay on internal service networks.
+  oauth-egress:
+    name: agora-oauth-egress
+    driver: bridge
   agora-services:
     external: true
     name: agora-services

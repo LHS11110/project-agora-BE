@@ -60,6 +60,11 @@ public class AuthController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/providers")
+    public Map<String, Boolean> providers(@org.springframework.beans.factory.annotation.Value("${app.oauth.google.enabled:false}") boolean google) {
+        return Map.of("google", google);
+    }
+
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> healthCheck() {
         return ResponseEntity.ok(Map.of("status", "UP", "service", "Agora Auth Service"));

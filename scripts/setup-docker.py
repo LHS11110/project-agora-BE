@@ -90,7 +90,7 @@ def prepare(db_dir, tls_dir, public_origin='https://localhost:8443'):
         'SERVICE_TLS_KEY': str(tls_dir / 'internal/spring/privkey.pem'),
         'SERVICE_TLS_CA': str(tls_dir / 'root-ca.pem'),
     }
-    for key in ('JWT_SECRET', 'CPP_INTERNAL_API_TOKEN', 'ADMIN_PASSWORD'):
+    for key in ('JWT_SECRET', 'CPP_INTERNAL_API_TOKEN'):
         if not values.get(key) or db.PLACEHOLDER.search(values[key]):
             desired[key] = secrets.token_hex(32)
     origins = [item.strip() for item in values.get('CORS_ALLOWED_ORIGINS', '').split(',') if item.strip().startswith('https://')]

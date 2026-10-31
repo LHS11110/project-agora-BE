@@ -436,9 +436,11 @@ async function runFullE2ETest() {
 
     // 1. Auth
     setStatus(1, 'running');
+    const e2eEmail = window.prompt('기존 E2E 관리자 계정의 이메일을 입력하세요.');
+    if (!e2eEmail) throw new Error('E2E 관리자 이메일이 필요합니다.');
     const e2ePassword = window.prompt('E2E 관리자 비밀번호를 입력하세요.');
     if (!e2ePassword) throw new Error('E2E 관리자 비밀번호가 필요합니다.');
-    const authRes = await apiCall('/api/auth/login', 'POST', { email: 'admin@agora.com', password: e2ePassword });
+    const authRes = await apiCall('/api/auth/login', 'POST', { email: e2eEmail, password: e2ePassword });
     if (!authRes.ok) return setStatus(1, 'error');
     state.token = authRes.data.accessToken;
     state.user = authRes.data.user;

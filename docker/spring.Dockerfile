@@ -4,7 +4,7 @@ WORKDIR /workspace
 
 COPY spring/gradlew spring/gradlew
 COPY spring/gradle/ spring/gradle/
-COPY spring/settings.gradle spring/build.gradle spring/
+COPY spring/settings.gradle spring/build.gradle spring/gradle.lockfile spring/
 COPY spring/src/ spring/src/
 COPY LICENSE THIRD_PARTY_LICENSES.md ./
 COPY cpp/third_party/uWebSockets/LICENSE cpp/third_party/uWebSockets/LICENSE

@@ -70,7 +70,7 @@ python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/
 
 세 프로젝트를 함께 준비하려면 FE의 `scripts/setup-projects.py`를 사용합니다. 기본값은 [.env.example](.env.example)을 참고하세요. 실행 설정과 비밀값은 `.env`에 보관하며 Git에 넣지 않습니다.
 
-`JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. `ADMIN_PASSWORD`는 사용자가 아직 하나도 없을 때만 초기 관리자 생성에 사용됩니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `ES_LOG_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다. 캔버스 문서는 `ES_USER_NAME`/`ES_USER_PASSWORD`, 운영 로그는 별도 `ES_LOG_USER_NAME`/`ES_LOG_USER_PASSWORD` 계정을 사용합니다.
+`JWT_SECRET`은 Spring과 모든 C++ 인스턴스가 반드시 같은 값을 사용해야 하며 UTF-8 기준 최소 32바이트가 필요합니다. 양쪽은 캔버스 JWT에 HS256 서명을 사용합니다. Spring은 시작 시 기본 사용자나 관리자 계정을 생성하지 않습니다. 사용자 계정은 회원가입으로 생성되며 관리자 권한이 필요하면 운영자가 기존 계정에 명시적으로 부여해야 합니다. DB 저장소의 `MSSQL_PASSWORD`, `ES_USER_PASSWORD`, `ES_LOG_USER_PASSWORD`, `REDIS_USER_PASSWORD`와 BE의 해당 값은 일치해야 합니다. 캔버스 문서는 `ES_USER_NAME`/`ES_USER_PASSWORD`, 운영 로그는 별도 `ES_LOG_USER_NAME`/`ES_LOG_USER_PASSWORD` 계정을 사용합니다.
 
 `CPP_INTERNAL_API_TOKEN`은 Spring에서 C++ REST 관리 API를 호출할 때 보내는 내부 Bearer 성격의 공유 토큰입니다. 최소 32바이트의 무작위 값을 사용하세요. C++ `/api/**` 경로는 이 값이 맞지 않으면 요청을 거부하며, Docker Compose는 `.env` 전체를 컨테이너에 전달하지 않고 각 서비스가 필요한 환경 변수만 전달합니다.
 
@@ -456,3 +456,5 @@ Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/serve
 `project-agora-DB/mssql/migrations/20261031_runtime_cleanup.sql`을 실행해야 합니다.
 새 DB 초기화 스크립트에도 테이블 생성이 포함되어 있습니다. Spring 런타임 계정에는
 DDL 권한을 추가하지 않습니다. 시작 시 큐 테이블의 스키마를 검증합니다.
+
+벤치마크 스크립트는 기존 관리자 계정의 `BENCHMARK_ADMIN_EMAIL`과 `BENCHMARK_ADMIN_PASSWORD`를 별도로 지정해야 합니다. 이 값은 Spring 설정이 아니며 계정을 자동 생성하지 않습니다.

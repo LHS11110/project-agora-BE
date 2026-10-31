@@ -102,8 +102,6 @@ CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
 CTestTestfile.cmake
-Makefile
-!cpp/third_party/uWebSockets/uSockets/Makefile
 
 # Object & Library files
 *.o
@@ -142,8 +140,6 @@ htmlcov/
 
 # Local testing scratch files
 scratch/
-*test.html
-test.html
 
 
 # ==============================================================================
@@ -225,3 +221,27 @@ certificates/
 *.dump
 *.bak
 *.tmp
+
+# Local authentication files and generated audit/test artifacts
+.envrc
+.envrc.*
+!.envrc.example
+!.env.*.example
+!.env.sample
+!.env.template
+.netrc
+.pypirc
+client_secret*.json
+service-account*.json
+application_default_credentials.json
+.ssh/
+id_rsa
+id_ed25519
+.mypy_cache/
+.ruff_cache/
+coverage/
+test-results/
+playwright-report/
+*.sql.gz
+*.rdb
+appendonlydir/

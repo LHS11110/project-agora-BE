@@ -14,6 +14,8 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     Optional<User> findByEmail(String email);
 
+    Optional<User> findByOauthProviderAndOauthId(String provider, String subject);
+
     boolean existsByEmail(String email);
 
     @Query(value = "SELECT COALESCE(MAX(tag_number), 0) FROM users WITH (UPDLOCK, HOLDLOCK) WHERE nickname = :nickname",

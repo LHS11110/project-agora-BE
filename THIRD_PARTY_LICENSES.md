@@ -11,7 +11,7 @@ recheck this inventory whenever dependencies or the distribution format change.
 | --- | --- | --- |
 | [uWebSockets](https://github.com/uNetworking/uWebSockets) | Header code compiled into the server | Apache-2.0; [license text](cpp/third_party/uWebSockets/LICENSE). Copyright Alex Hultman and contributors; retain notices in source files. |
 | [uSockets](https://github.com/uNetworking/uSockets) | Static library compiled into the server | Apache-2.0; [license text](cpp/third_party/uWebSockets/uSockets/LICENSE). Copyright Alex Hultman and contributors; retain notices in source files. |
-| [jwt-cpp](https://github.com/Thalhammer/jwt-cpp) | Header code compiled into the server | MIT; [license text](cpp/third_party/jwt-cpp/LICENSE). Copyright (c) 2018 Dominik Thalhammer. |
+| [jwt-cpp](https://github.com/Thalhammer/jwt-cpp) | Vendored submodule; not included/linked by the current server build | MIT; [license text](cpp/third_party/jwt-cpp/LICENSE). Copyright (c) 2018 Dominik Thalhammer. |
 | [nlohmann/json](https://github.com/nlohmann/json) | System-installed header code compiled into the server | MIT; copyright (c) 2013–2023 Niels Lohmann. See MIT notice below. |
 | [cpp-httplib](https://github.com/yhirose/cpp-httplib) | System shared library and headers | MIT; copyright (c) 2012 and 2023 Yuji Hirose. See MIT notice below. |
 | [FreeTDS](https://www.freetds.org/) (`libsybdb`) | System shared library | LGPL-2.0-or-later for the linked library; see the installed package's copyright/license files and the [FreeTDS source](https://www.freetds.org/software.html). |
@@ -19,7 +19,7 @@ recheck this inventory whenever dependencies or the distribution format change.
 | [zlib](https://zlib.net/) | System shared library | zlib License. Preserve the installed package's copyright notice if redistributing the library. |
 
 The CMake `install` target ships this document, this project's license, and
-the complete uWebSockets, uSockets, and jwt-cpp license texts with the C++
+the complete uWebSockets and uSockets license texts with the C++
 executable. It does **not** copy operating-system shared libraries. If a release
 bundles those libraries, include their exact version's license and copyright
 files as well; for FreeTDS, also satisfy applicable LGPL source/relinking
@@ -66,8 +66,7 @@ Several components, especially Jakarta/JSTL and transitive dependencies, have
 their own notices or license choices. The lockfile is an inventory, **not** a
 license grant or a substitute for those notices.
 
-H2 (EPL-1.0 or MPL-2.0) is a test dependency and is not embedded in the
-production boot JAR. The web pages request Inter, JetBrains Mono, and Outfit
+H2 (EPL-1.0 or MPL-2.0) is currently declared `runtimeOnly` and is embedded in the production boot JAR for the optional local fallback. Preserve its nested license/source notices and review the chosen license when redistributing the JAR. The web pages request Inter, JetBrains Mono, and Outfit
 fonts from Google Fonts at runtime; font files are not checked into this
 repository or bundled in the boot JAR. Pretendard and Fira Code are not used
 by the current web assets.
@@ -87,3 +86,5 @@ that image's own license and included notices separately.
 ## Self-hosted search embeddings
 
 The separate search image contains [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT), revision `614241f622f53c4eeff9890bdc4f31cfecc418b3`. The pinned model card is retained at `/models/e5/MODEL_CARD.md`. No remote model code is executed. Runtime Python distributions and their installed license notices include NumPy (BSD-3-Clause), ONNX Runtime (MIT), Hugging Face Tokenizers (Apache-2.0), and Requests (Apache-2.0). Keep their wheel `.dist-info` license files when distributing this image. The E5 model is downloaded at image build time, while corpus and query inference remain local.
+
+Google login additionally includes Spring Security OAuth2 Client/Core/JOSE (Apache-2.0) and Nimbus OAuth2/OIDC SDK and JOSE JWT libraries. Their exact versions are locked in `spring/gradle.lockfile`; retain their nested notices and license choices when distributing the boot JAR.

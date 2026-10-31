@@ -242,8 +242,8 @@ def main() -> int:
     bench = Benchmark(args.spring, args.cpp)
     spring_headers = {"Authorization": "Bearer "}
     cpp_headers = {"X-Agora-Internal-Token": be["CPP_INTERNAL_API_TOKEN"]}
-    admin_email = "admin@agora.com"
-    admin_password = be["ADMIN_PASSWORD"]
+    admin_email = be["BENCHMARK_ADMIN_EMAIL"]
+    admin_password = be["BENCHMARK_ADMIN_PASSWORD"]
     canvas_ids: list[int] = []
     accounts: list[dict[str, object]] = []
     fixture_id: int | None = None

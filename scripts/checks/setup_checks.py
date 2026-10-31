@@ -220,7 +220,7 @@ class SetupTests(unittest.TestCase):
             for name in ('spring', 'cpp'):
                 self.assertEqual(backend[name]['environment']['REDIS_TLS_ENABLED'], 'true')
                 self.assertFalse(backend[name].get('ports'))
-                self.assertEqual(set(backend[name]['networks']), {'agora-services'})
+                self.assertEqual(set(backend[name]['networks']), {'agora-services', 'oauth-egress'} if name == 'spring' else {'agora-services'})
                 self.assertTrue(backend[name]['environment']['REDIS_BROKER_ROUTES'])
             wall = models['project-agora-Wall']
             proxy = wall['services']['storage-broker']

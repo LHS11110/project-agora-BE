@@ -29,3 +29,13 @@ cpp/third_party/jwt-cpp/docs
 cpp/third_party/jwt-cpp/example
 cpp/third_party/jwt-cpp/tests
 node_modules
+
+# Local authentication material must not enter build contexts
+.envrc
+.envrc.*
+.netrc
+.pypirc
+**/client_secret*.json
+**/service-account*.json
+**/application_default_credentials.json
+**/.ssh/

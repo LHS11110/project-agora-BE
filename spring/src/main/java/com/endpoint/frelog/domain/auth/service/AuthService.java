@@ -70,6 +70,10 @@ public class AuthService {
             throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         }
 
+        return completeLogin(user, httpRequest);
+    }
+
+    private LoginResponse completeLogin(User user, HttpServletRequest httpRequest) {
         UserSession session = userSessionRepository.findByIdWithPessimisticLock(user.getUserId())
                 .orElseGet(() -> new UserSession(user));
         session.updateLastLogin(LocalDateTime.now());
@@ -86,6 +90,34 @@ public class AuthService {
         );
 
         return LoginResponse.of(token, UserResponse.from(user));
+    }
+
+    /** Accept only a principal already verified by Spring Security's OIDC client. */
+    @Transactional
+    public LoginResponse loginGoogle(org.springframework.security.oauth2.core.oidc.user.OidcUser principal, HttpServletRequest request) {
+        String subject = principal.getSubject();
+        String email = principal.getEmail();
+        if (!Boolean.TRUE.equals(principal.getEmailVerified()) || subject == null || subject.isBlank()
+                || email == null || email.isBlank() || email.length() > 255 || subject.length() > 255) {
+            throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        }
+        User user = userRepository.findByOauthProviderAndOauthId("google", subject).orElse(null);
+        if (user == null) {
+            // Email is mutable and does not prove ownership of an existing local account.
+            if (userRepository.existsByEmail(email)) throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
+            String name = principal.getFullName();
+            if (name == null || name.isBlank()) name = "Google 사용자";
+            name = name.trim();
+            name = name.substring(0, Math.min(name.length(), 100));
+            int tag = userRepository.findMaxTagNumberByNicknameForUpdate(name) + 1;
+            user = new User(email, null, name, tag, Role.ROLE_USER);
+            user.setOauthProvider("google");
+            user.setOauthId(subject);
+            user = userRepository.save(user);
+        }
+        if (user.getStatus() == UserStatus.SUSPENDED) throw new CustomException(ErrorCode.USER_SUSPENDED);
+        if (user.getStatus() == UserStatus.WITHDRAWN) throw new CustomException(ErrorCode.USER_WITHDRAWN);
+        return completeLogin(user, request);
     }
 
     @Transactional

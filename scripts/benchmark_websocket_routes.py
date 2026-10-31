@@ -210,9 +210,9 @@ def main() -> int:
     args = parser.parse_args()
     env = envfile(args.env)
     run_id = datetime.now(timezone.utc).strftime("%y%m%d%H%M%S") + secrets.token_hex(3)
-    admin_email = "admin@agora.com"
+    admin_email = env["BENCHMARK_ADMIN_EMAIL"]
     status, raw, _ = api_json("agora-spring", "POST", "/api/auth/login",
-                              {"email": admin_email, "password": env["ADMIN_PASSWORD"]})
+                              {"email": admin_email, "password": env["BENCHMARK_ADMIN_PASSWORD"]})
     if status != 200:
         raise RuntimeError(f"admin login failed with HTTP {status}")
     admin_token = json.loads(raw).get("accessToken", "")

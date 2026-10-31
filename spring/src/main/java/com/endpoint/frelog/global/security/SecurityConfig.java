@@ -80,6 +80,7 @@ public class SecurityConfig {
                                 "/js/**",
                                 "/favicon.ico",
                                 "/favicon.png",
+                                "/api/auth/providers",
                                 "/api/auth/login",
                                 "/api/auth/signup",
                                 "/api/auth/me",
