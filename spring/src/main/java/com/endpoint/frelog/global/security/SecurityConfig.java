@@ -68,7 +68,8 @@ public class SecurityConfig {
                         })
                 )
                 .authorizeHttpRequests(auth -> auth
-                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.FORWARD, jakarta.servlet.DispatcherType.INCLUDE, jakarta.servlet.DispatcherType.ERROR).permitAll()
+                        // Async completion follows an already-authorized controller invocation.
+                        .dispatcherTypeMatchers(jakarta.servlet.DispatcherType.ASYNC, jakarta.servlet.DispatcherType.FORWARD, jakarta.servlet.DispatcherType.INCLUDE, jakarta.servlet.DispatcherType.ERROR).permitAll()
                         .requestMatchers(
                                 "/",
                                 "/index.html",

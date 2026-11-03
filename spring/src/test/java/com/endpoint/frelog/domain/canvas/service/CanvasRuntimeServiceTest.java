@@ -47,4 +47,29 @@ class CanvasRuntimeServiceTest {
         assertThrows(CustomException.class, () -> service.execute(1, "python", "한".repeat(22000)));
         assertThrows(CustomException.class, () -> service.execute(1, "python", "print(1)"));
     }
+    @Test void streamingOutputArrivesBeforeExecutionCompletes() throws Exception {
+        Path socket = directory.resolve("stream.sock");
+        var firstOutput = new java.util.concurrent.CountDownLatch(1);
+        try (ServerSocketChannel server = ServerSocketChannel.open(StandardProtocolFamily.UNIX)) {
+            server.bind(UnixDomainSocketAddress.of(socket));
+            var request = CompletableFuture.supplyAsync(() -> {
+                try (SocketChannel connection = server.accept()) {
+                    ByteBuffer data = ByteBuffer.allocate(8192);connection.read(data);data.flip();
+                    String body = StandardCharsets.UTF_8.decode(data).toString();
+                    connection.write(StandardCharsets.UTF_8.encode("{\"type\":\"output\",\"output\":\"first\\n\"}\n"));
+                    assertTrue(firstOutput.await(2, java.util.concurrent.TimeUnit.SECONDS));
+                    connection.write(StandardCharsets.UTF_8.encode("{\"exitCode\":0,\"output\":\"first\\nlast\\n\"}\n"));
+                    return body;
+                } catch (Exception error) { throw new RuntimeException(error); }
+            });
+            var seen = new java.util.ArrayList<String>();
+            var result = new CanvasRuntimeService(socket.toString()).executeStream(42,"python","print(1)",null, frame -> {
+                seen.add((String) frame.get("output"));firstOutput.countDown();
+            });
+            assertEquals(java.util.List.of("first\n"), seen);
+            assertEquals("first\nlast\n", result.get("output"));
+            assertTrue(request.get().contains("\"stream\":true"));
+        }
+    }
+
 }

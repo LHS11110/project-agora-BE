@@ -27,7 +27,7 @@ static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, Registry
             if (handle) {nlohmann::json person{{"nickname", handle->first}, {"tag_number", handle->second}};participants.push_back(person);handles[member.get<int>()]=person;}
         }
     }
-    const bool protected_canvas = doc.contains("canvas-password-hash")
+    const bool protected_canvas = canvasIsPublic(doc) && doc.contains("canvas-password-hash")
         && doc["canvas-password-hash"].is_string() && !doc["canvas-password-hash"].get<std::string>().empty();
     nlohmann::json groups=nlohmann::json::object();
     if(doc.contains("inner-group")&&doc["inner-group"].is_object())for(const auto& group:doc["inner-group"].items()){
@@ -108,6 +108,8 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         es_changes[document_field] = value;
     };
 
+    rememberOriginal("password-revision");
+    doc["password-revision"] = doc.contains("password-revision") && doc["password-revision"].is_number_integer() ? doc["password-revision"].get<long long>() : 0LL;
     rememberOriginal("group-bits");rememberOriginal("group-permissions");
     doc["group-bits"]=canvasGroupBitLayout(doc);
     if (field == "participant_groups" || field == "group_create" || field == "group_members" || field == "group_initial" || field == "group_rename" || field == "group_delete") {
@@ -139,7 +141,12 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
         const auto value = event["value"].get<std::string>();
         if (value != "public" && value != "private") return reject("SETTINGS_INVALID_INPUT");
-        if (value == "public" && doc.contains("canvas-password-hash") && doc["canvas-password-hash"].is_string() && !doc["canvas-password-hash"].get<std::string>().empty()) return reject("SETTINGS_INVALID_INPUT");
+        if (value == "private" || !canvasIsPublic(doc)) {
+            rememberOriginal("canvas-password-hash");
+            doc["password-revision"] = doc.value("password-revision", 0LL) + 1;
+            doc["canvas-password-hash"] = nullptr;
+            addChange("canvas-password-hash", nullptr);
+        }
         rememberOriginal("visibility"); doc["visibility"] = value; addChange("visibility", value);
     } else if (field == "name" || field == "description" || field == "password") {
         if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
@@ -156,7 +163,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             doc["description"] = value;
             addChange("description", value);
         } else {
-            if (canvasIsPublic(doc) && value.find_first_not_of(" \t\n\r\f\v") != std::string::npos) return reject("SETTINGS_INVALID_INPUT");
+            if (!canvasIsPublic(doc) && value.find_first_not_of(" \t\n\r\f\v") != std::string::npos) return reject("SETTINGS_INVALID_INPUT");
             rememberOriginal("canvas-password-hash");
             nlohmann::json hash = nullptr;
             if (value.find_first_not_of(" \t\n\r\f\v") != std::string::npos) {
@@ -164,6 +171,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
                 if (!generated) return reject("SETTINGS_STORAGE_ERROR");
                 hash = *generated;
             }
+            doc["password-revision"] = doc.value("password-revision", 0LL) + 1;
             doc["canvas-password-hash"] = hash;
             addChange("canvas-password-hash", hash);
         }
@@ -232,6 +240,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     // One replacement per root field; retain original values for compensation.
     changes.erase(std::remove_if(changes.begin(),changes.end(),[](const auto& entry){return entry.first=="group-permissions"||entry.first=="group-bits";}),changes.end());
     addChange("group-bits",doc["group-bits"]);addChange("group-permissions",doc["group-permissions"]);
+    addChange("password-revision", doc["password-revision"]);
     addChange("settings-revision", revision + 1);
     const auto stored = memory.compareAndSetFields(canvas_id, revision, changes);
     if (stored == CanvasServiceMemory::CompareSetResult::Conflict) {

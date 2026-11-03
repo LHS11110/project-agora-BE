@@ -102,6 +102,40 @@ public class CanvasRuntimeController {
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(request.stdin() == null ? runtime.execute(canvasId, request.language(), request.code()) : runtime.execute(canvasId, request.language(), request.code(), request.stdin()));
     }
+    @PostMapping(value="/{canvasId}/runtime/execute/stream", produces="application/x-ndjson")
+    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> executeStream(
+            @PathVariable Integer canvasId, @RequestBody ExecuteRequest request,
+            @AuthenticationPrincipal CustomUserDetails user, jakarta.servlet.http.HttpServletResponse servletResponse) {
+        authorize(canvasId, request.passwordGrant(), user, "execute");
+        org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody body = output -> {
+            var json = new com.fasterxml.jackson.databind.ObjectMapper();
+            java.util.function.Consumer<Map<String,Object>> send = frame -> {
+                try { output.write(json.writeValueAsBytes(frame)); output.write('\n'); output.flush(); servletResponse.flushBuffer(); }
+                catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
+            };
+            try {
+                var result = runtime.executeStream(canvasId, request.language(), request.code(), request.stdin(), send);
+                send.accept(Map.of("type", "result", "result", result));
+            } catch (java.io.UncheckedIOException disconnected) {
+                // The manager drains the guest execution even after this HTTP client leaves.
+            } catch (CustomException error) {
+                send.accept(Map.of("type", "error", "code", error.getErrorCode().getCode(), "message", error.getMessage()));
+            } catch (RuntimeException error) {
+                send.accept(Map.of("type", "error", "message", "코드 실행 스트림이 종료되었습니다."));
+            }
+        };
+        return ResponseEntity.ok().contentType(org.springframework.http.MediaType.parseMediaType("application/x-ndjson"))
+                .cacheControl(CacheControl.noStore()).header("X-Accel-Buffering", "no").body(body);
+    }
+
+    @PostMapping("/{canvasId}/runtime/build")
+    public ResponseEntity<Map<String, Object>> build(@PathVariable Integer canvasId,
+            @RequestBody ExecuteRequest request, @AuthenticationPrincipal CustomUserDetails user) {
+        authorize(canvasId, request.passwordGrant(), user, "execute");
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore())
+                .body(runtime.build(canvasId, request.language(), request.code()));
+    }
+
     private void authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
         // The authoritative live canvas document checks current membership or public visibility.
         CanvasDocument doc = canvases.getCanvasDocument(canvasId, user);
@@ -110,8 +144,8 @@ public class CanvasRuntimeController {
                 : CanvasGroupPermissions.allows(doc,user,capability);
         if(!allowed)throw new CustomException(ErrorCode.ACCESS_DENIED,"이 그룹에는 해당 작업의 권한이 없습니다.");
         String hash = doc.getCanvasPasswordHash();
-        long revision = doc.getSettingsRevision() == null ? 0 : doc.getSettingsRevision();
-        if (hash != null && !hash.isBlank() && !tokens.validateCanvasPasswordGrant(
+        long revision = doc.getPasswordRevision();
+        if ("public".equals(doc.getVisibility()) && hash != null && !hash.isBlank() && !tokens.validateCanvasPasswordGrant(
                 passwordGrant, user.getUserId(), canvasId, revision)) {
             throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
         }

@@ -114,8 +114,8 @@ public class CanvasService {
         }
         if (visibility != null && !visibility.equals("public") && !visibility.equals("private"))
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 설정을 확인하세요.");
-        if ("public".equals(visibility) && canvasPassword != null && !canvasPassword.isBlank())
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
+        if (!"public".equals(visibility) && canvasPassword != null && !canvasPassword.isBlank())
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
 
         Long userId = currentUser.getUserId();
 
@@ -230,7 +230,7 @@ public class CanvasService {
         Map<String,List<CanvasUpdateDtos.ParticipantResponse>> groups = new LinkedHashMap<>();
         if(doc.getInnerGroup()!=null)doc.getInnerGroup().forEach((key,members)->groups.put(key,members.stream().map(users::get).filter(java.util.Objects::nonNull).toList()));
         return new CanvasUpdateDtos.SettingsResponse(canvasId, doc.getCanvasName(), doc.getDescription(),
-                doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
+                "public".equals(doc.getVisibility()) && doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
                 doc.getSettingsRevision(), participants, doc.getVisibility(),CanvasGroupPermissions.policies(doc),CanvasGroupPermissions.admin(doc,currentUser.getUserId()),groups,doc.getInitGroup(),users.get(doc.getAdminUserId()));
     }
 
@@ -264,13 +264,14 @@ public class CanvasService {
     public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
         CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
         if (password == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
-        if ("public".equals(doc.getVisibility()) && !password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
+        if (!"public".equals(doc.getVisibility()) && !password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
         if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
-                java.util.Collections.singletonMap("canvas-password-hash",
-                        password.isBlank() ? null : CanvasPasswords.hashForStorage(password))));
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("canvas-password-hash", password.isBlank() ? null : CanvasPasswords.hashForStorage(password));
+        fields.put("password-revision", doc.getPasswordRevision() + 1L);
+        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, fields));
     }
 
     @Transactional
@@ -427,9 +428,9 @@ public class CanvasService {
 
         String storedPassword = doc.getCanvasPasswordHash();
         long settingsRevision = doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision();
-        boolean passwordProtected = storedPassword != null && !storedPassword.isBlank();
+        boolean passwordProtected = "public".equals(doc.getVisibility()) && storedPassword != null && !storedPassword.isBlank();
         boolean validPasswordToken = passwordProtected && jwtTokenProvider.validateCanvasPasswordGrant(
-                suppliedPasswordToken, currentUser.getUserId(), canvasId, settingsRevision);
+                suppliedPasswordToken, currentUser.getUserId(), canvasId, doc.getPasswordRevision());
         if (passwordProtected && !validPasswordToken) {
             if (suppliedPassword == null || suppliedPassword.isBlank()) {
                 throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
@@ -503,7 +504,7 @@ public class CanvasService {
         String canvasPasswordToken = passwordProtected
                 ? validPasswordToken
                     ? suppliedPasswordToken
-                    : jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), canvasId, settingsRevision)
+                    : jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), canvasId, doc.getPasswordRevision())
                 : null;
 
         // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환

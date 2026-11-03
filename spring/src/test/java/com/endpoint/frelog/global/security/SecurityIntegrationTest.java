@@ -28,6 +28,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 class SecurityIntegrationTest {
+    @Test void unauthenticatedRuntimeStreamIsRejectedBeforeExecution() throws Exception {
+        mockMvc.perform(post("/api/canvases/1/runtime/execute/stream")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"language\":\"python\",\"code\":\"print(1)\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
 
     @MockitoBean
     private CppServerClient cppServerClient;

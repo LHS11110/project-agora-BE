@@ -272,3 +272,34 @@ Canvas settings responses now include `groups: {name: [{nickname,tag_number}]}`,
 관리자·기본 그룹을 포함해 최대 64개입니다. 초과 생성은 `GROUP_LIMIT`으로 거부됩니다. 초기 브로커 응답/인증 identity의 `group_bits`는 `{그룹이름: 슬롯번호(0~63)}`, `group_masks`는 `{member,read,write,execute}`에 해당하는 16자리 16진 문자열입니다. 최상위 비트는 `8000000000000000`이며 Number로 변환하지 말고 JS BigInt 또는 Python `int(mask,16)`으로 해석합니다.
 
 저장 필드 `group-permissions`는 읽기=1, 쓰기=2, 실행=4의 3비트 조합입니다. `group_create.permissions`, `group_permissions` 변경에서 기존 불리언 맵과 정수 조합을 모두 받습니다. 읽기 없는 쓰기/실행 조합은 거부하고 관리자 그룹은 7을 유지합니다. UI 호환용 설정 응답 `group_permissions`는 불리언 맵이며 `group_permission_bits`로 정수 맵도 제공합니다. `group-bits`의 슬롯은 이름을 변경해도 유지됩니다. 사용자가 보내는 임의의 비트 마스크로 접근 권한을 부여하지 않습니다.
+
+### 사전 빌드 실행
+
+`POST /api/canvases/{canvasId}/runtime/build`는 실행 API와 같은 `language`, `code`, `passwordGrant`를 받습니다. 현재 캔버스 접근 및 실행 권한을 확인하고 사용자 코드는 실행하지 않은 채 빌드합니다. 응답은 실행과 같은 `exitCode`, `output`, `timedOut`, `truncated`, `environmentReset` 구조입니다. 빌드 시간 제한은 60초이며 출력은 기존 결과 객체를 덮어쓰지 않습니다.
+
+언어별 실행 설정에 `executionMode`를 추가합니다. 기본 `interactive`는 기존 동작을 유지하며, `precompiled`에서는 사전 빌드된 동일 코드·옵션의 결과물만 실행합니다. 결과물이 없거나 코드·옵션이 바뀌면 다시 빌드하라는 오류를 반환하며 자동 컴파일하지 않습니다. C/C++은 네이티브 실행 파일(main 필수), Java는 javac 클래스(main 필수), Python은 버전별 pyc, JavaScript는 V8 코드 캐시, Shell은 구문 검사된 스크립트를 사용합니다. JavaScript 런타임 JIT는 여전히 발생할 수 있고 Shell은 컴파일 언어가 아닙니다. 이 모드는 코드 객체 간 메모리를 공유하지 않으며 결과→코드 표준 입력 연결은 유지합니다. 결과물은 VM 재시작·실행 환경 초기화 후에도 유지되고 VM 삭제 시 함께 삭제됩니다. `interactive` 코드에 대한 빌드는 실행 없이 건너뜁니다.
+
+### 공동 문제 객체와 수동 채점
+
+기존 객체 API에서 `kind: "question"`을 지원합니다. `questionType`은 `choice`(단일 선택 객관식) 또는 `short-answer`(주관식)입니다. `questionPrompt`, `questionOptions`(2~10개), `questionAnswer`, `questionSubmitted`, `questionMaxScore`(정수 1~1000), `questionScore`(-1은 미채점, 채점 시 0~배점), `questionFeedback`, `questionVersion`, `questionGradedVersion`을 저장합니다. 문제·답안·배점·제출 여부 변경 시 새 `questionVersion`을 전달해야 하며 채점 시 `questionGradedVersion`이 현재 버전과 같아야 합니다. 오래된 채점은 `QUESTION_GRADING_STALE`, 버전 없이 내용 변경은 `QUESTION_REVISION_REQUIRED`로 거부합니다. 점수와 문항·보기·답안 크기도 서버에서 검증합니다.
+
+답안 하나와 수동 점수·피드백을 참가자들이 공유합니다. 자동 채점은 하지 않습니다. 수정·제출·채점 모두 해당 객체의 기존 그룹별 쓰기 권한과 잠금 정책을 적용합니다. 브로커는 C++ 저장 성공 후 브로드캐스팅하며 새 참가자도 저장된 내용을 조회합니다. 문제 저장 시 공동 답안과 채점을, 답안 재제출 시 채점을 초기화하도록 클라이언트가 관련 필드와 새 버전을 함께 보냅니다.
+
+### Canvas visibility and password policy
+
+- `private` (also the omitted/default visibility) accepts only the owner and invited participants. Nonempty `canvasPassword`/password updates are rejected; legacy private passwords are not required for entry.
+- `public` is searchable by signed-in users and supports an optional password. Password verification is required before issuing a canvas access token; a password does not change visibility to private.
+- Switching visibility clears a private canvas's legacy password; switching to private clears any public password in the same settings revision.
+- Canvas administrators can invite/remove participants. Removing an invitation removes all group memberships, updates active session ACLs via the settings revision and closes only sessions that lost canvas access. A removed participant cannot reenter a private canvas until invited again. The owner cannot be removed.
+
+### Live canvas settings (2026-11-04)
+
+Successful settings writes no longer broadcast `server_reconnect`. For ordinary settings the broker updates the session revision and sends `canvas_settings_changed` directly, without reading all objects per participant. For ACL changes it serializes a server-only `canvas_access_refresh` for each data session, updates both canvas and RTC identities, then dispatches queued requests with their current identity. Clients receive `canvas_access_changed` with settings and read/write/execute/member groups. ACL changes additionally request a filtered snapshot on the same socket; name/description/password updates do not reload objects. RTC peer IDs and connection proofs remain intact. Sessions denied access receive `canvas_access_revoked` and close without retrying. The server-only refresh event is not accepted from public clients.
+
+Password grants use `password-revision` (default 0), separate from `settings-revision`. Unrelated settings changes retain the grant; password changes and visibility transitions that clear a password increment the password revision. Existing token expiry rules continue to apply.
+
+Python SDK 0.1.3 supports live capability changes and terminal revocation notifications.
+
+### 실시간 실행 출력
+
+`POST /api/canvases/{id}/runtime/execute/stream`은 `/runtime/execute`와 동일한 요청·권한 검사를 사용하며 `application/x-ndjson`으로 응답합니다. 출력마다 `{type:"output",output:"..."}`, 종료 시 `{type:"result",result:{exitCode,output,timedOut,truncated,environmentReset}}`를 전달합니다. 스트림 시작 후 오류는 `{type:"error",code?,message}`로 전달합니다. 결과의 output은 전체 출력이므로 앞서 받은 조각에 다시 덧붙이지 않습니다. 출력·코드·표준 입력 한도와 실행 시간 제한은 기존과 같습니다. 결과 객체는 같은 runId/codeId의 항목을 갱신하며 브로커를 통해 저장·공유합니다. 언어의 출력 버퍼가 flush되어야 조각이 발생합니다. 클라이언트 전송 실패가 실행 재시도를 유발하지 않습니다.

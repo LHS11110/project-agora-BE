@@ -20,11 +20,11 @@ public final class CanvasGroupPermissions {
   if(index.valid){
    Set<String> members=new HashSet<>(),allowed=new HashSet<>();
    doc.getInnerGroup().forEach((name,users)->{if(users!=null&&users.contains(user.getUserId()))members.add(name);if(group(doc,name,capability))allowed.add(name);});
-   if("public".equals(doc.getVisibility())&&(doc.getCanvasPasswordHash()==null||doc.getCanvasPasswordHash().isBlank())&&!"admin-group".equals(doc.getInitGroup())&&doc.getInnerGroup().containsKey(doc.getInitGroup()))members.add(doc.getInitGroup());
+   if("public".equals(doc.getVisibility())&&!"admin-group".equals(doc.getInitGroup())&&doc.getInnerGroup().containsKey(doc.getInitGroup()))members.add(doc.getInitGroup());
    return (index.mask(members)&index.mask(allowed))!=0;
   }
   if(doc.getInnerGroup()!=null)for(var entry:doc.getInnerGroup().entrySet())if(entry.getValue()!=null&&entry.getValue().contains(user.getUserId())&&group(doc,entry.getKey(),capability))return true;
-  return "public".equals(doc.getVisibility())&&(doc.getCanvasPasswordHash()==null||doc.getCanvasPasswordHash().isBlank())&&!"admin-group".equals(doc.getInitGroup())&&doc.getInnerGroup()!=null&&doc.getInnerGroup().containsKey(doc.getInitGroup())&&group(doc,doc.getInitGroup(),capability);
+  return "public".equals(doc.getVisibility())&&!"admin-group".equals(doc.getInitGroup())&&doc.getInnerGroup()!=null&&doc.getInnerGroup().containsKey(doc.getInitGroup())&&group(doc,doc.getInitGroup(),capability);
  }
  public static Map<String,Map<String,Boolean>> policies(CanvasDocument doc){
   var result=new LinkedHashMap<String,Map<String,Boolean>>();

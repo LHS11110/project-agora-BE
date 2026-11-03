@@ -90,6 +90,12 @@ class CanvasSession:
                     self._items={k:v for k,v in event["items"].items() if v and v.get("kind")!="host-tombstone"}
                     self.revision=event["revision"];self._ack(event["accepted_count"]);self._ready=True
                 if kind=="init_items":self.capabilities={k:copy.deepcopy(event.get(k)) for k in ("groups","member_groups","write_groups","execute_groups","is_admin","group_bits","group_masks")}
+            elif kind=="canvas_access_changed":
+                self.capabilities={k:copy.deepcopy(event.get(k)) for k in ("groups","member_groups","write_groups","execute_groups","is_admin","group_bits","group_masks")}
+            elif kind=="canvas_access_revoked":
+                self._items={};self._ready=False
+                self._terminal=AgoraError("Canvas access revoked",code=event.get("code","CANVAS_ACCESS_UNAUTHORIZED"))
+                self._closed.set()
             elif kind=="canvas_commit":
                 if event.get("revision")==self.revision+1 and self._ready:
                     for key,value in event.get("items",{}).items():

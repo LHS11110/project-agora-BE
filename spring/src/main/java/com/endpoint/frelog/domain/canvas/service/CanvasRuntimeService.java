@@ -36,6 +36,14 @@ public class CanvasRuntimeService {
     }
 
     public Map<String, Object> execute(Integer canvasId, String language, String code, String stdin) {
+        return executeRequest(canvasId, language, code, stdin, false);
+    }
+
+    public Map<String, Object> build(Integer canvasId, String language, String code) {
+        return executeRequest(canvasId, language, code, null, true);
+    }
+
+    private Map<String, Object> executeRequest(Integer canvasId, String language, String code, String stdin, boolean build) {
         if (stdin != null && stdin.getBytes(StandardCharsets.UTF_8).length > 65536) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "표준 입력은 64KB 이하여야 합니다.");
         }
@@ -46,6 +54,7 @@ public class CanvasRuntimeService {
         var payload = new java.util.HashMap<String, Object>();
         payload.put("canvasId", canvasId); payload.put("language", language); payload.put("code", code);
         if (stdin != null) payload.put("stdin", stdin);
+        if (build) payload.put("action", "build");
         return exchange(payload);
     }
 
@@ -88,12 +97,26 @@ public class CanvasRuntimeService {
         return exchange(Map.of("canvasId", canvasId, "action", "reset"));
     }
 
-    private Map<String, Object> exchange(Map<String, Object> payload) {
+    public Map<String, Object> executeStream(Integer canvasId, String language, String code, String stdin,
+                                              java.util.function.Consumer<Map<String, Object>> onOutput) {
+        if (language == null || !LANGUAGES.contains(language) || code == null || code.getBytes(StandardCharsets.UTF_8).length > MAX_CODE_BYTES ||
+                (stdin != null && stdin.getBytes(StandardCharsets.UTF_8).length > 65536)) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "지원하는 언어와 64KB 이하의 코드·입력을 사용하세요.");
+        }
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("canvasId", canvasId); payload.put("language", language); payload.put("code", code); payload.put("stream", true);
+        if (stdin != null) payload.put("stdin", stdin);
+        return exchange(payload, onOutput);
+    }
+
+    private Map<String, Object> exchange(Map<String, Object> payload) { return exchange(payload, null); }
+
+    private Map<String, Object> exchange(Map<String, Object> payload, java.util.function.Consumer<Map<String,Object>> onOutput) {
         try (SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
              Selector selector = Selector.open()) {
             channel.configureBlocking(false);
             channel.connect(UnixDomainSocketAddress.of(socketPath));
-            long deadline = System.nanoTime() + ("java_dependencies".equals(payload.get("action")) ? 220_000_000_000L : 55_000_000_000L);
+            long deadline = System.nanoTime() + ("java_dependencies".equals(payload.get("action")) ? 220_000_000_000L : "build".equals(payload.get("action")) ? 100_000_000_000L : 55_000_000_000L);
             channel.register(selector, SelectionKey.OP_CONNECT);
             while (!channel.finishConnect()) waitFor(selector, deadline);
             byte[] request = (json.writeValueAsString(payload) + "\n")
@@ -106,6 +129,7 @@ public class CanvasRuntimeService {
             channel.keyFor(selector).interestOps(SelectionKey.OP_READ);
             var response = new ByteArrayOutputStream();
             ByteBuffer input = ByteBuffer.allocate(8192);
+            int streamedBytes = 0;
             while (true) {
                 int count = channel.read(input);
                 if (count < 0) throw new IOException("Runtime disconnected");
@@ -115,6 +139,14 @@ public class CanvasRuntimeService {
                     byte b = input.get();
                     if (b == '\n') {
                         Map<String, Object> result = json.readValue(response.toByteArray(), new TypeReference<>() {});
+                        response.reset();
+                        if (onOutput != null && "output".equals(result.get("type"))) {
+                            if (!(result.get("output") instanceof String text)) throw new IOException("Invalid output frame");
+                            streamedBytes += text.getBytes(StandardCharsets.UTF_8).length;
+                            if (streamedBytes > 196608) throw new IOException("Output stream too large");
+                            onOutput.accept(result);
+                            continue;
+                        }
                         if ("RUNTIME_CONFIG_INVALID".equals(result.get("error"))) {
                             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, String.valueOf(result.getOrDefault("message", "실행 환경 설정을 확인하세요.")));
                         }

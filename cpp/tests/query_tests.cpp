@@ -33,7 +33,7 @@ void canvasVisibilityRules() {
     doc["visibility"]="public";
     AGORA_CHECK(canvasIsPublic(doc) && groupsForUser(doc,2).first.count("default") == 1 && !groupsForUser(doc,2).second);
     doc["canvas-password-hash"]="unexpected";
-    AGORA_CHECK(!canvasIsPublic(doc) && groupsForUser(doc,2).first.empty());
+    AGORA_CHECK(canvasIsPublic(doc) && groupsForUser(doc,2).first.count("default") == 1);
     doc["canvas-password-hash"]=nullptr;
     doc["init-group"]="admin-group";
     AGORA_CHECK(groupsForUser(doc,2).first.empty() && !groupsForUser(doc,2).second);

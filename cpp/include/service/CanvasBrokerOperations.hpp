@@ -1,5 +1,6 @@
 #pragma once
 #include "service/CanvasQueryRules.hpp"
+#include "service/CanvasQuestion.hpp"
 #include <functional>
 #include <map>
 #include <cmath>
@@ -8,8 +9,8 @@ namespace agora::broker {
 using Json=nlohmann::json;
 struct Mutation {Json items=Json::object(),previous=Json::object(),expected=Json::object(),translations=Json::array();bool only_translations=true;};
 inline void validate(const Json& item){
- static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","chart","image","link","connector","stroke","pdf","user-group"};
- static const std::unordered_set<std::string> fields={"kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
+ static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","chart","question","image","link","connector","stroke","pdf","user-group"};
+ static const std::unordered_set<std::string> fields={"questionType","questionPrompt","questionOptions","questionAnswer","questionSubmitted","questionMaxScore","questionScore","questionFeedback","questionVersion","questionGradedVersion","kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
  if(!item.is_object()||!kinds.count(item.value("kind","")))throw std::invalid_argument("ITEM_KIND_INVALID");
  for(const auto& field:item.items()){
   if(!fields.count(field.key()))throw std::invalid_argument("ITEM_FIELD_INVALID");
@@ -32,6 +33,7 @@ inline void validate(const Json& item){
    for(const auto* field:{"timedOut","truncated"})if(entry.contains(field)&&!entry[field].is_boolean())throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
   }
  }
+ agora::question::validate(item);
  if(item.value("kind","")=="chart"){
   static const std::unordered_set<std::string> chart_types={"bar","line","area","pie","donut","scatter"};
   if(!item.contains("chartType")||!item["chartType"].is_string()||!chart_types.count(item["chartType"].get<std::string>()))throw std::invalid_argument("ITEM_CHART_TYPE_INVALID");
@@ -105,7 +107,7 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    const bool output_only=action=="patch"&&old.is_object()&&old.value("runtimeRole","")=="output"&&patch.size()==1&&patch.contains("runtimeResults")&&unset.empty();
    const auto& writers=output_only&&executable?*executable:groups;
    if(!old.is_null()&&!queryCanAccess(old,writers,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");
-   validate(item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable);
+   agora::question::validateRevision(old,item);validate(item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable);
    const auto kind=item.value("kind","");
    if(!old.is_null()&&(kind=="text"||kind=="note"||kind=="code")&&item.contains("automerge_snapshot")){
     if(old.contains("automerge_snapshot"))item["automerge_snapshot"]=old["automerge_snapshot"];

@@ -8,6 +8,13 @@ class SessionTests(unittest.TestCase):
   session._send=lambda event:None
   session._handle({'type':'init_items','sync_protocol':2,'revision':0,'accepted_count':0,'sync_user_id':7,'items':{'a':{'kind':'shape','x':1,'y':2}},'groups':['default'],'write_groups':['default'],'execute_groups':[]})
   return session
+ def test_live_access_update_preserves_session_and_refreshes_capabilities(self):
+  s=self.session();s._handle({'type':'canvas_access_changed','groups':['new'],'member_groups':['new'],'write_groups':[],'execute_groups':['new'],'is_admin':False,'settings':{'settings_revision':2}})
+  self.assertTrue(s.connected);self.assertEqual(s.capabilities['groups'],['new']);self.assertEqual(s.capabilities['write_groups'],[]);self.assertIn('a',s.items)
+ def test_access_revocation_clears_items_and_is_terminal(self):
+  s=self.session();s._handle({'type':'canvas_access_revoked','code':'CANVAS_ACCESS_UNAUTHORIZED'})
+  self.assertFalse(s.connected);self.assertEqual(s.items,{})
+  with self.assertRaises(AgoraError):s._check()
  def test_create_defaults_to_all_memberships_including_read_only_roles(self):
   s=self.session();s.capabilities.update({'member_groups':['writers','readers'],'write_groups':['writers']});captured=[]
   s.apply=lambda ops:captured.extend(ops)

@@ -43,6 +43,12 @@ public class CanvasDocument {
     @JsonAlias({"canvasPassword", "canvas_password_hash", "canvas-password"})
     private String canvasPasswordHash;
 
+    // Password grants survive unrelated settings updates, but never password changes.
+    @JsonProperty("password-revision")
+    private Long passwordRevision = 0L;
+    public Long getPasswordRevision() { return passwordRevision == null ? 0L : passwordRevision; }
+    public void setPasswordRevision(Long value) { passwordRevision = value; }
+
     @JsonProperty("people")
     @JsonAlias({"peoples"})
     private List<Long> people = new ArrayList<>();

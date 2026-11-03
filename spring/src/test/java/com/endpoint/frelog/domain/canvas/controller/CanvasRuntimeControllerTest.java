@@ -22,8 +22,9 @@ class CanvasRuntimeControllerTest {
 
     @Test void protectedCanvasRequiresCurrentPasswordGrantBeforeExecution() {
         CanvasDocument doc = mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
         when(doc.getCanvasPasswordHash()).thenReturn("hash");
-        when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         var request = new CanvasRuntimeController.ExecuteRequest("python", "print(1)", "grant");
@@ -38,6 +39,22 @@ class CanvasRuntimeControllerTest {
         verify(runtime).execute(12, "python", "input()", "first\nsecond\n");
     }
 
+    @Test void buildRequiresTheSameAccessAndCurrentPasswordGrant() {
+        CanvasDocument doc=mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
+        when(doc.getCanvasPasswordHash()).thenReturn("hash");
+        when(doc.getPasswordRevision()).thenReturn(4L);
+        when(user.getUserId()).thenReturn(7L);
+        when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
+        var request=new CanvasRuntimeController.ExecuteRequest("cpp","int main(){}","grant");
+        assertThrows(CustomException.class,()->controller.build(12,request,user));
+        verifyNoInteractions(runtime);
+        when(tokens.validateCanvasPasswordGrant("grant",7L,12,4L)).thenReturn(true);
+        when(runtime.build(12,"cpp","int main(){}")).thenReturn(Map.of("exitCode",0));
+        assertEquals(0,controller.build(12,request,user).getBody().get("exitCode"));
+        verify(runtime).build(12,"cpp","int main(){}");
+    }
+
     @Test void rejectedMembershipNeverReachesRuntime() {
         when(canvases.getCanvasDocument(12, user)).thenThrow(new CustomException(com.endpoint.frelog.global.exception.ErrorCode.CANVAS_NOT_FOUND));
         assertThrows(CustomException.class, () -> controller.execute(12,
@@ -46,8 +63,9 @@ class CanvasRuntimeControllerTest {
     }
     @Test void resetUsesTheSameMembershipAndPasswordChecks() {
         CanvasDocument doc = mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
         when(doc.getCanvasPasswordHash()).thenReturn("hash");
-        when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         var request = new CanvasRuntimeController.ResetRequest("grant");
@@ -60,8 +78,9 @@ class CanvasRuntimeControllerTest {
 
     @Test void runtimeSettingsRequireCanvasAccessAndCurrentPasswordGrant() {
         CanvasDocument doc = mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
         when(doc.getCanvasPasswordHash()).thenReturn("hash");
-        when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         assertThrows(CustomException.class, () -> controller.settings(12, "grant", user));
@@ -77,8 +96,9 @@ class CanvasRuntimeControllerTest {
 
     @Test void vmTemplatesUseMembershipAndPasswordChecks() {
         CanvasDocument doc = mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
         when(doc.getCanvasPasswordHash()).thenReturn("hash");
-        when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         var request = new CanvasRuntimeController.ResourcesRequest("large", 2L, "grant");
@@ -91,8 +111,9 @@ class CanvasRuntimeControllerTest {
 
     @Test void diskGrowthUsesMembershipAndPasswordChecks() {
         CanvasDocument doc = mock(CanvasDocument.class);
+        when(doc.getVisibility()).thenReturn("public");
         when(doc.getCanvasPasswordHash()).thenReturn("hash");
-        when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         var request = new CanvasRuntimeController.DiskRequest(12, 2L, "grant");
@@ -105,7 +126,8 @@ class CanvasRuntimeControllerTest {
 
     @Test void installingJavaLibrariesRequiresCanvasAccessAndCurrentPasswordGrant() {
         CanvasDocument doc=mock(CanvasDocument.class);
-        when(doc.getCanvasPasswordHash()).thenReturn("hash");when(doc.getSettingsRevision()).thenReturn(4L);
+        when(doc.getVisibility()).thenReturn("public");
+        when(doc.getCanvasPasswordHash()).thenReturn("hash");when(doc.getPasswordRevision()).thenReturn(4L);
         when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
         var request=new CanvasRuntimeController.InstallJavaRequest("grant");
         assertThrows(CustomException.class,()->controller.installJavaDependencies(12,request,user));verifyNoInteractions(runtime);
@@ -124,4 +146,47 @@ class CanvasRuntimeControllerTest {
         when(runtime.execute(12,"python","print(1)")).thenReturn(Map.of("output","1"));assertEquals("1",controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user).getBody().get("output"));
         assertThrows(CustomException.class,()->controller.reset(12,new CanvasRuntimeController.ResetRequest(null),user));
     }
+    @Test void privateCanvasLegacyPasswordDoesNotBlockInvitedUserRuntime() {
+        var doc = new CanvasDocument("Private", 12, 7L, "legacy-hash", "default");
+        when(user.getUserId()).thenReturn(7L);
+        when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
+        when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1"));
+        assertEquals("1", controller.execute(12, new CanvasRuntimeController.ExecuteRequest("python", "print(1)", null), user).getBody().get("output"));
+        verifyNoInteractions(tokens);
+    }
+
+    @Test void passwordGrantSurvivesUnrelatedSettingsButNotPasswordChanges() {
+        var doc = new CanvasDocument("Public", 12, 7L, "hash", "default");
+        doc.setVisibility("public"); doc.setPasswordRevision(4L); doc.setSettingsRevision(99L);
+        when(user.getUserId()).thenReturn(7L);
+        when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
+        when(tokens.validateCanvasPasswordGrant("grant", 7L, 12, 4L)).thenReturn(true);
+        when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1"));
+        var request = new CanvasRuntimeController.ExecuteRequest("python", "print(1)", "grant");
+        assertEquals("1", controller.execute(12, request, user).getBody().get("output"));
+        doc.setSettingsRevision(100L);
+        assertEquals("1", controller.execute(12, request, user).getBody().get("output"));
+        doc.setPasswordRevision(5L);
+        assertThrows(CustomException.class, () -> controller.execute(12, request, user));
+    }
+
+    @Test void outputFramesAreFlushedInOrderAndPermissionCheckedBeforeStreaming() throws Exception {
+        var doc = new CanvasDocument("Private",12,7L,null,"default");
+        when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
+        when(runtime.executeStream(eq(12),eq("python"),eq("print(1)"),isNull(),any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<Map<String,Object>> consumer = invocation.getArgument(4);
+            consumer.accept(Map.of("type","output","output","first\n"));
+            consumer.accept(Map.of("type","output","output","last\n"));
+            return Map.of("exitCode",0,"output","first\nlast\n");
+        });
+        var response = controller.executeStream(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user,new org.springframework.mock.web.MockHttpServletResponse());
+        assertEquals("no",response.getHeaders().getFirst("X-Accel-Buffering"));
+        var bytes = new java.io.ByteArrayOutputStream();response.getBody().writeTo(bytes);
+        var lines = bytes.toString(java.nio.charset.StandardCharsets.UTF_8).lines().toList();
+        assertEquals(3,lines.size());assertTrue(lines.get(0).contains("first"));assertTrue(lines.get(1).contains("last"));assertTrue(lines.get(2).contains("result"));
+        doc.setAdminUserId(1L);doc.setInnerGroup(Map.of("default",java.util.List.of(7L)));
+        doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",false)));
+        assertThrows(CustomException.class,()->controller.executeStream(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user,new org.springframework.mock.web.MockHttpServletResponse()));
+    }
+
 }

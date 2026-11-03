@@ -98,7 +98,7 @@ class CanvasServiceTest {
         given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
 
         // when
-        CanvasSummaryResponse response = canvasService.createCanvas("Test Canvas", "description", "pass123", null, userDetails);
+        CanvasSummaryResponse response = canvasService.createCanvas("Test Canvas", "description", "pass123", null, userDetails, "public");
 
         // then
         assertThat(response).isNotNull();
@@ -110,6 +110,61 @@ class CanvasServiceTest {
         ArgumentCaptor<CanvasDocument> saved = ArgumentCaptor.forClass(CanvasDocument.class);
         verify(canvasElasticsearchService).saveCanvas(saved.capture());
         assertThat(saved.getValue().getCanvasPasswordHash()).startsWith("$2").isNotEqualTo("pass123");
+    }
+
+    @Test
+    void privateCanvasRejectsPasswordAtCreationIncludingLegacyDefault() {
+        for (String visibility : new String[]{"private", null}) {
+            assertThatThrownBy(() -> canvasService.createCanvas("Private", "", "secret", null, userDetails, visibility))
+                    .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_INPUT_VALUE);
+        }
+        verifyNoInteractions(canvasInfoRepository, canvasElasticsearchService);
+    }
+
+    @Test
+    void passwordUpdateOnlyAllowedForPublicCanvas() {
+        CanvasDocument doc = new CanvasDocument("Canvas", 11, 1L, null, "default");
+        given(canvasInfoRepository.findByIdWithPessimisticLock(11)).willReturn(Optional.of(new CanvasInfo(11)));
+        given(canvasElasticsearchService.getCanvasDocumentById(11)).willReturn(Optional.of(doc));
+        assertThatThrownBy(() -> canvasService.updateCanvasPassword(11, "secret", userDetails))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_INPUT_VALUE);
+        doc.setVisibility("public");
+        canvasService.updateCanvasPassword(11, "secret", userDetails);
+        ArgumentCaptor<Map> fields = ArgumentCaptor.forClass(Map.class);
+        verify(canvasElasticsearchService).patchCanvasFields(eq(11), fields.capture());
+        assertThat(CanvasPasswords.matches("secret", (String) fields.getValue().get("canvas-password-hash"))).isTrue();
+    }
+
+    @Test
+    void privateMembershipIgnoresLegacyPasswordAndRevokedInvitationCannotReenter() {
+        CanvasDocument doc = new CanvasDocument("Private", 77, 2L, "old-hash", "default");
+        doc.setPeople(new java.util.ArrayList<>(List.of(2L, 1L)));
+        doc.getInnerGroup().get("default").add(1L);
+        assertThat(CanvasVisibility.allows(doc, userDetails)).isTrue();
+        doc.getPeople().remove(1L);
+        assertThat(CanvasVisibility.allows(doc, userDetails)).isFalse();
+        doc.setVisibility("public");
+        assertThat(CanvasVisibility.allows(doc, userDetails)).isTrue();
+    }
+
+    @Test
+    void adminCanRemoveInvitedParticipantFromAllGroupsButCannotRemoveOwner() {
+        CanvasDocument doc = new CanvasDocument("Private", 11, 1L, null, "default");
+        doc.setPeople(new java.util.ArrayList<>(List.of(1L, 2L)));
+        doc.getInnerGroup().put("default", new java.util.ArrayList<>(List.of(2L)));
+        given(canvasInfoRepository.findByIdWithPessimisticLock(11)).willReturn(Optional.of(new CanvasInfo(11)));
+        given(canvasElasticsearchService.getCanvasDocumentById(11)).willReturn(Optional.of(doc));
+        User target = new User("other@agora.com", "hash", "invited", 7, Role.ROLE_USER);
+        ReflectionTestUtils.setField(target, "userId", 2L);
+        given(userRepository.findByNicknameAndTagNumber("invited", 7)).willReturn(Optional.of(target));
+        canvasService.removeCanvasParticipant(11, "invited", 7, userDetails);
+        ArgumentCaptor<Map> fields = ArgumentCaptor.forClass(Map.class);
+        verify(canvasElasticsearchService).patchCanvasFields(eq(11), fields.capture());
+        assertThat((List<Long>) fields.getValue().get("people")).containsExactly(1L);
+        assertThat(((Map<String,List<Long>>) fields.getValue().get("inner-group")).values()).allSatisfy(members -> assertThat(members).doesNotContain(2L));
+        given(userRepository.findByNicknameAndTagNumber(testUser.getNickname(), 1)).willReturn(Optional.of(testUser));
+        assertThatThrownBy(() -> canvasService.removeCanvasParticipant(11, testUser.getNickname(), 1, userDetails))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.BAD_REQUEST);
     }
 
     @Test
@@ -148,6 +203,7 @@ class CanvasServiceTest {
     @DisplayName("보호된 캔버스는 비밀번호 없이는 접속 토큰을 발급하지 않는다")
     void accessCanvas_RequiresPassword() {
         CanvasDocument doc = new CanvasDocument("Protected", 13, 1L, "secret", "default");
+        doc.setVisibility("public");
         given(canvasElasticsearchService.getCanvasDocumentById(13)).willReturn(Optional.of(doc));
         given(canvasInfoRepository.findByIdWithPessimisticLock(13)).willReturn(Optional.of(new CanvasInfo(13)));
         jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
@@ -168,6 +224,7 @@ class CanvasServiceTest {
         info.setRedisInfo(new com.endpoint.frelog.domain.loadbalancer.entity.RedisInfo("127.0.0.1", "6379"));
         given(canvasInfoRepository.findByIdWithPessimisticLock(14)).willReturn(Optional.of(info));
         CanvasDocument live = new CanvasDocument("Live", 14, 1L, CanvasPasswords.hashForStorage("new-secret"), "default");
+        live.setVisibility("public");
         given(redisDocumentReader.read(info)).willReturn(live);
         jakarta.servlet.http.HttpServletRequest request = org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class);
 

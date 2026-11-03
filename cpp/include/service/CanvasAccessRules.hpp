@@ -6,9 +6,7 @@
 #include <utility>
 
 inline bool canvasIsPublic(const nlohmann::json& doc) {
-    if (!doc.is_object() || !doc.contains("visibility") || !doc["visibility"].is_string() || doc["visibility"] != "public") return false;
-    if (!doc.contains("canvas-password-hash") || doc["canvas-password-hash"].is_null()) return true;
-    return doc["canvas-password-hash"].is_string() && doc["canvas-password-hash"].get<std::string>().empty();
+    return doc.is_object() && doc.contains("visibility") && doc["visibility"] == "public";
 }
 
 inline bool canvasHasMember(const nlohmann::json& doc, int user_id) {

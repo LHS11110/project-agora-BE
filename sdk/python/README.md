@@ -6,6 +6,18 @@ Python 3.10 이상에서 기존 FreLog HTTPS API와 WSS 브로커에 접속합�
 pip install /path/to/project-agora-BE/sdk/python
 ```
 
+## 객체를 생성하는 실행 예시
+
+[`examples/create_objects.py`](examples/create_objects.py)는 기존 캔버스에 도형, 24px 텍스트, 14px 라벨이 있는 연결 화살표를 생성합니다. 종료 후 객체를 삭제하지 않습니다.
+
+```bash
+# SDK 설치 후, 해당 캔버스의 봇 토큰을 환경변수에 설정합니다.
+export AGORA_BOT_TOKEN='발급받은 봇 토큰'
+python examples/create_objects.py 2053  # 자신의 캔버스 ID로 변경
+```
+
+봇 대신 기존 사용자 토큰을 쓰려면 `AGORA_BOT_TOKEN`을 해제하고 `AGORA_USER_TOKEN`을 설정합니다. 둘 다 있으면 봇 토큰을 우선 사용합니다. 비밀번호가 있는 캔버스에는 `AGORA_CANVAS_PASSWORD`도 설정합니다. 캔버스 생성이나 봇 발급은 수행하지 않으며, 접속 계정에 읽기·쓰기 권한이 있어야 합니다. `permission`을 생략하므로 생성자의 모든 소속 그룹을 공유 대상으로 적용합니다.
+
 ## 기존 사용자로 접속
 
 ```python
@@ -105,7 +117,7 @@ canvas.update_settings("group_permissions", value={
 })
 ```
 
-설정 변경은 기존 `expected_revision` 충돌 검사를 따르며 관리자 권한이 필요합니다. 설정 변경 후 서버 재접속도 자동 처리합니다. 현재 권한으로 거부된 작업은 `AgoraError.code`로 식별할 수 있습니다.
+설정 변경은 기존 `expected_revision` 충돌 검사를 따르며 관리자 권한이 필요합니다. SDK 0.1.3부터 설정 변경은 재접속 없이 반영하고 `canvas.capabilities`도 실시간 갱신합니다. 접근 권한이 회수되면 객체를 지우고 연결을 종료하며 자동 재접속하지 않습니다. 현재 권한으로 거부된 작업은 `AgoraError.code`로 식별할 수 있습니다.
 
 ## 동기화와 실패 처리
 
