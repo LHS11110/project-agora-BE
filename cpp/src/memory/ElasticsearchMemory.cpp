@@ -83,7 +83,13 @@ bool ElasticsearchMemory::patchDocument(const std::string& index, const std::str
     if (!client) return false;
 
     const std::string path = "/" + encodePathSegment(index) + "/_update/" + encodePathSegment(document_id) + "?retry_on_conflict=3&refresh=true";
-    const nlohmann::json body = {{"doc", fields}};
+    // Each supplied root field is an authoritative replacement. A partial doc
+    // recursively merges maps and would resurrect renamed/deleted ACL groups.
+    const nlohmann::json body = {{"script", {
+        {"lang", "painless"},
+        {"source", "for (def entry : params.fields.entrySet()) { ctx._source[entry.getKey()] = entry.getValue(); }"},
+        {"params", {{"fields", fields}}}
+    }}};
     const auto response = client->Post(path, body.dump(), "application/json");
     return response && response->status >= 200 && response->status < 300;
 }

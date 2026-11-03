@@ -458,3 +458,5 @@ Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/serve
 DDL 권한을 추가하지 않습니다. 시작 시 큐 테이블의 스키마를 검증합니다.
 
 벤치마크 스크립트는 기존 관리자 계정의 `BENCHMARK_ADMIN_EMAIL`과 `BENCHMARK_ADMIN_PASSWORD`를 별도로 지정해야 합니다. 이 값은 Spring 설정이 아니며 계정을 자동 생성하지 않습니다.
+
+이메일 가입에는 수신함 확인이 필수입니다. 발송 설정과 API 변경은 [EMAIL_VERIFICATION.md](docs/EMAIL_VERIFICATION.md)를 참고하세요.

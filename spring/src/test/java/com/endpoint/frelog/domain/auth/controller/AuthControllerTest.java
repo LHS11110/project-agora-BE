@@ -94,7 +94,7 @@ class AuthControllerTest {
     @DisplayName("회원가입 API 성공 시 201 Created 반환")
     void signupApi_Success() throws Exception {
         // given
-        SignupRequest request = new SignupRequest("new@agora.com", "password123", "새유저");
+        SignupRequest request = new SignupRequest("new@agora.com", "Test-password12!", "새유저", "verified-fixture");
         UserResponse userResponse = new UserResponse(
                 1L,
                 "new@agora.com", "새유저", 1, Role.ROLE_USER, UserStatus.ACTIVE, null, LocalDateTime.now(), LocalDateTime.now(), LocalDateTime.now()
@@ -118,5 +118,16 @@ class AuthControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("UP"));
     }
+    @Test void weakSignupPasswordShowsPolicyInsteadOfGenericValidationError() throws Exception {
+        var request = new SignupRequest("weak@example.invalid", "weak123!", "Fixture", "unused-proof");
+        mockMvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(com.endpoint.frelog.domain.auth.validation.PasswordPolicy.MESSAGE))
+                .andExpect(jsonPath("$.errors[0].field").value("password"))
+                .andExpect(jsonPath("$.errors[0].value").value(""));
+        org.mockito.Mockito.verifyNoInteractions(authService);
+    }
+
 }
 

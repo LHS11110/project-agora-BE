@@ -43,6 +43,11 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
+    @GetMapping("/me")
+    public ResponseEntity<UserResponse> current(@AuthenticationPrincipal com.endpoint.frelog.global.security.CustomUserDetails user) {
+        return user==null?ResponseEntity.status(HttpStatus.UNAUTHORIZED).build():ResponseEntity.ok(UserResponse.from(user.getUser()));
+    }
+
     @PostMapping("/me")
     public ResponseEntity<UserResponse> getMe(@RequestBody Map<String, String> body) {
         String token = body.get("token");
@@ -51,6 +56,7 @@ public class AuthController {
         }
         String email = jwtTokenProvider.getEmailFromToken(token);
         UserResponse response = authService.getMe(email);
+        if(jwtTokenProvider.getUserIdFromToken(token)==null||!jwtTokenProvider.getUserIdFromToken(token).equals(response.userId()))return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         return ResponseEntity.ok(response);
     }
 
@@ -61,8 +67,10 @@ public class AuthController {
     }
 
     @GetMapping("/providers")
-    public Map<String, Boolean> providers(@org.springframework.beans.factory.annotation.Value("${app.oauth.google.enabled:false}") boolean google) {
-        return Map.of("google", google);
+    public Map<String, Boolean> providers(@org.springframework.beans.factory.annotation.Value("${app.oauth.google.enabled:false}") boolean google,
+            @org.springframework.beans.factory.annotation.Value("${app.oauth.naver.enabled:false}") boolean naver,
+            @org.springframework.beans.factory.annotation.Value("${app.oauth.kakao.enabled:false}") boolean kakao) {
+        return Map.of("google", google, "naver", naver, "kakao", kakao);
     }
 
     @GetMapping("/health")

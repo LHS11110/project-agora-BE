@@ -38,10 +38,10 @@ Spring 오류는 다음 형태입니다.
 요청:
 
 ```json
-{"email":"user@example.com","password":"password123","nickname":"사용자"}
+{"email":"user@example.com","password":"Example-pass12!","nickname":"사용자","emailVerificationToken":"인증 성공 시 받은 일회용 토큰"}
 ```
 
-`email`은 이메일 형식, `password`는 6자 이상, `nickname`은 필수이며 최대 100자입니다. 성공 시 `201`과 [사용자 응답](#사용자-응답)을 반환합니다.
+`email`은 이메일 형식, `password`는 12자 이상이며 문자·숫자·특수문자를 포함해야 합니다(공백 불가, UTF-8 기준 최대 72바이트). 비밀번호 변경에도 같은 기준을 적용하며 기존 비밀번호로 로그인할 때는 새 기준을 소급 적용하지 않습니다. `nickname`은 필수이며 최대 100자입니다. 성공 시 `201`과 [사용자 응답](#사용자-응답)을 반환합니다.
 
 ### 로그인
 
@@ -233,3 +233,42 @@ Phoenix → C++는 `wss://<cpp-host>:<wsPort>/broker/queries` 지속 연결에�
 사용자 JWT 검증은 Phoenix에서 upgrade 전에 수행합니다. C++는 검증된 principal로 현재 참여자·revision과 최신 문서를 조회하며 사용자 JWT 키나 capability 발급 기능이 없습니다. CRUD·채팅·캔버스 설정은 C++에서 처리하고 결과 및 권한별 방송 정보를 Phoenix가 전달합니다. C++에는 피어 목록·호스트 선출·브라우저 소켓·온라인 사용자 세션 저장이 없습니다.
 
 실제 프레임, 지원 쿼리, 큐 제한, 장애 및 재시도 규칙은 [브로커 프로토콜](../project-agora-Wall/BROKER_PROTOCOL.md)을 참조하세요. SQL `user_sessions` 기반 테스트베드 조회는 브로커의 온라인 상태를 나타내지 않습니다.
+
+### 캔버스 그룹별 읽기·쓰기·실행 권한
+
+`GET /api/canvases/{id}/settings` 응답의 `group_permissions`에는 그룹별 `{read, write, execute}` boolean, `can_manage`에는 호출자의 관리 가능 여부가 포함됩니다. 활성 캔버스의 관리자는 WSS `canvas_settings_update` 이벤트에 `field: "group_permissions"`, 권한 맵 `value`, 현재 `expected_revision`을 보냅니다. 관리자 그룹을 제한하거나 읽기 없이 쓰기/실행을 부여하는 요청은 거부합니다. 권한 변경은 기존 연결에도 반영됩니다.
+
+읽기는 조회·접속, 쓰기는 객체 변경·채팅/댓글, 실행은 코드 실행을 허용합니다. 결과 객체의 결과 데이터 갱신에는 실행 권한을 적용하며, 실행 환경 설정·리소스 변경·초기화에는 쓰기와 실행이 모두 필요합니다. 실행 권한이 없으면 `/runtime/execute`는 VM에 전달하기 전에 403으로 거부합니다. 객체 ACL 및 잠금 규칙은 계속 적용됩니다. 권한 설정이 없는 기존 문서는 이전 동작을 유지합니다.
+
+### Runtime standard input
+
+`POST /api/canvases/{canvasId}/runtime/execute` accepts an optional `stdin` string in addition to `language`, `code`, and `passwordGrant`. It is limited to 65,536 UTF-8 bytes. Missing stdin retains EOF behavior; an explicitly empty string represents connected but empty input. Existing execution authorization and password grants apply unchanged. Input is forwarded as data through the local manager to the guest worker and resets for each cell without resetting the language environment. The frontend builds stdin from output-to-code connections in display order, appending a newline boundary between nonempty output records. Result-to-code edges participate in DAG ordering and cycle rejection.
+
+### Canvas-scoped bot participants / Python SDK
+
+The Python package is in `sdk/python` (`pip install ./sdk/python`). It uses existing HTTP APIs and broker protocol 2 (`canvas_ops`, durable receipts, `canvas_sync`, settings and events). No database credentials or internal ports are needed.
+
+`GET /api/auth/me` returns the authenticated principal (the existing POST token check remains supported). An authenticated canvas owner/admin-group user can `POST /api/canvases/{id}/bots` with `{name}` to create a scoped service account. The response `{bot:{user_id,nickname,tag_number,canvas_id,active},token}` discloses the random 256-bit credential once. The SDK then invites the account via existing `participant_add`; an uninvited bot cannot access even a public canvas. Direct REST consumers must perform that invitation themselves. Accounts use `oauth_provider=agora-bot`, a canvas/creator identifier in `oauth_id`, and only a SHA-256 token hash in `password_hash`; there is no schema change or local password login for these accounts.
+
+`GET /api/canvases/{id}/bots` lists identities without secrets. `POST .../bots/{user_id}/rotate` replaces a live credential and returns the new token once; `DELETE .../bots/{user_id}` revokes it. Both require a real manager, not another bot. Use `Authorization: Bearer agora_bot_<id>.<secret>` for the bot; every HTTP call validates active status, credential hash, creator active status, explicit membership, current read permission and a route/canvas allowlist. Bots cannot access account/security/other-canvas/management APIs. Existing write/execute checks apply in C++ and the runtime API. Bot WSS leases last at most 60 seconds and reconnect through the normal access API. HTTP-only revocation takes effect immediately on new requests and at lease expiry on existing WSS. The SDK `CanvasSession.revoke_bot` first removes membership to terminate existing sockets immediately through the existing settings revision broadcast.
+
+Text/note/code objects may now be created with canonical string content and no Automerge metadata. A whole-content replacement uses the existing `patch` operation, sets the appropriate `text`/`code` field and unsets **both** `automerge_snapshot` and `automerge_changes`. Partial/malformed CRDT metadata is still rejected. Existing browser CRDT requests continue to union changes; plain replacements intentionally reset the document and are not character-wise merges. ACL and object locks are unchanged. This is used by the Python SDK and permits later browser editing through its existing canonical-text fallback.
+
+### Online group management
+
+Canvas settings responses now include `groups: {name: [{nickname,tag_number}]}`, `initial_group`, and `owner: {nickname,tag_number}`. Canvas admins can use the existing settings WebSocket CAS protocol with fields `group_create` (`value: {name,permissions?}`), `group_members` (`{name,members:[handle]}`), `group_initial` (`{name}`), `group_rename` (`{name,new_name}`), and `group_delete` (`{name}`). New groups default to read-only. Members must already be registered participants. Administrator-group identity and owner membership are protected; initial or object-referenced groups cannot be deleted. Names are at most 80 UTF-8 bytes, without dots/control/prototype-reserved names. Renaming migrates object ACLs and persisted items-b64 without changing object locks. A settings revision broadcast reconnects all clients for fresh capabilities.
+
+`participant_add` optionally accepts `group` beside nickname/tag_number to enroll a newly created bot or ordinary participant directly into a readable non-admin group. Omitted group uses the configured initial group. Bot creation UI is available to managers in canvas settings; it uses the same scoped credential APIs and existing enrollment/revocation routes, with one-time copy/download of the credential.
+
+### 참여자 역할 지정과 새 객체 공유 범위
+
+`canvas_settings_update`의 `field: "participant_groups"`, `value: {"nickname":"...","tag_number":1,"groups":["design","research"]}`로 참여자 한 명의 역할 집합을 원자적으로 교체합니다. `request_id`, `expected_revision`이 필요하며 캔버스 관리자만 호출할 수 있습니다. 등록되지 않은 참여자·존재하지 않는 그룹은 거부하고, 소유자의 `admin-group`은 제거할 수 없습니다.
+
+초기 브로커 응답/인증된 identity의 `member_groups`는 모든 소속, `groups`는 읽기 가능한 소속, `write_groups`·`execute_groups`는 해당 기능이 허용되는 소속입니다. 새 객체의 기본 `permission`은 `member_groups` 배열이며, 미지정 create 요청에는 서버가 기본값을 채웁니다. 직접 지정하는 경우 일반 사용자는 자신의 소속 그룹만 포함할 수 있습니다. 읽기는 ACL과 읽기 가능 그룹의 교집합이 있을 때 허용하고, 쓰기·실행 권한은 별도로 검사합니다. 관리자는 모든 객체를 볼 수 있습니다. Python SDK 0.1.1도 동일한 기본값을 사용합니다.
+
+
+### 그룹 비트 레이아웃과 3비트 권한
+
+관리자·기본 그룹을 포함해 최대 64개입니다. 초과 생성은 `GROUP_LIMIT`으로 거부됩니다. 초기 브로커 응답/인증 identity의 `group_bits`는 `{그룹이름: 슬롯번호(0~63)}`, `group_masks`는 `{member,read,write,execute}`에 해당하는 16자리 16진 문자열입니다. 최상위 비트는 `8000000000000000`이며 Number로 변환하지 말고 JS BigInt 또는 Python `int(mask,16)`으로 해석합니다.
+
+저장 필드 `group-permissions`는 읽기=1, 쓰기=2, 실행=4의 3비트 조합입니다. `group_create.permissions`, `group_permissions` 변경에서 기존 불리언 맵과 정수 조합을 모두 받습니다. 읽기 없는 쓰기/실행 조합은 거부하고 관리자 그룹은 7을 유지합니다. UI 호환용 설정 응답 `group_permissions`는 불리언 맵이며 `group_permission_bits`로 정수 맵도 제공합니다. `group-bits`의 슬롯은 이름을 변경해도 유지됩니다. 사용자가 보내는 임의의 비트 마스크로 접근 권한을 부여하지 않습니다.

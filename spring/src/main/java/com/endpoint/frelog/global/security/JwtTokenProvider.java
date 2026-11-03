@@ -23,10 +23,15 @@ public class JwtTokenProvider {
 
     private final SecretKey key;
     private final long expirationMs;
+    private final com.endpoint.frelog.domain.user.repository.UserRepository users;
 
+    public JwtTokenProvider(String secret,long expirationMs){this(secret,expirationMs,null);}
+
+    @org.springframework.beans.factory.annotation.Autowired
     public JwtTokenProvider(
             @Value("${jwt.secret}") String secret,
-            @Value("${jwt.expiration-ms:86400000}") long expirationMs) {
+            @Value("${jwt.expiration-ms:86400000}") long expirationMs,
+            com.endpoint.frelog.domain.user.repository.UserRepository users) {
         // Match the C++ server's HS256 verifier for every supported key length.
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
         if (keyBytes.length < 32) {
@@ -34,6 +39,7 @@ public class JwtTokenProvider {
         }
         this.key = new SecretKeySpec(keyBytes, "HmacSHA256");
         this.expirationMs = expirationMs;
+        this.users = users;
     }
 
     public String createToken(String email, Integer tagNumber, String nickname, String role, String clientIp) {
@@ -42,6 +48,7 @@ public class JwtTokenProvider {
 
         return Jwts.builder()
                 .subject(email)
+                .claim("userId", accountId(email))
                 .claim("tagNumber", tagNumber)
                 .claim("nickname", nickname)
                 .claim("role", role)
@@ -52,11 +59,22 @@ public class JwtTokenProvider {
                 .compact();
     }
 
+    public String createMfaToken(String email,Integer tag,String name,String role,String ip,String version) {
+        Date now=new Date();return Jwts.builder().subject(email).claim("userId",accountId(email)).claim("tagNumber",tag).claim("nickname",name).claim("role",role).claim("clientIp",ip).claim("mfa_version",version).issuedAt(now).expiration(new Date(now.getTime()+expirationMs)).signWith(key,Jwts.SIG.HS256).compact();
+    }
+    private Long accountId(String email){return users==null?null:users.findByEmail(email).map(com.endpoint.frelog.domain.user.entity.User::getUserId).orElse(null);}
+    public Long getUserIdFromToken(String token){Object value=getClaims(token).get("userId");return value instanceof Number n?n.longValue():null;}
+    public String getMfaVersion(String token) { return getClaims(token).get("mfa_version",String.class); }
+    public Date getIssuedAt(String token) { return getClaims(token).getIssuedAt(); }
+
     public String createCanvasAccessToken(String nickname, Integer tagNumber, Integer canvasId,
                                           String clientIp, String serverHash, long settingsRevision) {
+        return createCanvasAccessToken(nickname,tagNumber,canvasId,clientIp,serverHash,settingsRevision,expirationMs);
+    }
+    public String createCanvasAccessToken(String nickname,Integer tagNumber,Integer canvasId,String clientIp,String serverHash,long settingsRevision,long lifetimeMs) {
         Date now = new Date();
         // 캔버스 접속 토큰은 비교적 짧은 유효시간(예: 5분)을 가질 수 있지만 여기서는 편의상 동일하게 부여
-        Date validity = new Date(now.getTime() + expirationMs);
+        Date validity = new Date(now.getTime() + lifetimeMs);
 
         var builder = Jwts.builder()
                 .subject("canvas-access")

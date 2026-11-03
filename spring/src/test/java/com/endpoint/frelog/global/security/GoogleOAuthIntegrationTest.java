@@ -44,6 +44,9 @@ class GoogleOAuthIntegrationTest {
         var filter = chain.getFilters().stream().filter(f -> f instanceof org.springframework.security.oauth2.client.web.OAuth2LoginAuthenticationFilter).findFirst().orElseThrow();
         var handler = (org.springframework.security.web.authentication.AuthenticationSuccessHandler)org.springframework.test.util.ReflectionTestUtils.getField(filter, "successHandler");
         var principal = org.mockito.Mockito.mock(org.springframework.security.oauth2.core.oidc.user.OidcUser.class);
+        org.mockito.Mockito.when(principal.getSubject()).thenReturn("google-test-subject");
+        org.mockito.Mockito.when(principal.getEmail()).thenReturn("google@example.invalid");
+        org.mockito.Mockito.when(principal.getEmailVerified()).thenReturn(true);
         var authentication = new org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken(principal, java.util.List.of(), "google");
         var request = new org.springframework.mock.web.MockHttpServletRequest();request.setScheme("https");request.setServerName("internal.example");request.setServerPort(8444);
         request.addHeader("X-Forwarded-Host", "attacker.example");request.addHeader("X-Forwarded-Port", "8444");

@@ -32,11 +32,21 @@ public class CanvasRuntimeService {
     }
 
     public Map<String, Object> execute(Integer canvasId, String language, String code) {
+        return execute(canvasId, language, code, null);
+    }
+
+    public Map<String, Object> execute(Integer canvasId, String language, String code, String stdin) {
+        if (stdin != null && stdin.getBytes(StandardCharsets.UTF_8).length > 65536) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "표준 입력은 64KB 이하여야 합니다.");
+        }
         if (language == null || !LANGUAGES.contains(language) || code == null ||
                 code.getBytes(StandardCharsets.UTF_8).length > MAX_CODE_BYTES) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "지원하는 언어와 64KB 이하의 코드를 입력하세요.");
         }
-        return exchange(Map.of("canvasId", canvasId, "language", language, "code", code));
+        var payload = new java.util.HashMap<String, Object>();
+        payload.put("canvasId", canvasId); payload.put("language", language); payload.put("code", code);
+        if (stdin != null) payload.put("stdin", stdin);
+        return exchange(payload);
     }
 
     public Map<String, Object> settings(Integer canvasId) {

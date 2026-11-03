@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agora-canvas"
+version = "0.1.2"
+description = "Authenticated Python client for FreLog canvas HTTP and durable broker APIs"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27,<1", "websockets>=15,<18"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

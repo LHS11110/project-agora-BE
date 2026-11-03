@@ -38,7 +38,12 @@ public class ErrorResponse {
         this.status = errorCode.getHttpStatus().value();
         this.error = errorCode.getHttpStatus().name();
         this.code = errorCode.getCode();
-        this.message = errorCode.getMessage();
+        String details = errors == null ? "" : errors.stream()
+                .map(FieldErrorDetail::reason)
+                .filter(reason -> reason != null && !reason.isBlank())
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(" "));
+        this.message = details.isBlank() ? errorCode.getMessage() : details;
         this.errors = errors;
     }
 

@@ -35,13 +35,14 @@ public class CanvasPreviewService {
             throw new CustomException(ErrorCode.ACCESS_DENIED);
         Set<String> groups = new HashSet<>();
         if (doc.getInnerGroup() != null) doc.getInnerGroup().forEach((group, members) -> {
-            if (members != null && members.contains(user.getUserId())) groups.add(group);
+            if (members != null && members.contains(user.getUserId()) && CanvasGroupPermissions.group(doc,group,"read")) groups.add(group);
         });
-        if ("public".equals(doc.getVisibility()) && doc.getInitGroup() != null && !doc.getInitGroup().equals("admin-group")) groups.add(doc.getInitGroup());
-        boolean admin = groups.contains("admin-group");
+        if ("public".equals(doc.getVisibility()) && doc.getInitGroup() != null && !doc.getInitGroup().equals("admin-group") && CanvasGroupPermissions.group(doc,doc.getInitGroup(),"read")) groups.add(doc.getInitGroup());
+        boolean admin = CanvasGroupPermissions.admin(doc,user.getUserId());
+        var index=new CanvasGroupBits(doc);final long readMask=index.mask(groups);
         Map<String, Object> items = new LinkedHashMap<>();
         if (doc.getItems() != null) doc.getItems().forEach((id, raw) -> {
-            if (!(raw instanceof Map<?, ?> item) || (!admin && !allowed(item.get("permission"), groups))) return;
+            if (!(raw instanceof Map<?, ?> item) || (!admin && !(index.valid?(readMask&index.permissionMask(item.get("permission")))!=0:allowed(item.get("permission"), groups)))) return;
             Map<String, Object> clean = new LinkedHashMap<>();
             item.forEach((field, value) -> { if (field instanceof String key && FIELDS.contains(key)) clean.put(key, value); });
             items.put(id, clean);

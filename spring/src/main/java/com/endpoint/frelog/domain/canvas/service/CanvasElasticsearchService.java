@@ -1,4 +1,5 @@
 package com.endpoint.frelog.domain.canvas.service;
+import com.endpoint.frelog.domain.canvas.dto.CanvasDocumentJson;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
@@ -67,7 +68,7 @@ public class CanvasElasticsearchService {
 
     private CanvasDocument decodeCanvasDocument(JsonNode source) throws Exception {
         if (source == null || !source.isObject()) throw new IllegalArgumentException("Invalid canvas source");
-        ObjectNode restored = ((ObjectNode) source).deepCopy();
+        ObjectNode restored = CanvasDocumentJson.normalize(source);
         JsonNode chunks = restored.remove("items-b64");
         if (chunks != null) {
             if (!chunks.isArray() || chunks.isEmpty()) throw new IllegalArgumentException("Invalid encoded canvas items");
@@ -239,7 +240,7 @@ public class CanvasElasticsearchService {
             if (canvasName != null && !canvasName.isBlank()) return searchService.search(canvasName);
             Map<String, Object> queryBody = Map.of(
                     "query", Map.of("match_all", Map.of()),
-                    "_source", List.of("canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility"),
+                    "_source", List.of("canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility", "inner-group", "init-group", "canvas-password-hash", "group-permissions", "group-bits"),
                     "size", 1000
             );
             String queryJson = objectMapper.writeValueAsString(queryBody);

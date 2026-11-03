@@ -1,0 +1,88 @@
+import json,unittest
+import httpx
+from agora_canvas import AgoraClient,CanvasSession,AgoraError,MFARequired,OutcomeUnknown
+
+class SessionTests(unittest.TestCase):
+ def session(self):
+  session=CanvasSession(None,12,timeout=.02)
+  session._send=lambda event:None
+  session._handle({'type':'init_items','sync_protocol':2,'revision':0,'accepted_count':0,'sync_user_id':7,'items':{'a':{'kind':'shape','x':1,'y':2}},'groups':['default'],'write_groups':['default'],'execute_groups':[]})
+  return session
+ def test_create_defaults_to_all_memberships_including_read_only_roles(self):
+  s=self.session();s.capabilities.update({'member_groups':['writers','readers'],'write_groups':['writers']});captured=[]
+  s.apply=lambda ops:captured.extend(ops)
+  s.create({'kind':'shape'},id='created');self.assertEqual(captured[0]['patch']['permission'],['readers','writers'])
+ def test_bitmask_metadata_preserves_the_64th_group_exactly(self):
+  s=self.session();s._handle({'type':'init_items','sync_protocol':2,'revision':0,'accepted_count':0,'sync_user_id':7,'items':{},'groups':['high'],'member_groups':['high'],'write_groups':[],'execute_groups':['high'],'group_bits':{'high':63},'group_masks':{'read':'8000000000000000','execute':'8000000000000000','write':'0000000000000000'}})
+  self.assertEqual(s.capabilities['group_bits']['high'],63);self.assertEqual(int(s.capabilities['group_masks']['read'],16),1<<63)
+ def test_commit_is_required_and_snapshot_receipt_recovers_unknown_outcome(self):
+  s=self.session();sent=[]
+  s._send=lambda event:(sent.append(event),s._handle({'type':'canvas_result','request_id':event['request_id'],'ok':True}))
+  with self.assertRaises(OutcomeUnknown):s.patch('a',{'x':9})
+  self.assertEqual(s.items['a']['x'],1);self.assertIsNotNone(s._flight)
+  flight=s._flight
+  s._handle({'type':'canvas_snapshot','sync_protocol':2,'revision':1,'accepted_count':1,'sync_user_id':7,'client_id':s.client_id,'items':{'a':{'kind':'shape','x':9,'y':2}}})
+  self.assertEqual(s.wait_for_idle(),1);self.assertIsNone(s._flight);self.assertEqual(s.items['a']['x'],9)
+  self.assertEqual(len(sent),1);self.assertEqual(flight['request_count'],1)
+ def test_revision_gap_does_not_apply_unconfirmed_content(self):
+  s=self.session();sent=[];s._send=sent.append
+  s._handle({'type':'canvas_commit','revision':2,'items':{'a':{'x':99}}})
+  self.assertEqual(s.items['a']['x'],1);self.assertFalse(s.connected);self.assertEqual(sent[-1]['type'],'canvas_sync')
+ def test_move_delete_and_permission_rejection(self):
+  s=self.session()
+  def respond(event):
+   if event['type']!='canvas_ops':return
+   if event['operations'][0]['action']=='patch':s._handle({'type':'canvas_result','request_id':event['request_id'],'ok':False,'code':'ITEM_LOCKED'})
+   else:s._handle({'type':'canvas_commit','client_id':s.client_id,'author_id':7,'request_count':event['request_count'],'revision':s.revision+1,'items':{'a':None}})
+  s._send=respond
+  with self.assertRaises(AgoraError) as e:s.patch('a',{'x':3})
+  self.assertEqual(e.exception.code,'ITEM_LOCKED');self.assertEqual(s._count,0)
+  s.delete('a');self.assertNotIn('a',s.items);self.assertEqual(s._count,1)
+ def test_translations_update_strokes_and_snapshot_copy_is_independent(self):
+  s=self.session();s._items['stroke']={'kind':'stroke','points':[{'x':1,'y':2}]}
+  s._handle({'type':'canvas_commit','revision':1,'translations':[{'ids':['a','stroke'],'dx':3,'dy':4}]})
+  self.assertEqual(s.items['a']['x'],4);self.assertEqual(s.items['stroke']['points'][0],{'x':4,'y':6})
+  data=s.items;data['a']['x']=500;self.assertEqual(s.items['a']['x'],4)
+ def test_invalid_batch_and_protocol_are_rejected(self):
+  s=self.session()
+  with self.assertRaises(ValueError):s.apply([])
+  with self.assertRaises(ValueError):s.patch('a',{'x':float('nan')})
+  with self.assertRaises(AgoraError):s._handle({'type':'canvas_snapshot','sync_protocol':1})
+ def test_plain_text_replacement_explicitly_clears_old_crdt(self):
+  s=self.session();s._items['note']={'kind':'note','text':'old','automerge_snapshot':'old-base','automerge_changes':[]};sent=[]
+  def respond(event):
+   sent.append(event);s._handle({'type':'canvas_commit','client_id':s.client_id,'author_id':7,'request_count':event['request_count'],'revision':1,'items':{'note':{'kind':'note','text':'new'}}})
+  s._send=respond;s.patch('note',{'text':'new'})
+  self.assertEqual(set(sent[0]['operations'][0]['unset']),{'automerge_snapshot','automerge_changes'});self.assertEqual(s.items['note']['text'],'new')
+ def test_delete_includes_attached_connectors(self):
+  s=self.session();s._items['wire']={'kind':'connector','from':'a','to':'other'};sent=[]
+  def respond(event):
+   sent.append(event);s._handle({'type':'canvas_commit','client_id':s.client_id,'author_id':7,'request_count':event['request_count'],'revision':1,'items':{'a':None,'wire':None}})
+  s._send=respond;s.delete('a');self.assertEqual({op['id'] for op in sent[0]['operations']},{'a','wire'})
+ def test_stale_snapshot_cannot_roll_back_state(self):
+  s=self.session();s.revision=3;s._count=2
+  s._handle({'type':'canvas_snapshot','sync_protocol':2,'revision':1,'accepted_count':1,'sync_user_id':7,'items':{}})
+  self.assertIn('a',s.items);self.assertEqual(s.revision,3)
+
+class HttpTests(unittest.TestCase):
+ def test_mfa_challenge_and_success_preserve_normal_authentication(self):
+  client=AgoraClient();self.addCleanup(client.close);calls=[]
+  def serve(request):
+   calls.append(request)
+   if request.url.path.endswith('/login'):return httpx.Response(200,json={'mfaRequired':True,'challengeToken':'challenge'})
+   if request.url.path.endswith('/verify'):return httpx.Response(200,json={'accessToken':'user-token','user':{'nickname':'A'}})
+   return httpx.Response(200,json={'nickname':'A'})
+  client.http.close();client.http=httpx.Client(base_url=client.base_url,transport=httpx.MockTransport(serve))
+  with self.assertRaises(MFARequired) as e:client.login('a@example.invalid','secret')
+  self.assertEqual(e.exception.challenge,'challenge');self.assertIsNone(client._token)
+  client.complete_mfa(e.exception.challenge,'123456');client.me();self.assertEqual(calls[-1].headers['Authorization'],'Bearer user-token')
+  self.assertNotIn('user-token',repr(client))
+ def test_client_close_closes_owned_canvas_sessions(self):
+  client=AgoraClient();session=client.canvas(12);client.close();self.assertTrue(session._closed.is_set())
+ def test_origin_validation_prevents_credentials_to_arbitrary_urls(self):
+  for url in ['http://frelog.p-e.kr','https://user:pass@example.com','https://example.com/api']:
+   with self.assertRaises(ValueError):AgoraClient(url)
+  with AgoraClient(token='private') as client:
+   with self.assertRaises(ValueError):client.request('GET','https://evil.test')
+   self.assertNotIn('private',repr(client))
+if __name__=='__main__':unittest.main()

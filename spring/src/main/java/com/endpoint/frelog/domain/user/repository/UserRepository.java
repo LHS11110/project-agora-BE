@@ -12,9 +12,16 @@ import java.util.Optional;
 @Repository
 public interface UserRepository extends JpaRepository<User, Long> {
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.userId=:id")
+    Optional<User> lockById(Long id);
+
     Optional<User> findByEmail(String email);
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     Optional<User> findByOauthProviderAndOauthId(String provider, String subject);
+
+    java.util.List<User> findByOauthProviderAndOauthIdStartingWith(String provider, String prefix);
 
     boolean existsByEmail(String email);
 

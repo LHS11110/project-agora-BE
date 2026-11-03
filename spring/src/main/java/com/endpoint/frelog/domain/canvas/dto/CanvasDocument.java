@@ -51,6 +51,18 @@ public class CanvasDocument {
     @JsonAlias({"innerGroup", "inner_group"})
     private Map<String, List<Long>> innerGroup = new LinkedHashMap<>();
 
+    @JsonProperty("group-bits")
+    @JsonAlias("group_bits")
+    private Map<String,Integer> groupBits=new LinkedHashMap<>();
+    public Map<String,Integer> getGroupBits(){return groupBits;}
+    public void setGroupBits(Map<String,Integer> value){groupBits=value;}
+
+    @JsonProperty("group-permissions")
+    @JsonAlias("group_permissions")
+    private Map<String, Object> groupPermissions = new LinkedHashMap<>();
+    public Map<String, Object> getGroupPermissions() { return groupPermissions; }
+    public void setGroupPermissions(Map<String, Object> value) { groupPermissions = value; }
+
     @JsonProperty("items")
     private Map<String, Object> items = new LinkedHashMap<>();
 
@@ -76,8 +88,10 @@ public class CanvasDocument {
             List<Long> adminList = new ArrayList<>();
             adminList.add(adminUserId);
             this.innerGroup.put("admin-group", adminList);
+            this.groupBits.put("admin-group",0);this.groupPermissions.put("admin-group",7);
             if (!this.innerGroup.containsKey(this.initGroup)) {
                 this.innerGroup.put(this.initGroup, new ArrayList<>());
+                this.groupBits.put(this.initGroup,1);this.groupPermissions.put(this.initGroup,7);
             }
         }
     }
@@ -132,6 +146,7 @@ public class CanvasDocument {
     }
 
     // Compatibility alias
+    @JsonProperty(value="canvasPassword", access=JsonProperty.Access.WRITE_ONLY)
     public String getCanvasPassword() {
         return canvasPasswordHash;
     }
@@ -149,6 +164,7 @@ public class CanvasDocument {
     }
 
     // Compatibility alias
+    @JsonProperty(value="peoples", access=JsonProperty.Access.WRITE_ONLY)
     public List<Long> getPeoples() {
         return people;
     }

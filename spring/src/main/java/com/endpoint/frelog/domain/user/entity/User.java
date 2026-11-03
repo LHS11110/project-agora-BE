@@ -26,7 +26,8 @@ public class User {
     private Long userId;
 
     @org.hibernate.annotations.Nationalized
-    @Column(name = "email", nullable = false, unique = true, length = 255)
+    // Nullable tombstones require the filtered unique index installed by the SQL migration.
+    @Column(name = "email", length = 255)
     private String email;
 
     @org.hibernate.annotations.Nationalized
@@ -57,6 +58,17 @@ public class User {
     @org.hibernate.annotations.Nationalized
     @Column(name = "oauth_id", length = 255)
     private String oauthId;
+
+    @Column(name="profile_image_url",length=512)
+    private String profileImageUrl;
+    public String getProfileImageUrl(){return profileImageUrl;}
+    public void setProfileImageUrl(String value){profileImageUrl=value;}
+
+    @Column(name = "email_verified_at")
+    private LocalDateTime emailVerifiedAt;
+
+    public LocalDateTime getEmailVerifiedAt() { return emailVerifiedAt; }
+    public void setEmailVerifiedAt(LocalDateTime value) { emailVerifiedAt=value; }
 
     @Column(name = "password_changed_at")
     private LocalDateTime passwordChangedAt;
@@ -105,6 +117,12 @@ public class User {
     public void changePassword(String newPasswordHash) {
         this.passwordHash = newPasswordHash;
         this.passwordChangedAt = LocalDateTime.now();
+    }
+
+    public void erasePersonalData() {
+        if(status!=UserStatus.WITHDRAWN||userId==null)throw new IllegalStateException("Only persisted withdrawn accounts can be erased");
+        email=null;passwordHash=null;oauthProvider=null;oauthId=null;profileImageUrl=null;emailVerifiedAt=null;passwordChangedAt=null;
+        nickname="삭제된 계정";tagNumber=Math.toIntExact(userId);role=Role.ROLE_USER;
     }
 
     public boolean isActive() {

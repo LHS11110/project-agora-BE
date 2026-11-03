@@ -35,8 +35,10 @@ public record UserResponse(
         LocalDateTime createdAt,
 
         @JsonProperty("updated_at")
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        @JsonProperty("profile_image") String profileImage
 ) {
+    public UserResponse(Long id,String email,String nickname,Integer tag,Role role,UserStatus status,LocalDateTime lastLogin,LocalDateTime passwordChanged,LocalDateTime created,LocalDateTime updated){this(id,email,nickname,tag,role,status,lastLogin,passwordChanged,created,updated,null);}
     public static UserResponse from(User user) {
         return new UserResponse(
                 user.getUserId(),
@@ -48,7 +50,8 @@ public record UserResponse(
                 null, // lastLoginAt is now in UserSession
                 user.getPasswordChangedAt(),
                 user.getCreatedAt(),
-                user.getUpdatedAt()
+                user.getUpdatedAt(),
+                user.getProfileImageUrl()
         );
     }
 

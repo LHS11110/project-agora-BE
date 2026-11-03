@@ -46,6 +46,8 @@ class AuthServiceTest {
     @Mock
     private com.endpoint.frelog.domain.user.repository.UserSessionRepository userSessionRepository;
 
+    @Mock private com.endpoint.frelog.domain.auth.mfa.MfaService mfa;
+    @Mock private com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification;
     @InjectMocks
     private AuthService authService;
 
@@ -129,7 +131,7 @@ class AuthServiceTest {
     @DisplayName("정상 회원가입 성공")
     void signup_Success() {
         // given
-        SignupRequest request = new SignupRequest("new@agora.com", "secret123", "신규유저");
+        SignupRequest request = new SignupRequest("new@agora.com", "Test-password12!", "신규유저");
         given(userRepository.existsByEmail(request.email())).willReturn(false);
         given(passwordEncoder.encode(request.password())).willReturn("hashedSecret123");
 
@@ -150,7 +152,7 @@ class AuthServiceTest {
     @DisplayName("이미 존재하는 이메일로 회원가입 시 예외 발생")
     void signup_DuplicateEmail_ThrowsException() {
         // given
-        SignupRequest request = new SignupRequest("user@agora.com", "secret123", "중복유저");
+        SignupRequest request = new SignupRequest("user@agora.com", "Test-password12!", "중복유저");
         given(userRepository.existsByEmail(request.email())).willReturn(true);
 
         // when & then
@@ -158,4 +160,20 @@ class AuthServiceTest {
                 .isInstanceOf(CustomException.class)
                 .hasFieldOrPropertyWithValue("errorCode", ErrorCode.EMAIL_ALREADY_EXISTS);
     }
+    @Test void weakSignupCannotReachEmailProofOrPasswordEncoder() {
+        assertThatThrownBy(() -> authService.signup(new SignupRequest("new@example.invalid", "weakpass", "User", "proof")))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_INPUT_VALUE);
+        org.mockito.Mockito.verifyNoInteractions(emailVerification, passwordEncoder, userRepository);
+    }
+
+    @Test void weakPasswordChangeCannotReachEncoderOrSave() {
+        given(userRepository.findByNicknameAndTagNumber(activeUser.getNickname(), 1)).willReturn(Optional.of(activeUser));
+        assertThatThrownBy(() -> authService.updateUser(activeUser.getNickname(), 1,
+                new com.endpoint.frelog.domain.user.dto.UpdateUserRequest(null, "weakpass"),
+                new com.endpoint.frelog.global.security.CustomUserDetails(activeUser)))
+                .isInstanceOf(CustomException.class).hasFieldOrPropertyWithValue("errorCode", ErrorCode.INVALID_INPUT_VALUE);
+        org.mockito.Mockito.verifyNoInteractions(passwordEncoder);
+        org.mockito.Mockito.verify(userRepository, org.mockito.Mockito.never()).save(any());
+    }
+
 }

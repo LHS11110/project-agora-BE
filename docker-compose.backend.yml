@@ -113,10 +113,28 @@ services:
       REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
       REDIS_TLS_ENABLED: "true"
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_SECURITY: ${MAIL_SECURITY:-starttls}
+      EMAIL_VERIFICATION_SECRET: ${EMAIL_VERIFICATION_SECRET:-}
+      PASSKEY_RP_ID: ${PASSKEY_RP_ID:-frelog.p-e.kr}
+      PASSKEY_ORIGIN: ${PASSKEY_ORIGIN:-https://frelog.p-e.kr}
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:-}
       GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/google}
+      NAVER_OAUTH_ENABLED: ${NAVER_OAUTH_ENABLED:-false}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      NAVER_REDIRECT_URI: ${NAVER_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/naver}
+      KAKAO_OAUTH_ENABLED: ${KAKAO_OAUTH_ENABLED:-false}
+      KAKAO_CLIENT_ID: ${KAKAO_CLIENT_ID:-}
+      KAKAO_CLIENT_SECRET: ${KAKAO_CLIENT_SECRET:-}
+      KAKAO_REDIRECT_URI: ${KAKAO_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/kakao}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     networks:
       - agora-services

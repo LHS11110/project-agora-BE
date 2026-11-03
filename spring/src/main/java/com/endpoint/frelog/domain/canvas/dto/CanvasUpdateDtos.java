@@ -58,8 +58,15 @@ public class CanvasUpdateDtos {
             @JsonProperty("password_protected") boolean passwordProtected,
             @JsonProperty("settings_revision") Long settingsRevision,
             List<ParticipantResponse> participants,
-            String visibility
-    ) {}
+            String visibility,
+            @JsonProperty("group_permissions") java.util.Map<String,java.util.Map<String,Boolean>> groupPermissions,
+            @JsonProperty("can_manage") boolean canManage,
+            java.util.Map<String,List<ParticipantResponse>> groups,
+            @JsonProperty("initial_group") String initialGroup, ParticipantResponse owner
+    ) {
+        public SettingsResponse(Integer id,String name,String description,boolean password,Long revision,List<ParticipantResponse> participants,String visibility,java.util.Map<String,java.util.Map<String,Boolean>> policies,boolean manage){this(id,name,description,password,revision,participants,visibility,policies,manage,java.util.Map.of(),"default",null);}
+        public SettingsResponse(Integer id,String name,String description,boolean password,Long revision,List<ParticipantResponse> participants,String visibility){this(id,name,description,password,revision,participants,visibility,java.util.Map.of(),false);}
+    }
 
     public record GroupRequest(
             @NotBlank(message = "그룹명은 비어있을 수 없습니다.")

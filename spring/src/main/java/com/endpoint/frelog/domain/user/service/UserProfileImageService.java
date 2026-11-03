@@ -11,21 +11,30 @@ import java.nio.file.*;
 @Service
 public class UserProfileImageService {
     private final CanvasResourceService images;
+    private final com.endpoint.frelog.domain.user.repository.UserRepository users;
     private final Path directory = Paths.get(System.getProperty("user.home"), "project-agora", "canvas-resource", "profiles");
-    public UserProfileImageService(CanvasResourceService images) { this.images = images; }
+    public UserProfileImageService(CanvasResourceService images,com.endpoint.frelog.domain.user.repository.UserRepository users) { this.images = images;this.users=users; }
     public String url(Long id) { return "/api/users/profile-images/" + id; }
+    @org.springframework.transaction.annotation.Transactional
     public void save(Long id, MultipartFile file) {
         if (file == null || file.isEmpty()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이미지를 선택해주세요.");
         if (file.getSize() > 5L * 1024 * 1024) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이미지는 5MB 이하여야 합니다.");
+        try { saveBytes(id,file.getBytes()); }
+        catch(IOException failure){throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);}
+    }
+    @org.springframework.transaction.annotation.Transactional
+    public void saveBytes(Long id,byte[] source) {
+        var user=users.lockById(id).filter(com.endpoint.frelog.domain.user.entity.User::isActive).orElseThrow(()->new CustomException(ErrorCode.USER_NOT_FOUND));
         Path temporary = null;
         try {
-            byte[] png = images.normalizePng(file.getBytes());
+            byte[] png = images.normalizePng(source);
             Files.createDirectories(directory);
             temporary = Files.createTempFile(directory, "avatar-", ".tmp");
             Files.write(temporary, png);
             Path target = directory.resolve(id + ".png");
             try { Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
             catch (AtomicMoveNotSupportedException ignored) { Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING); }
+            user.setProfileImageUrl(url(id));users.save(user);
         } catch (IOException failure) { throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR); }
         finally { if (temporary != null) try { Files.deleteIfExists(temporary); } catch (IOException ignored) {} }
     }
@@ -35,7 +44,10 @@ public class UserProfileImageService {
         try { return Files.readAllBytes(target); }
         catch (IOException failure) { throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR); }
     }
+    @org.springframework.transaction.annotation.Transactional
     public void remove(Long id) {
+        var user=users.lockById(id).orElse(null);
+        if(user!=null){user.setProfileImageUrl(null);users.save(user);}
         try { Files.deleteIfExists(directory.resolve(id + ".png")); }
         catch (IOException failure) { throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR); }
     }

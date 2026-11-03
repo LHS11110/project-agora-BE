@@ -130,7 +130,13 @@ async function submitAuth() {
             alert('로그인 실패');
         }
     } else {
-        const res = await apiCall('/api/auth/signup', 'POST', { email, password, nickname });
+        const requested = await apiCall('/api/auth/email/request', 'POST', { email });
+        if (!requested.ok) { alert(requested.data?.message || '인증 메일을 보낼 수 없습니다.'); return; }
+        const code = window.prompt('이메일로 받은 6자리 인증 코드를 입력하세요.');
+        if (!code) return;
+        const verified = await apiCall('/api/auth/email/verify', 'POST', { email, challengeId: requested.data.challengeId, code });
+        if (!verified.ok) { alert(verified.data?.message || '이메일 인증에 실패했습니다.'); return; }
+        const res = await apiCall('/api/auth/signup', 'POST', { email, password, nickname, emailVerificationToken: verified.data.emailVerificationToken });
         if (res.ok) {
             alert('회원가입 성공. 이제 로그인합니다.');
             setAuthMode('login');

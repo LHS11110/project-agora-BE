@@ -1,4 +1,5 @@
 package com.endpoint.frelog.domain.canvas.service;
+import com.endpoint.frelog.domain.canvas.dto.CanvasDocumentJson;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
@@ -38,7 +39,7 @@ public class CanvasRedisDocumentReader {
             "admin-user-id", "admin", "adminUserId", "admin_user_id", "description",
             "canvas-password-hash", "canvasPassword", "canvas_password_hash", "canvas-password",
             "people", "peoples", "inner-group", "innerGroup", "inner_group",
-            "init-group", "initGroup", "init_group", "settings-revision", "visibility");
+            "init-group", "initGroup", "init_group", "settings-revision", "visibility", "group-permissions", "group_permissions", "group-bits", "group_bits");
     @Value("${REDIS_BROKER_ROUTES:}")
     private String brokerRoutes = "";
     private final ObjectMapper objectMapper;
@@ -201,7 +202,7 @@ public class CanvasRedisDocumentReader {
                 if (values != null && values.isArray() && !values.isEmpty()) metadata.set(METADATA_FIELDS.get(i), values.get(0));
             }
             if (metadata.isEmpty()) throw new IOException("Canvas metadata is missing");
-            return objectMapper.writeValueAsString(metadata);
+            return objectMapper.writeValueAsString(CanvasDocumentJson.normalize(metadata));
         }
     }
 

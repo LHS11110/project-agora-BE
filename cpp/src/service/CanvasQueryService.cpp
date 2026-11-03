@@ -85,6 +85,13 @@ Json CanvasQueryService::join(const Json& input) {
     const auto doc = Json::parse(*raw);
     if (doc.value("settings-revision", 0LL) != revision) throw std::invalid_argument("SETTINGS_CHANGED");
     auto [groups, admin] = groupsForUser(doc, user_id);
+    if(groups.empty()&&!admin)throw std::invalid_argument("CANVAS_READ_DENIED");
+    auto write_groups=groupsForUser(doc,user_id,"write").first;
+    auto execute_groups=groupsForUser(doc,user_id,"execute").first;
+    auto member_groups=canvasMemberGroups(doc,user_id);
+    const auto group_bits=canvasGroupBitLayout(doc);
+    CanvasAclScope access(group_bits,{&groups,&write_groups,&execute_groups,&member_groups});
+    Json group_masks{{"member",canvasMaskHex(access.index.mask(member_groups))},{"read",canvasMaskHex(access.index.mask(groups))},{"write",canvasMaskHex(access.index.mask(write_groups))},{"execute",canvasMaskHex(access.index.mask(execute_groups))}};
     Json visible = Json::object();
     if (input.value("include_items",true) && doc.contains("items") && doc["items"].is_object()) for (const auto& entry : doc["items"].items())
         if (entry.value().value("kind", "") != "host-tombstone" && queryCanAccess(entry.value(), groups, admin)) {
@@ -95,9 +102,9 @@ Json CanvasQueryService::join(const Json& input) {
     if (!sync) throw std::runtime_error("STORAGE_UNAVAILABLE");
     const auto receipt = sync->value("receipt", Json());
     Json identity{{"user_id", user_id}, {"nickname", nickname}, {"tag_number", tag},
-        {"groups", groups}, {"is_admin", admin}, {"settings_revision", revision}, {"canvas_id", id}};
+        {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin", admin}, {"settings_revision", revision}, {"canvas_id", id}};
     return {{"route", route}, {"identity", identity},
-        {"response", {{"type", "init_items"}, {"canvas_id", id}, {"items", visible}, {"groups", groups},
+        {"response", {{"type", "init_items"}, {"canvas_id", id}, {"items", visible}, {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin",admin},
                       {"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
 }
 Json CanvasQueryService::query(const Json& input) {
@@ -122,6 +129,10 @@ Json CanvasQueryService::query(const Json& input) {
     if (!event.is_object()) throw std::invalid_argument("QUERY_INVALID");
     const auto type = event.value("type", "");
     auto groups = identity["groups"].get<std::unordered_set<std::string>>(); const bool admin = identity.value("is_admin", false);
+    const auto write_groups=identity.value("write_groups",Json::array()).get<std::unordered_set<std::string>>();
+    const auto execute_groups=identity.value("execute_groups",Json::array()).get<std::unordered_set<std::string>>();
+    const auto member_groups=identity.value("member_groups",identity["groups"]).get<std::unordered_set<std::string>>();
+    CanvasAclScope access(identity.value("group_bits",Json::object()),{&groups,&write_groups,&execute_groups,&member_groups});
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
     if (type == "canvas_ops" || type == "canvas_sync") {
         const auto client = event.value("client_id", "");
@@ -171,7 +182,7 @@ Json CanvasQueryService::query(const Json& input) {
             mutation=agora::broker::prepare(operations,[&](const std::string& item)->std::optional<Json>{
                 if(loaded->contains(item))return (*loaded)[item].is_null()?std::nullopt:std::optional<Json>((*loaded)[item]);
                 return readItem(memory,id,item);
-            },groups,admin);
+            },write_groups,admin,&groups,&execute_groups,&member_groups);
         }
         const auto result=memory.applyBrokerBatch(id,key,count,route["request_id"],digest,mutation.items,mutation.expected);
         if(!result)throw std::runtime_error("QUERY_OUTCOME_UNKNOWN");
@@ -264,6 +275,7 @@ Json CanvasQueryService::query(const Json& input) {
         }
         const auto text = event.value("text", ""); if (text.empty() || text.size() > 4096 || groups.empty()) throw std::invalid_argument("CHAT_INVALID_MESSAGE");
         Json permission = target ? queryCommentPermission(*target, groups, admin) : room ? (*room)["permission"] : Json(groups);
+        if(!queryCanAccess(Json{{"permission",permission}},write_groups,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");
         const auto sequence = room ? agora::canvas::chatRoomNextSequence(*room) : 1ULL;
         Json message{{"type", "chat"}, {"room_id", room_id}, {"text", text}, {"sender", identity["nickname"]},
             {"tag_number", identity["tag_number"]}, {"sender_user_id", identity["user_id"]}, {"sequence", sequence},
@@ -316,6 +328,8 @@ Json CanvasQueryService::query(const Json& input) {
             results.push_back({{"item_id", item_id}, {"item", old}}); continue;
         }
         if (action == "delete") {
+            if (!queryCanAccess(old,write_groups,admin)) throw std::invalid_argument("ITEM_WRITE_DENIED");
+            if (queryObjectLocked(old)) throw std::invalid_argument("ITEM_LOCKED");
             if (previous && agora::canvas::isChatRoomItem(old)) throw std::invalid_argument("CHAT_QUERY_REQUIRED");
             prepared.push_back({{"type", "item_delete"}, {"item_id", item_id}});
             broadcasts.push_back({{"event", {{"type", "item_delete"}, {"item_id", item_id}}}, {"permission", previous ? old.value("permission", Json::array()) : Json::array()}});
@@ -329,7 +343,7 @@ Json CanvasQueryService::query(const Json& input) {
                 item.update(patch);
                 for (const auto& field : operation.value("unset", Json::array())) { if (!field.is_string()) throw std::invalid_argument("ITEM_PATCH_INVALID"); item.erase(field.get<std::string>()); }
             }
-            item = queryUpdatedItem(old, item, groups, admin);
+            item = queryUpdatedItem(old, item, write_groups, admin,&member_groups);
             prepared.push_back({{"type", operation_type == "item_save" ? "item_save" : "item_update"}, {"item_id", item_id}, {"item", item}});
             // Host sessions already broadcast accepted object changes through their data channels.
             if (type != "host_item_batch") broadcasts.push_back({{"event", {{"type", "item_update"}, {"item_id", item_id}, {"item", item}}}, {"permission", item["permission"]}});

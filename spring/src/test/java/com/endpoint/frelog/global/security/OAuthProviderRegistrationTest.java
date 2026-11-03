@@ -1,0 +1,12 @@
+package com.endpoint.frelog.global.security;
+import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
+import org.springframework.security.oauth2.core.ClientAuthenticationMethod;
+import static org.assertj.core.api.Assertions.*;
+class OAuthProviderRegistrationTest {
+ MockEnvironment settings(String provider){return new MockEnvironment().withProperty("app.oauth."+provider+".enabled","true").withProperty("app.oauth."+provider+".client-id","fixture-id").withProperty("app.oauth."+provider+".client-secret","fixture-secret").withProperty("app.oauth."+provider+".redirect-uri","https://frelog.p-e.kr/api/auth/oauth2/callback/"+provider);}
+ @Test void naverOnlyConfigurationUsesPostSecretAndNoUnsupportedPkce(){var clients=new GoogleOAuthConfig().googleRegistration(settings("naver"));var n=clients.findByRegistrationId("naver");assertThat(n.getProviderDetails().getUserInfoEndpoint().getUri()).isEqualTo("https://openapi.naver.com/v1/nid/me");assertThat(n.getClientAuthenticationMethod()).isEqualTo(ClientAuthenticationMethod.CLIENT_SECRET_POST);assertThat(n.getClientSettings().isRequireProofKey()).isFalse();assertThat(clients.findByRegistrationId("google")).isNull();}
+ @Test void kakaoUsesPostSecretAndPkce(){var k=new GoogleOAuthConfig().googleRegistration(settings("kakao")).findByRegistrationId("kakao");assertThat(k.getProviderDetails().getTokenUri()).isEqualTo("https://kauth.kakao.com/oauth/token");assertThat(k.getClientAuthenticationMethod()).isEqualTo(ClientAuthenticationMethod.CLIENT_SECRET_POST);assertThat(k.getClientSettings().isRequireProofKey()).isTrue();}
+ @Test void missingSecretAndWrongCallbackFailClosed(){var env=settings("naver").withProperty("app.oauth.naver.client-secret","");assertThatThrownBy(()->new GoogleOAuthConfig().googleRegistration(env)).isInstanceOf(IllegalArgumentException.class);env.withProperty("app.oauth.naver.client-secret","secret").withProperty("app.oauth.naver.redirect-uri","https://attacker.example/callback");assertThatThrownBy(()->new GoogleOAuthConfig().googleRegistration(env)).isInstanceOf(IllegalArgumentException.class);}
+ @Test void vendorCallbacksCannotRedirectToDifferentOrigins(){var env=settings("naver").withProperty("app.oauth.kakao.enabled","true").withProperty("app.oauth.kakao.client-id","id").withProperty("app.oauth.kakao.client-secret","secret").withProperty("app.oauth.kakao.redirect-uri","https://other.example/api/auth/oauth2/callback/kakao");assertThatThrownBy(()->new GoogleOAuthConfig().googleRegistration(env)).isInstanceOf(IllegalArgumentException.class);}
+}

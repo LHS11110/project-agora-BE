@@ -227,9 +227,11 @@ public class CanvasService {
                 new CanvasUpdateDtos.ParticipantResponse(user.getNickname(), user.getTagNumber())));
         List<CanvasUpdateDtos.ParticipantResponse> participants = people.stream()
                 .map(users::get).filter(java.util.Objects::nonNull).toList();
+        Map<String,List<CanvasUpdateDtos.ParticipantResponse>> groups = new LinkedHashMap<>();
+        if(doc.getInnerGroup()!=null)doc.getInnerGroup().forEach((key,members)->groups.put(key,members.stream().map(users::get).filter(java.util.Objects::nonNull).toList()));
         return new CanvasUpdateDtos.SettingsResponse(canvasId, doc.getCanvasName(), doc.getDescription(),
                 doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
-                doc.getSettingsRevision(), participants, doc.getVisibility());
+                doc.getSettingsRevision(), participants, doc.getVisibility(),CanvasGroupPermissions.policies(doc),CanvasGroupPermissions.admin(doc,currentUser.getUserId()),groups,doc.getInitGroup(),users.get(doc.getAdminUserId()));
     }
 
     @Transactional
@@ -497,6 +499,7 @@ public class CanvasService {
                 settingsRevision
         );
 
+        if (com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(currentUser.getUser())) canvasAccessToken = jwtTokenProvider.createCanvasAccessToken(currentUser.getNickname(),currentUser.getUser().getTagNumber(),canvasId,httpRequest.getRemoteAddr(),serverHash,settingsRevision,60_000L);
         String canvasPasswordToken = passwordProtected
                 ? validPasswordToken
                     ? suppliedPasswordToken

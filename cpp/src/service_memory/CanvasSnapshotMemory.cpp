@@ -131,7 +131,10 @@ bool CanvasSnapshotMemory::patchCanvasFields(int canvasId, const std::map<std::s
     if (fields.empty() || index_.empty()) return false;
     nlohmann::json normalized = nlohmann::json::object();
     for (const auto& [field, value] : fields) {
-        if (field == "canvas-password-hash" && value.is_string()) {
+        if (field == "items" && value.is_object()) {
+            normalized["items-b64"] = encodeItems(value);
+            normalized["items"] = nullptr;
+        } else if (field == "canvas-password-hash" && value.is_string()) {
             auto password = normalizeCanvasPassword(value.get<std::string>());
             if (!password) return false;
             normalized[field] = *password;

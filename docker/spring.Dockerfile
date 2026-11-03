@@ -7,6 +7,7 @@ COPY spring/gradle/ spring/gradle/
 COPY spring/settings.gradle spring/build.gradle spring/gradle.lockfile spring/
 COPY spring/src/ spring/src/
 COPY LICENSE THIRD_PARTY_LICENSES.md ./
+COPY licenses/ licenses/
 COPY cpp/third_party/uWebSockets/LICENSE cpp/third_party/uWebSockets/LICENSE
 
 RUN chmod +x spring/gradlew \

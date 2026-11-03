@@ -11,11 +11,16 @@ public record SignupRequest(
         String email,
 
         @NotBlank(message = "비밀번호는 필수 입력값입니다.")
-        @Size(min = 6, max = 72, message = "비밀번호는 6자 이상 72자 이하여야 합니다.")
+        @Size(min = 12, max = 72, message = com.endpoint.frelog.domain.auth.validation.PasswordPolicy.MESSAGE)
         String password,
 
         @NotBlank(message = "닉네임은 필수 입력값입니다.")
         @Size(max = 100, message = "닉네임은 최대 100자까지 가능합니다.")
-        String nickname
+        String nickname,
+
+        @NotBlank(message = "이메일 인증을 완료해주세요.")
+        @Size(max = 128)
+        String emailVerificationToken
 ) {
+    public SignupRequest(String email,String password,String nickname){this(email,password,nickname,null);}
 }

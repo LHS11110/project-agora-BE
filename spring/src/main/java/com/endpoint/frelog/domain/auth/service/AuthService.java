@@ -34,7 +34,10 @@ public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
-    private final com.endpoint.frelog.domain.user.service.UserProfileImageService profileImages;
+    private final com.endpoint.frelog.domain.user.service.UserErasureService erasure;
+    private final org.springframework.context.ApplicationEventPublisher events;
+    private final com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification;
+    private final com.endpoint.frelog.domain.auth.mfa.MfaService mfa;
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
@@ -43,8 +46,11 @@ public class AuthService {
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtTokenProvider jwtTokenProvider,
-                       UserSessionRepository userSessionRepository, com.endpoint.frelog.domain.user.service.UserProfileImageService profileImages) {
-        this.profileImages = profileImages;
+                       UserSessionRepository userSessionRepository, org.springframework.context.ApplicationEventPublisher events, com.endpoint.frelog.domain.user.service.UserErasureService erasure, com.endpoint.frelog.domain.auth.mfa.MfaService mfa, com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification) {
+        this.events = events;
+        this.erasure = erasure;
+        this.mfa = mfa;
+        this.emailVerification = emailVerification;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenProvider = jwtTokenProvider;
@@ -56,6 +62,7 @@ public class AuthService {
         User user = userRepository.findByEmail(request.email())
                 .orElseThrow(() -> new CustomException(ErrorCode.INVALID_CREDENTIALS));
 
+        if (com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(user)) throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         if (user.getStatus() == UserStatus.SUSPENDED) {
             throw new CustomException(ErrorCode.USER_SUSPENDED);
         }
@@ -73,7 +80,15 @@ public class AuthService {
         return completeLogin(user, httpRequest);
     }
 
+    /** Called only after the WebAuthn service has verified the assertion and active account. */
+    @Transactional
+    public LoginResponse completePasskeyLogin(User user, HttpServletRequest request) {
+        if (!user.isActive()) throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        return mfa.completeVerifiedPasskey(user, request);
+    }
+
     private LoginResponse completeLogin(User user, HttpServletRequest httpRequest) {
+        if (mfa.enabled(user.getUserId())) return mfa.challenge(user, httpRequest);
         UserSession session = userSessionRepository.findByIdWithPessimisticLock(user.getUserId())
                 .orElseGet(() -> new UserSession(user));
         session.updateLastLogin(LocalDateTime.now());
@@ -95,43 +110,63 @@ public class AuthService {
     /** Accept only a principal already verified by Spring Security's OIDC client. */
     @Transactional
     public LoginResponse loginGoogle(org.springframework.security.oauth2.core.oidc.user.OidcUser principal, HttpServletRequest request) {
-        String subject = principal.getSubject();
-        String email = principal.getEmail();
-        if (!Boolean.TRUE.equals(principal.getEmailVerified()) || subject == null || subject.isBlank()
-                || email == null || email.isBlank() || email.length() > 255 || subject.length() > 255) {
-            throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        if (!Boolean.TRUE.equals(principal.getEmailVerified())) throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        return loginSocial(new com.endpoint.frelog.domain.auth.oauth.SocialIdentity("google",principal.getSubject(),principal.getEmail(),principal.getFullName(),true,principal.getPicture()),request);
+    }
+
+    @Transactional
+    public LoginResponse loginSocial(com.endpoint.frelog.domain.auth.oauth.SocialIdentity identity,HttpServletRequest request) {
+        identity.validate();
+        String provider=identity.provider(),subject=identity.subject();
+        User user=userRepository.findByOauthProviderAndOauthId(provider,subject).orElse(null);
+        // OAuth subjects are opaque and case-sensitive, even on a case-insensitive SQL database.
+        if(user!=null&&(!provider.equals(user.getOauthProvider())||!subject.equals(user.getOauthId())))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        if(user==null||user.getStatus()==UserStatus.WITHDRAWN){
+            // An unverified provider email can still identify a signup conflict;
+            // it must never authenticate or link the existing account.
+            if(identity.email()!=null&&identity.email().length()<=255&&!identity.email().isBlank()){
+                var existing=userRepository.findByEmail(com.endpoint.frelog.domain.auth.email.EmailVerificationService.normalize(identity.email())).orElse(null);
+                if(existing!=null&&existing.isActive()&&(user==null||!existing.getUserId().equals(user.getUserId())))throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
+            }
+            if(!identity.hasVerifiedEmail())throw new com.endpoint.frelog.domain.auth.oauth.OAuthEmailRequired();
+            if(user!=null){erasure.erase(user);userRepository.saveAndFlush(user);user=null;}
+            String email=com.endpoint.frelog.domain.auth.email.EmailVerificationService.normalize(identity.email());
+            if(userRepository.existsByEmail(email))throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
+            String name=identity.name();
+            if(name==null||name.isBlank())name=switch(provider){case "naver"->"네이버 사용자";case "kakao"->"카카오 사용자";default->"Google 사용자";};
+            name=name.trim();name=name.substring(0,Math.min(name.length(),100));
+            int tag=userRepository.findMaxTagNumberByNicknameForUpdate(name)+1;
+            user=new User(email,null,name,tag,Role.ROLE_USER);user.setOauthProvider(provider);user.setOauthId(subject);
+            user=userRepository.save(user);
+            if(identity.profileImageUrl()!=null&&!identity.profileImageUrl().isBlank())
+                events.publishEvent(new com.endpoint.frelog.domain.auth.oauth.SocialProfileImageService.ImportImage(user.getUserId(),identity.profileImageUrl()));
         }
-        User user = userRepository.findByOauthProviderAndOauthId("google", subject).orElse(null);
-        if (user == null) {
-            // Email is mutable and does not prove ownership of an existing local account.
-            if (userRepository.existsByEmail(email)) throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
-            String name = principal.getFullName();
-            if (name == null || name.isBlank()) name = "Google 사용자";
-            name = name.trim();
-            name = name.substring(0, Math.min(name.length(), 100));
-            int tag = userRepository.findMaxTagNumberByNicknameForUpdate(name) + 1;
-            user = new User(email, null, name, tag, Role.ROLE_USER);
-            user.setOauthProvider("google");
-            user.setOauthId(subject);
-            user = userRepository.save(user);
-        }
-        if (user.getStatus() == UserStatus.SUSPENDED) throw new CustomException(ErrorCode.USER_SUSPENDED);
-        if (user.getStatus() == UserStatus.WITHDRAWN) throw new CustomException(ErrorCode.USER_WITHDRAWN);
-        return completeLogin(user, request);
+        if(user.getStatus()==UserStatus.SUSPENDED)throw new CustomException(ErrorCode.USER_SUSPENDED);
+        if(user.getStatus()==UserStatus.WITHDRAWN)throw new CustomException(ErrorCode.USER_WITHDRAWN);
+        if(user.getEmailVerifiedAt()==null&&identity.hasVerifiedEmail()&&user.getEmail().equalsIgnoreCase(identity.email()))user.setEmailVerifiedAt(LocalDateTime.now(java.time.ZoneOffset.UTC));
+        return completeLogin(user,request);
+    }
+
+    @Transactional
+    public LoginResponse completeOAuthEnrollment(com.endpoint.frelog.domain.auth.oauth.SocialIdentity identity,String email,String proof,HttpServletRequest request){
+        identity.validate();
+        String normalized=com.endpoint.frelog.domain.auth.email.EmailVerificationService.normalize(email);
+        if(userRepository.existsByEmail(normalized))throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
+        emailVerification.consume(normalized,proof);
+        return loginSocial(identity.withVerifiedEmail(normalized),request);
     }
 
     @Transactional
     public UserResponse signup(SignupRequest request) {
+        com.endpoint.frelog.domain.auth.validation.PasswordPolicy.validate(request.password());
+        emailVerification.consume(request.email(),request.emailVerificationToken());
         if (userRepository.existsByEmail(request.email())) {
             throw new CustomException(ErrorCode.EMAIL_ALREADY_EXISTS);
         }
-        if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
-        }
-
         String encodedPassword = passwordEncoder.encode(request.password());
         Integer nextTagNumber = userRepository.findMaxTagNumberByNicknameForUpdate(request.nickname()) + 1;
-        User newUser = new User(request.email(), encodedPassword, request.nickname(), nextTagNumber, Role.ROLE_USER);
+        User newUser = new User(com.endpoint.frelog.domain.auth.email.EmailVerificationService.normalize(request.email()), encodedPassword, request.nickname(), nextTagNumber, Role.ROLE_USER);
+        newUser.setEmailVerifiedAt(LocalDateTime.now(java.time.ZoneOffset.UTC));
         User savedUser = userRepository.save(newUser);
         
         UserSession newSession = new UserSession(savedUser);
@@ -182,10 +217,8 @@ public class AuthService {
             }
         }
 
-        if (request.password() != null && !request.password().isBlank()) {
-            if (request.password().getBytes(StandardCharsets.UTF_8).length > 72) {
-                throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
-            }
+        if (request.password() != null) {
+            com.endpoint.frelog.domain.auth.validation.PasswordPolicy.validate(request.password());
             user.changePassword(passwordEncoder.encode(request.password()));
         }
 
@@ -198,7 +231,7 @@ public class AuthService {
      * - 해당 사용자 본인 또는 ROLE_ADMIN 만 허용
      * - 캔버스 이용 중(is_accessed == true)이면 탈퇴 요청을 거부
      * - 접속 중이지 않으면 소프트 딜리트 수행
-     * - 모든 삭제는 유저명을 `deleted user-[hash value]`로 바꾸고 상태를 `WITHDRAWN`으로 변경만 하고 실제 데이터는 유지 (소프트 딜리트)
+     * - 개인정보와 인증 정보를 삭제하고 사용자 ID 및 삭제된 계정 표시만 유지
      */
     @Transactional
     public void deleteUser(String nickname, Integer tagNumber, CustomUserDetails currentUser) {
@@ -209,7 +242,7 @@ public class AuthService {
         validateSelfOrAdmin(userId, currentUser);
 
         if (user.getStatus() == UserStatus.WITHDRAWN) {
-            return; // 이미 탈퇴된 계정
+            erasure.erase(user);userRepository.save(user);return;
         }
 
         // A Spring API must not force-close a live C++ WebSocket. Ask the user
@@ -220,26 +253,10 @@ public class AuthService {
                     "캔버스를 이용 중인 회원은 탈퇴할 수 없습니다. 캔버스 연결을 종료한 뒤 다시 시도해 주세요.");
         }
 
-        profileImages.remove(userId);
-        // Hash the user identifier and mark the account withdrawn.
-        String hashValue = generateHash(userId);
-        user.setNickname("deleted user-" + hashValue);
         user.setStatus(UserStatus.WITHDRAWN);
-
+        erasure.erase(user);
         userRepository.save(user);
-
-        log.info("회원 #{} 소프트 딜리트 완료: nickname='{}', status=WITHDRAWN", userId, user.getNickname());
-    }
-
-    private String generateHash(Long userId) {
-        try {
-            String raw = userId + "-" + System.currentTimeMillis();
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(hash).substring(0, 16);
-        } catch (NoSuchAlgorithmException e) {
-            return Long.toHexString(System.currentTimeMillis());
-        }
+        log.info("회원 #{} 개인정보 삭제 완료: status=WITHDRAWN",userId);
     }
 
     private void validateSelfOrAdmin(Long targetUserId, CustomUserDetails currentUser) {

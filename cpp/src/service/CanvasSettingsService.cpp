@@ -1,5 +1,6 @@
 #include "service/CanvasSettingsService.hpp"
 #include "service/CanvasAccessRules.hpp"
+#include "service/CanvasGroupManagement.hpp"
 #include "service_memory/CanvasServiceMemory.hpp"
 #include "service_memory/RegistryServiceMemory.hpp"
 #include "service_memory/CanvasSnapshotMemory.hpp"
@@ -16,25 +17,34 @@ static bool isCanvasParticipant(const nlohmann::json& doc, int user_id) {
     return false;
 }
 
-static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, RegistryServiceMemory& db) {
+static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, RegistryServiceMemory& db, int user_id) {
     nlohmann::json participants = nlohmann::json::array();
+    std::map<int,nlohmann::json> handles;
     if (doc.contains("people") && doc["people"].is_array()) {
         for (const auto& member : doc["people"]) {
             if (!member.is_number_integer()) continue;
             auto handle = db.getUserHandle(member.get<int>());
-            if (handle) participants.push_back({{"nickname", handle->first}, {"tag_number", handle->second}});
+            if (handle) {nlohmann::json person{{"nickname", handle->first}, {"tag_number", handle->second}};participants.push_back(person);handles[member.get<int>()]=person;}
         }
     }
     const bool protected_canvas = doc.contains("canvas-password-hash")
         && doc["canvas-password-hash"].is_string() && !doc["canvas-password-hash"].get<std::string>().empty();
+    nlohmann::json groups=nlohmann::json::object();
+    if(doc.contains("inner-group")&&doc["inner-group"].is_object())for(const auto& group:doc["inner-group"].items()){
+        groups[group.key()]=nlohmann::json::array();
+        if(group.value().is_array())for(const auto& id:group.value())if(id.is_number_integer()){auto h=handles.find(id.get<int>());if(h!=handles.end())groups[group.key()].push_back(h->second);}
+    }
     return {
+        {"groups",groups},{"initial_group",doc.value("init-group",std::string("default"))},{"owner",handles.count(doc.value("admin-user-id",0))?handles.at(doc.value("admin-user-id",0)):nlohmann::json(nullptr)},
         {"canvas_id", doc.value("canvas-id", 0)},
         {"canvas_name", doc.value("canvas-name", "")},
         {"description", doc.value("description", "")},
         {"password_protected", protected_canvas},
         {"visibility", canvasIsPublic(doc) ? "public" : "private"},
         {"settings_revision", doc.value("settings-revision", 0LL)},
-        {"participants", participants}
+        {"participants", participants},
+        {"group_permissions",canvasGroupPolicies(doc)},{"group_permission_bits",canvasPackedPolicies(doc)},{"group_bits",canvasGroupBitLayout(doc)},
+        {"can_manage",groupsForUser(doc,user_id).second}
     };
 }
 
@@ -67,7 +77,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     const std::string type = event.value("type", "");
     if (type == "canvas_settings_get") {
         result.response = nlohmann::json{{"type", "canvas_settings_snapshot"},
-                                         {"settings", canvasSettingsSnapshot(doc, db)}};
+                                         {"settings", canvasSettingsSnapshot(doc, db, user_id)}};
         return result;
     }
     if (type != "canvas_settings_update") return reject("SETTINGS_INVALID_INPUT");
@@ -80,7 +90,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     if (event["expected_revision"].get<long long>() != revision) {
         result.response = nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
             {"request_id", request_id}, {"code", "SETTINGS_CONFLICT"},
-            {"settings", canvasSettingsSnapshot(doc, db)}};
+            {"settings", canvasSettingsSnapshot(doc, db, user_id)}};
         return result;
     }
     if (!event.contains("field") || !event["field"].is_string()) return reject("SETTINGS_INVALID_INPUT");
@@ -98,7 +108,34 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         es_changes[document_field] = value;
     };
 
-    if (field == "visibility") {
+    rememberOriginal("group-bits");rememberOriginal("group-permissions");
+    doc["group-bits"]=canvasGroupBitLayout(doc);
+    if (field == "participant_groups" || field == "group_create" || field == "group_members" || field == "group_initial" || field == "group_rename" || field == "group_delete") {
+        for(const auto* key:{"inner-group","group-permissions","init-group"})rememberOriginal(key);
+        if(field=="group_rename")rememberOriginal("items");
+        std::map<std::pair<std::string,int>,int> member_handles;
+        if((field=="group_members"||field=="participant_groups")&&doc.contains("people")&&doc["people"].is_array())for(const auto& id:doc["people"])if(id.is_number_integer()){auto h=db.getUserHandle(id.get<int>());if(h)member_handles[*h]=id.get<int>();}
+        try {
+            auto fields=applyCanvasGroupManagement(doc,field,event.value("value",nlohmann::json()),[&](const nlohmann::json& member)->std::optional<int>{
+                if(!member.is_object()||!member.contains("nickname")||!member["nickname"].is_string()||!member.contains("tag_number")||!member["tag_number"].is_number_integer())return std::nullopt;
+                auto found=member_handles.find({member["nickname"].get<std::string>(),member["tag_number"].get<int>()});
+                return found==member_handles.end()?std::nullopt:std::optional<int>(found->second);
+            });
+            for(const auto& key:fields)addChange(key,doc.contains(key)?doc[key]:nlohmann::json::object());
+        }catch(const std::invalid_argument& error){return reject(error.what());}
+    } else if (field == "group_permissions") {
+        if(!event.contains("value") || !event["value"].is_object() || !doc.contains("inner-group") || !doc["inner-group"].is_object())return reject("SETTINGS_INVALID_INPUT");
+        const auto& value=event["value"];
+        if(value.size()>CANVAS_MAX_GROUPS)return reject("SETTINGS_INVALID_INPUT");
+        nlohmann::json packed=nlohmann::json::object();
+        for(const auto& group:value.items()) {
+            if(!doc["inner-group"].contains(group.key()))return reject("SETTINGS_INVALID_INPUT");
+            const auto bits=canvasPolicyInputBits(group.value());if(!bits)return reject("SETTINGS_INVALID_INPUT");
+            if(group.key()=="admin-group"&&*bits!=7)return reject("SETTINGS_OWNER_REQUIRED");
+            packed[group.key()]=*bits;
+        }
+        rememberOriginal("group-permissions");doc["group-permissions"]=packed;addChange("group-permissions",packed);
+    } else if (field == "visibility") {
         if (!event.contains("value") || !event["value"].is_string()) return reject("SETTINGS_INVALID_INPUT");
         const auto value = event["value"].get<std::string>();
         if (value != "public" && value != "private") return reject("SETTINGS_INVALID_INPUT");
@@ -150,8 +187,8 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             if (target_id <= 0) return reject("SETTINGS_USER_NOT_FOUND");
             if (isCanvasParticipant(doc, target_id)) return reject("SETTINGS_ALREADY_PARTICIPANT");
             doc["people"].push_back(target_id);
-            const std::string group = doc.contains("init-group") && doc["init-group"].is_string()
-                ? doc["init-group"].get<std::string>() : "default";
+            const std::string group = event.contains("group")&&event["group"].is_string()?event["group"].get<std::string>():doc.value("init-group",std::string("default"));
+            if(!doc["inner-group"].contains(group)||group=="admin-group"||!canvasGroupCapability(doc,group,"read"))return reject("GROUP_READ_REQUIRED");
             if (!doc["inner-group"].contains(group) || !doc["inner-group"][group].is_array()) {
                 doc["inner-group"][group] = nlohmann::json::array();
             }
@@ -191,6 +228,10 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     }
 
     doc["settings-revision"] = revision + 1;
+    doc["group-bits"]=canvasGroupBitLayout(doc);doc["group-permissions"]=canvasPackedPolicies(doc);
+    // One replacement per root field; retain original values for compensation.
+    changes.erase(std::remove_if(changes.begin(),changes.end(),[](const auto& entry){return entry.first=="group-permissions"||entry.first=="group-bits";}),changes.end());
+    addChange("group-bits",doc["group-bits"]);addChange("group-permissions",doc["group-permissions"]);
     addChange("settings-revision", revision + 1);
     const auto stored = memory.compareAndSetFields(canvas_id, revision, changes);
     if (stored == CanvasServiceMemory::CompareSetResult::Conflict) {
@@ -201,7 +242,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         }
         result.response = nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
             {"request_id", request_id}, {"code", "SETTINGS_CONFLICT"},
-            {"settings", canvasSettingsSnapshot(latest, db)}};
+            {"settings", canvasSettingsSnapshot(latest, db, user_id)}};
         return result;
     }
     if (stored != CanvasServiceMemory::CompareSetResult::Applied) return reject("SETTINGS_STORAGE_ERROR");
@@ -240,7 +281,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             if (member.is_number_integer()) result.participant_ids.insert(member.get<int>());
         }
     }
-    const auto snapshot = canvasSettingsSnapshot(doc, db);
+    const auto snapshot = canvasSettingsSnapshot(doc, db, user_id);
     result.response = nlohmann::json{{"type", "canvas_settings_result"}, {"ok", true},
         {"request_id", request_id}, {"settings", snapshot}};
     result.changed_settings = snapshot;

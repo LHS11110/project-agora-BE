@@ -88,3 +88,9 @@ that image's own license and included notices separately.
 The separate search image contains [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small) (MIT), revision `614241f622f53c4eeff9890bdc4f31cfecc418b3`. The pinned model card is retained at `/models/e5/MODEL_CARD.md`. No remote model code is executed. Runtime Python distributions and their installed license notices include NumPy (BSD-3-Clause), ONNX Runtime (MIT), Hugging Face Tokenizers (Apache-2.0), and Requests (Apache-2.0). Keep their wheel `.dist-info` license files when distributing this image. The E5 model is downloaded at image build time, while corpus and query inference remain local.
 
 Google login additionally includes Spring Security OAuth2 Client/Core/JOSE (Apache-2.0) and Nimbus OAuth2/OIDC SDK and JOSE JWT libraries. Their exact versions are locked in `spring/gradle.lockfile`; retain their nested notices and license choices when distributing the boot JAR.
+
+Email verification uses Spring Mail and its Jakarta Mail/Angus runtime dependencies. Preserve the exact resolved artifacts and their upstream notices from the lockfile; review their license choices before redistributing a binary image.
+
+## Passkey verification
+
+[Yubico java-webauthn-server](https://github.com/Yubico/java-webauthn-server) `webauthn-server-core` and `yubico-util` 2.10.1 are used for server-side WebAuthn verification. Their upstream COPYING includes BSD-2-Clause and Google BSD-3-Clause notices; the exact versioned [COPYING](licenses/upstream/yubico-webauthn-2.10.1-COPYING) is included in the application JAR under `META-INF/agora-licenses`. Locked transitive dependencies retain their own licenses.

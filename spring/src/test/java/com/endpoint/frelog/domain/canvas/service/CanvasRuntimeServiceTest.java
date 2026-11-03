@@ -32,15 +32,18 @@ class CanvasRuntimeServiceTest {
                     return text;
                 } catch (Exception error) { throw new RuntimeException(error); }
             });
-            var result = new CanvasRuntimeService(socket.toString()).execute(42, "python", "print('ok')");
+            var result = new CanvasRuntimeService(socket.toString()).execute(42, "python", "print(input())", "first\nsecond\n");
             assertEquals("ok\n", result.get("output"));
             assertTrue(request.get().contains("\"canvasId\":42"));
+            assertTrue(request.get().contains("\"stdin\":\"first\\nsecond\\n\""));
         }
     }
 
     @Test void invalidLanguageAndOversizeInputNeverConnect() {
         var service = new CanvasRuntimeService(directory.resolve("missing").toString());
         assertThrows(CustomException.class, () -> service.execute(1, "ruby", ""));
+        var oversize = assertThrows(CustomException.class, () -> service.execute(1, "python", "input()", "한".repeat(22000)));
+        assertTrue(oversize.getMessage().contains("64KB"));
         assertThrows(CustomException.class, () -> service.execute(1, "python", "한".repeat(22000)));
         assertThrows(CustomException.class, () -> service.execute(1, "python", "print(1)"));
     }

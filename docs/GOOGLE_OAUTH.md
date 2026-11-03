@@ -13,7 +13,7 @@ BE `.env`에 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`�
 1. FE는 `GET /api/auth/providers`로 활성 제공자를 확인합니다.
 2. Google 버튼은 `/api/auth/oauth2/authorize/google`로 이동합니다.
 3. Spring Security OIDC가 authorization code, state, nonce, PKCE, 서명·issuer·audience 검증을 처리합니다. callback 주소는 설정된 HTTPS 주소를 사용하며 Host 헤더로 만들지 않습니다.
-4. 확인된 Google `sub`를 `oauth_provider=google`과 함께 식별 키로 사용합니다. 최초 로그인 때만 일반 사용자와 세션을 생성합니다. 비밀번호는 저장하지 않습니다. 확인되지 않은 이메일과 정지·탈퇴 계정은 거절합니다.
+4. 확인된 Google `sub`를 `oauth_provider=google`과 함께 식별 키로 사용합니다. 최초 로그인 때만 일반 사용자와 세션을 생성합니다. 비밀번호는 저장하지 않습니다. 확인되지 않은 이메일과 정지 계정은 거절합니다. 탈퇴 후 같은 Google 계정으로 인증하면 이전 사용자와 분리된 새 계정을 생성합니다.
 5. 이메일이 기존 계정과 충돌하면 자동 병합하지 않고 기존 로그인 사용을 안내합니다. 기존 계정 연결 기능은 별도 구현 대상입니다. Google 이메일이 바뀌어도 기존 `sub`로 동일 계정을 찾습니다.
 6. 로그인 성공 후 60초짜리 HttpOnly·Secure·SameSite=Lax 세션으로 `/login?oauth=success`에 돌아옵니다. FE는 `GET /api/auth/oauth2/session`을 한 번 호출해 기존 FreLog JWT를 받습니다. 세션은 즉시 폐기하고 응답은 no-store로 처리합니다. JWT·Google token·Client Secret을 리디렉션 URL에 넣지 않습니다.
 7. 이후 API·캔버스 통신은 기존 JWT 인증을 사용합니다. 일반 API는 OAuth 세션만으로 인증되지 않습니다. Google API용 refresh token을 요청·영구 저장하지 않습니다.
@@ -29,3 +29,7 @@ Google Cloud 자격 증명이 없는 환경에서는 서버 단위·통합 테�
 운영 검증: 2026-10-31 Google 로그인 활성화, 실제 Google 인증 화면 이동과 리디렉션 URI 일치, PKCE/state/nonce, 세션 쿠키 속성을 확인했습니다. Spring에서 Google token/JWKS 서버로의 HTTPS 연결도 확인했습니다. Google 계정 선택·동의 후 최종 성공 로그인은 사용자가 직접 확인해야 합니다.
 
 리디렉션 포트 수정: 외부 호스트 Nginx는 실제 HTTPS 포트와 호스트를 전달하며, Docker 게이트웨이는 신뢰한 외부 프록시의 포트만 유지합니다. OAuth 성공·실패·계정 충돌 후 복귀 주소는 검증된 Google callback URI의 origin으로 고정하여 내부 포트나 요청 헤더가 브라우저 복귀 주소를 바꾸지 못하게 합니다.
+
+계정 탈퇴 시 개인정보와 인증 정보를 삭제하고 기존 사용자 행은 삭제된 계정 표시 및 탈퇴 상태로 보존합니다. 같은 Google 계정으로 재인증하면 별도의 일반 사용자 계정이 생성되며, 이전 계정의 캔버스 소유권·초대·MFA·권한은 승계되지 않습니다. 이전 버전에서 탈퇴한 계정의 연결 정보가 남아 있다면 Google 인증 성공 시 같은 트랜잭션에서 해제한 뒤 신규 계정을 만듭니다. 정지된 계정은 계속 차단하며, 다른 활성 계정과 이메일이 충돌하면 자동 연결하지 않습니다.
+
+네이버·카카오와 공유하는 현재 로그인/이메일 확인 흐름은 [SOCIAL_OAUTH.md](SOCIAL_OAUTH.md)를 참고하세요.

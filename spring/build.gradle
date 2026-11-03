@@ -39,13 +39,23 @@ dependencyLocking {
 	lockAllConfigurations()
 }
 
+// Yubico's runtime Guava range otherwise probes newer, unverified metadata
+// before Gradle applies the lock. Use the already locked and verified version.
+dependencyManagement {
+    dependencies {
+        dependency 'com.google.guava:guava:33.7.2-jre'
+    }
+}
+
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter'
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
 	implementation 'org.springframework.boot:spring-boot-starter-security'
 	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'
+	implementation 'org.springframework.boot:spring-boot-starter-mail'
 	implementation 'org.springframework.boot:spring-boot-starter-validation'
+	implementation 'com.yubico:webauthn-server-core:2.10.1'
 	implementation 'org.apache.tomcat.embed:tomcat-embed-jasper'
 	implementation 'jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api'
 	implementation 'org.glassfish.web:jakarta.servlet.jsp.jstl'
@@ -72,6 +82,9 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('bootJar') {
+	from(rootProject.file('../licenses/upstream/yubico-webauthn-2.10.1-COPYING')) {
+		into 'META-INF/agora-licenses'
+	}
 	from(rootProject.file('../LICENSE')) {
 		into 'META-INF/agora-licenses'
 	}

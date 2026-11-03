@@ -3,6 +3,7 @@ package com.endpoint.frelog.domain.canvas.controller;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
 import com.endpoint.frelog.domain.canvas.service.CanvasRuntimeService;
+import com.endpoint.frelog.domain.canvas.service.CanvasGroupPermissions;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.security.CustomUserDetails;
@@ -34,7 +35,9 @@ public class CanvasRuntimeController {
         this.tokens = tokens;
     }
 
-    public record ExecuteRequest(String language, String code, String passwordGrant) {}
+    public record ExecuteRequest(String language, String code, String passwordGrant, String stdin) {
+        public ExecuteRequest(String language, String code, String passwordGrant) { this(language, code, passwordGrant, null); }
+    }
 
     public record ResetRequest(String passwordGrant) {}
     public record ConfigureRequest(String language, Map<String, Object> config, Long revision, String passwordGrant) {}
@@ -43,14 +46,14 @@ public class CanvasRuntimeController {
     public ResponseEntity<Map<String, Object>> settings(@PathVariable Integer canvasId,
             @RequestHeader(value="X-Canvas-Password-Grant", required=false) String passwordGrant,
             @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, passwordGrant, user);
+        authorize(canvasId, passwordGrant, user, "read");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(runtime.settings(canvasId));
     }
 
     @PutMapping("/{canvasId}/runtime/settings")
     public ResponseEntity<Map<String, Object>> configure(@PathVariable Integer canvasId,
             @RequestBody ConfigureRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "manage_runtime");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(runtime.configure(canvasId, request.language(), request.config(), request.revision()));
     }
@@ -61,7 +64,7 @@ public class CanvasRuntimeController {
     @PutMapping("/{canvasId}/runtime/resources")
     public ResponseEntity<Map<String, Object>> resources(@PathVariable Integer canvasId,
             @RequestBody ResourcesRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "manage_runtime");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(runtime.resources(canvasId, request.template(), request.revision()));
     }
@@ -71,7 +74,7 @@ public class CanvasRuntimeController {
     @PutMapping("/{canvasId}/runtime/disk")
     public ResponseEntity<Map<String, Object>> disk(@PathVariable Integer canvasId,
             @RequestBody DiskRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "manage_runtime");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .body(runtime.disk(canvasId, request.sizeGiB(), request.revision()));
     }
@@ -81,27 +84,31 @@ public class CanvasRuntimeController {
     @PostMapping("/{canvasId}/runtime/java/dependencies")
     public ResponseEntity<Map<String, Object>> installJavaDependencies(@PathVariable Integer canvasId,
             @RequestBody InstallJavaRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "manage_runtime");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(runtime.installJavaDependencies(canvasId));
     }
 
     @PostMapping("/{canvasId}/runtime/reset")
     public ResponseEntity<Map<String, Object>> reset(@PathVariable Integer canvasId,
             @RequestBody ResetRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "manage_runtime");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(runtime.reset(canvasId));
     }
 
     @PostMapping("/{canvasId}/runtime/execute")
     public ResponseEntity<Map<String, Object>> execute(@PathVariable Integer canvasId,
             @RequestBody ExecuteRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user);
+        authorize(canvasId, request.passwordGrant(), user, "execute");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(runtime.execute(canvasId, request.language(), request.code()));
+                .body(request.stdin() == null ? runtime.execute(canvasId, request.language(), request.code()) : runtime.execute(canvasId, request.language(), request.code(), request.stdin()));
     }
-    private void authorize(Integer canvasId, String passwordGrant, CustomUserDetails user) {
+    private void authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
         // The authoritative live canvas document checks current membership or public visibility.
         CanvasDocument doc = canvases.getCanvasDocument(canvasId, user);
+        boolean allowed="manage_runtime".equals(capability)
+                ? CanvasGroupPermissions.allows(doc,user,"write")&&CanvasGroupPermissions.allows(doc,user,"execute")
+                : CanvasGroupPermissions.allows(doc,user,capability);
+        if(!allowed)throw new CustomException(ErrorCode.ACCESS_DENIED,"이 그룹에는 해당 작업의 권한이 없습니다.");
         String hash = doc.getCanvasPasswordHash();
         long revision = doc.getSettingsRevision() == null ? 0 : doc.getSettingsRevision();
         if (hash != null && !hash.isBlank() && !tokens.validateCanvasPasswordGrant(

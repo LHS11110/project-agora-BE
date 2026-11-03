@@ -32,6 +32,10 @@ class CanvasRuntimeControllerTest {
         when(tokens.validateCanvasPasswordGrant("grant", 7L, 12, 4L)).thenReturn(true);
         when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1\n"));
         assertEquals("1\n", controller.execute(12, request, user).getBody().get("output"));
+        when(runtime.execute(12, "python", "input()", "first\nsecond\n")).thenReturn(Map.of("output", "first\n"));
+        var withInput = new CanvasRuntimeController.ExecuteRequest("python", "input()", "grant", "first\nsecond\n");
+        assertEquals("first\n", controller.execute(12, withInput, user).getBody().get("output"));
+        verify(runtime).execute(12, "python", "input()", "first\nsecond\n");
     }
 
     @Test void rejectedMembershipNeverReachesRuntime() {
@@ -110,4 +114,14 @@ class CanvasRuntimeControllerTest {
         assertEquals(true,controller.installJavaDependencies(12,request,user).getBody().get("installed"));
     }
 
+    @Test void readOnlyAndExecutionRightsAreCheckedBeforeRuntimeCalls(){
+        var doc=new CanvasDocument("Roles",12,1L,null,"default");doc.setPeople(java.util.List.of(1L,7L));doc.setInnerGroup(Map.of("admin-group",java.util.List.of(1L),"default",java.util.List.of(7L)));
+        doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",false)));
+        when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
+        assertThrows(CustomException.class,()->controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user));
+        assertThrows(CustomException.class,()->controller.configure(12,new CanvasRuntimeController.ConfigureRequest("python",Map.of(),0L,null),user));verifyNoInteractions(runtime);
+        doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",true)));
+        when(runtime.execute(12,"python","print(1)")).thenReturn(Map.of("output","1"));assertEquals("1",controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user).getBody().get("output"));
+        assertThrows(CustomException.class,()->controller.reset(12,new CanvasRuntimeController.ResetRequest(null),user));
+    }
 }

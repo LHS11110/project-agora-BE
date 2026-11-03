@@ -20,7 +20,7 @@ class JwtAuthenticationFilterTest {
         request.setRemoteAddr("192.0.2.20");
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
-        new JwtAuthenticationFilter(tokens, users).doFilter(request, response, chain);
+        new JwtAuthenticationFilter(tokens, users, mock(com.endpoint.frelog.domain.auth.mfa.MfaService.class)).doFilter(request, response, chain);
         assertEquals(401, response.getStatus());
         assertTrue(response.getContentType().startsWith("application/json"));
         assertTrue(response.getContentAsString().contains("CLIENT_IP_CHANGED"));
@@ -44,11 +44,29 @@ class JwtAuthenticationFilterTest {
         MockHttpServletResponse response = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
         try {
-            new JwtAuthenticationFilter(tokens, users).doFilter(request, response, chain);
+            new JwtAuthenticationFilter(tokens, users, mock(com.endpoint.frelog.domain.auth.mfa.MfaService.class)).doFilter(request, response, chain);
             assertEquals(200, response.getStatus());
             verify(chain).doFilter(request, response);
         } finally {
             org.springframework.security.core.context.SecurityContextHolder.clearContext();
         }
+    }
+
+    @Test void botAuthenticationUsesScopedIdentityAndRejectsOutOfScopeRequests() throws Exception {
+        var tokens=mock(JwtTokenProvider.class);var users=mock(CustomUserDetailsService.class);var mfa=mock(com.endpoint.frelog.domain.auth.mfa.MfaService.class);
+        var bots=mock(com.endpoint.frelog.domain.canvas.bot.CanvasBotService.class);
+        var bot=new com.endpoint.frelog.domain.user.entity.User("bot@example.invalid",null,"[BOT] test",1,com.endpoint.frelog.domain.user.entity.Role.ROLE_USER);
+        bot.setUserId(9L);bot.setOauthProvider(com.endpoint.frelog.domain.canvas.bot.CanvasBotService.PROVIDER);
+        var identity=new com.endpoint.frelog.domain.canvas.bot.CanvasBotService.Identity(new CustomUserDetails(bot),12);
+        String token="agora_bot_9."+"a".repeat(43);when(bots.authenticate(token)).thenReturn(identity);
+        var filter=new JwtAuthenticationFilter(tokens,users,mfa,bots);
+        var request=new MockHttpServletRequest("POST","/api/canvases/13/access");request.addHeader("Authorization","Bearer "+token);
+        var response=new MockHttpServletResponse();var chain=mock(FilterChain.class);filter.doFilter(request,response,chain);
+        assertEquals(403,response.getStatus());verifyNoInteractions(chain,tokens,users,mfa);
+        when(bots.allowed(identity,"GET","/api/auth/me")).thenReturn(true);
+        request=new MockHttpServletRequest("GET","/api/auth/me");request.addHeader("Authorization","Bearer "+token);
+        filter.doFilter(request,new MockHttpServletResponse(),chain);verify(chain).doFilter(any(),any());
+        assertEquals(9L,((CustomUserDetails)org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getPrincipal()).getUserId());
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
     }
 }

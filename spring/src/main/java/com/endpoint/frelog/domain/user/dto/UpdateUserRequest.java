@@ -8,7 +8,7 @@ public record UpdateUserRequest(
         @JsonProperty("nickname")
         String nickname,
 
-        @Size(min = 4, max = 72, message = "비밀번호는 4자 이상 72자 이하여야 합니다.")
+        @Size(min = 12, max = 72, message = com.endpoint.frelog.domain.auth.validation.PasswordPolicy.MESSAGE)
         @JsonProperty("password")
         String password
 ) {
