@@ -50,7 +50,7 @@ inline void queryCheckObjectLock(const nlohmann::json& previous, const nlohmann:
     if (before != after) throw std::invalid_argument("ITEM_LOCKED");
 }
 inline nlohmann::json queryUpdatedItem(const nlohmann::json& previous, const nlohmann::json& input,
-        const std::unordered_set<std::string>& groups, bool admin, const std::unordered_set<std::string>* memberships=nullptr) {
+        const std::unordered_set<std::string>& groups, bool admin, const std::unordered_set<std::string>* memberships=nullptr, bool execution_state=false) {
     if (!input.is_object() || input.empty()) throw std::invalid_argument("ITEM_INVALID");
     if (!previous.is_null() && !queryCanAccess(previous, groups, admin)) throw std::invalid_argument("ITEM_ACCESS_DENIED");
     if (!queryCanAccess(input, groups, admin)) throw std::invalid_argument("ITEM_ACCESS_DENIED");
@@ -60,7 +60,7 @@ inline nlohmann::json queryUpdatedItem(const nlohmann::json& previous, const nlo
         if (!(memberships?*memberships:groups).count(required)) throw std::invalid_argument("ITEM_PERMISSION_DENIED");
     if (input.value("type", "") == "chat_room" || (!previous.is_null() && previous.value("type", "") == "chat_room"))
         throw std::invalid_argument("CHAT_QUERY_REQUIRED");
-    queryCheckObjectLock(previous, input);
+    if(!execution_state)queryCheckObjectLock(previous, input);
     const auto kind = input.value("kind", "");
     if (kind.empty()) throw std::invalid_argument("ITEM_KIND_REQUIRED");
     if (kind == "text" || kind == "note" || kind == "code") {

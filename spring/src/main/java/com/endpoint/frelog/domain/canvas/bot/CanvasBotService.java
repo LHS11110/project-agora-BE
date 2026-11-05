@@ -63,7 +63,7 @@ public class CanvasBotService {
         if(method.equals("GET")&&path.equals("/api/auth/me"))return true;
         String root="/api/canvases/"+bot.canvasId();
         boolean route=(method.equals("GET")&&(path.equals(root)||path.equals(root+"/settings")||path.equals(root+"/preview")||path.equals(root+"/image")||path.equals(root+"/runtime/settings")||path.startsWith(root+"/resources/")))
-            ||(method.equals("POST")&&(path.equals(root+"/access")||path.equals(root+"/runtime/execute")||path.equals(root+"/runtime/build")||path.equals(root+"/runtime/reset")));
+            ||(method.equals("POST")&&(path.equals(root+"/access")||path.equals(root+"/runtime/terminal/ticket")||path.equals(root+"/runtime/terminal")||path.equals(root+"/runtime/notebook")||path.equals(root+"/runtime/execute")||path.equals(root+"/runtime/build")||path.equals(root+"/runtime/reset")));
         if(!route)return false;
         try{var doc=canvases.getCanvasDocument(bot.canvasId(),bot.user());return doc.getPeople()!=null&&doc.getPeople().contains(bot.user().getUserId());}catch(CustomException e){return false;}
     }

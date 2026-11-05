@@ -199,12 +199,17 @@ public class CanvasService {
      */
     @Transactional(readOnly = true)
     public CanvasDocument getCanvasDocument(Integer canvasId, CustomUserDetails currentUser) {
+        return getCanvasItemDocument(canvasId,currentUser,null);
+    }
+
+    @Transactional(readOnly = true)
+    public CanvasDocument getCanvasItemDocument(Integer canvasId, CustomUserDetails currentUser, String itemId) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
         CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? (itemId == null ? redisDocumentReader.read(info) : redisDocumentReader.read(info, itemId)) : getCanvasDocumentOrThrow(canvasId);
         if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
         return doc;
     }

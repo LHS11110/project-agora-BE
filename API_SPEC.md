@@ -303,3 +303,35 @@ Python SDK 0.1.3 supports live capability changes and terminal revocation notifi
 ### 실시간 실행 출력
 
 `POST /api/canvases/{id}/runtime/execute/stream`은 `/runtime/execute`와 동일한 요청·권한 검사를 사용하며 `application/x-ndjson`으로 응답합니다. 출력마다 `{type:"output",output:"..."}`, 종료 시 `{type:"result",result:{exitCode,output,timedOut,truncated,environmentReset}}`를 전달합니다. 스트림 시작 후 오류는 `{type:"error",code?,message}`로 전달합니다. 결과의 output은 전체 출력이므로 앞서 받은 조각에 다시 덧붙이지 않습니다. 출력·코드·표준 입력 한도와 실행 시간 제한은 기존과 같습니다. 결과 객체는 같은 runId/codeId의 항목을 갱신하며 브로커를 통해 저장·공유합니다. 언어의 출력 버퍼가 flush되어야 조각이 발생합니다. 클라이언트 전송 실패가 실행 재시도를 유발하지 않습니다.
+
+### Python SDK 0.1.4: real participant presence
+
+`CanvasSession.connect()` joins both `/canvas/{id}` and `/rtc/canvas/{id}` using the same authenticated canvas access token and the main connection's server-issued binding. Bots and user accounts appear in the browser participant list. No media or P2P connection is started. `peers`, `peer_id`, and `presence_connected` expose membership; `send_cursor`, `send_laser`, and `set_editing` use the existing broker `canvas_relay` protocol. `next_event()` exposes membership and authenticated relays alongside durable changes, chat and comments. Object editing presence is filtered to readable peers; durable object ACLs remain server-enforced. Both channels rejoin after token expiry or connection loss, with no replay of transient presence. Cursor events are coalesced by peer, separate from the bounded document event queue; `event_overflow` reports document queue overflow and `items` remains the latest snapshot. See `sdk/python/examples/watch_canvas.py`.
+
+### VM terminal objects
+
+Create a `shape` object with `shapeType: "rectangle"`, `runtimeRole: "terminal"`, width/height and normal group permissions. The toolbar provides a Terminal tool. Terminal control uses authenticated `POST /api/canvases/{id}/runtime/terminal` with `{objectId, operation, data, cols, rows, offset, passwordGrant}`. Operations are `open`, `poll`, `input`, `resize`, `close`. Data is UTF-8 input (8KiB/request); output is base64 bytes with an absolute `offset`, `truncated`, `exited`, `exitCode`. Poll cursors are independent. The server derives session ownership from the authenticated user; there is no client-supplied owner override. Every request revalidates visibility/password grants and the target object's read/execute group intersection. Cached authorization reads only metadata and the target object's kind, role and permissions through the existing storage broker.
+
+Shells are private to `(canvas,user,object)` and share `/workspace` with code cells. They run as VM UID 1000 with a real controlling PTY, support Ctrl+C, resize, interactive prompts and persistent shell state. Python/pip wrappers use the selected Python runtime. Terminal output and credentials are never saved into object fields or broadcast. Up to 8 shells per VM, 256KiB recent output/session, 120 seconds without requests until shell cleanup. Explicit disconnect terminates the shell; viewport removal leaves it resumable until idle expiry. VM deletion removes all its sessions and disk. No SSH/public VM ingress is opened.
+
+### WebSocket terminal transport
+
+The browser uses authenticated `POST /api/canvases/{id}/runtime/terminal/ticket` with `{objectId,passwordGrant}` once per connection. The response contains `{ticket,expiresIn:15,path:"/api/terminal/ws"}`. Connect via WSS and send `{type:"attach",ticket,cols,rows,offset}` as the first frame within 5 seconds. Tickets are single-use and IP-bound; neither account tokens nor tickets appear in the WebSocket URL. Existing Origin policy applies. The server derives canvas, object and user from the ticket.
+
+Input frames: `{operation:"input"|"resize"|"close",data,cols,rows}`. Server frames: `{type:"ready"|"output",data:<base64>,offset,truncated,exited,exitCode}`, `{type:"closed",closed:true}`, or `{type:"error",retryable:false,message}`. Input is sent immediately. Output is pushed over a persistent Spring → Unix socket manager → guest VSOCK channel; no browser HTTP polling is used. Heartbeats keep idle connections alive. Brief transport failures reissue a ticket and resume the output cursor, without replaying potentially executed input. Every 2 seconds the server checks current token/account/MFA and object read/execute permissions; revoked access closes the connection with 1008.
+
+Manager stream slots are separate from normal code execution slots. Existing running guests without stream support use an internal compatibility bridge until their next ordinary boot; connecting via WebSocket does not force their restart. The legacy HTTP terminal endpoint remains for compatibility, while the canvas UI uses WSS.
+
+Validation (2026-11-04): actual public WSS browser connection to an isolated KVM verified UID/workspace, shell variables, Ctrl+C, reconnect and zero HTTP terminal polling. Local public-route echo: median 17.04ms, p95 19.39ms (20 keys; not a guarantee of external-network latency). Raw manager/guest stream: median ~10.5ms. Real bot tests rejected disjoint object groups, foreign Origins, ticket replay/expiry, and closed an active connection after permission revocation.
+
+### 공유 값 객체와 미디어 상태
+
+객체 `kind: "value"`는 계산이나 코드 실행 없이 값을 공유합니다. `valueType`은 `real`(실수), `integer`, `button`(0/1), `select`(선택지 인덱스), `text`입니다. `valueNumber`, `valueText`, `valueMin`, `valueMax`, `valueStep`, `valueOptions`, `title`을 기존 객체 변경 API/브로커 operations의 patch로 저장합니다. 범위는 min < max, step > 0이며 숫자 값은 범위 안에 있어야 합니다. 정수 필드는 정수여야 합니다. 선택지는 1~32개이고 인덱스는 유효 범위 안이어야 합니다. 일반 객체와 동일한 그룹 읽기·쓰기 권한을 적용합니다.
+
+PDF 객체의 `pdfPage`는 1 이상의 정수입니다. 영상 링크의 `mediaState`는 `{paused: boolean, time: number, updatedAt: number, actor: string}`이며 위치와 시각은 음수가 아닌 유한수입니다. 코드/실행 객체의 `runtimeState`는 공유 진행 상태입니다. 정확히 실행 상태만 변경하는 요청에는 실행 권한을 사용하며 일반 내용 수정 권한을 허용하지 않습니다. 해당 상태와 출력 결과는 저장 승인 후 공유되고 신규 접속 초기 문서에도 포함됩니다. 음량과 화면 배치는 개인 설정이며 셸 입출력은 개인 세션입니다.
+
+### Jupyter 노트북 객체
+
+`POST /api/canvases/{canvasId}/runtime/notebook`은 Bearer 인증과 대상 객체의 읽기·실행 권한을 확인합니다. 요청은 `{objectId, operation: "prepare"|"execute"|"reset", code, passwordGrant?}`입니다. `prepare`는 추가로 실행 환경 관리 권한(캔버스 쓰기·실행)이 필요합니다. 응답 전에도 권한을 재확인합니다. `execute`는 선택된 Python 인터프리터의 실제 IPython/Jupyter 커널에서 실행하고 `{outputs, executionCount, exitCode, timedOut?, truncated?, error?, engine}`을 반환합니다. `outputs`는 표준 노트북의 `stream`, `execute_result`, `display_data`, `error` 형식입니다. 표시 MIME은 text/plain, text/html, image/png, image/jpeg, image/svg+xml입니다. 셀은 15초 제한, stdin 요청은 비활성화합니다.
+
+저장 객체는 `kind: "shape", shapeType: "rectangle", runtimeRole: "notebook"`입니다. `notebookCells: [{id,cellType:"code"|"markdown",source}]`는 쓰기 권한으로 변경합니다. 최대 32셀이고 셀 소스는 UTF-8 64KB 이하입니다. `notebookResults: {cellId: {outputs,executionCount,exitCode,error?,truncated?}}`와 `runtimeState`만 바꾸는 정확한 patch는 실행 권한으로 허용합니다. 내용·권한·위치를 함께 바꾸면 일반 쓰기 권한과 잠금 검사가 적용됩니다. 저장 승인 후 기존 브로커 경로로 공유하며 신규 참가자도 저장된 셀·출력을 받습니다. Python 커널 메모리 상태는 VM/런타임 수명에 종속되며 노트북별 최근 4개 커널을 유지합니다.

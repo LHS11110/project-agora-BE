@@ -58,6 +58,64 @@ public class CanvasRuntimeService {
         return exchange(payload);
     }
 
+    public Map<String, Object> terminal(Integer canvasId, Long owner, String terminal, String operation,
+            String data, Integer cols, Integer rows, Long offset) {
+        if (terminal == null || !terminal.matches("[a-zA-Z0-9_-]{1,128}") || operation == null ||
+                !Set.of("open","poll","input","resize","close").contains(operation) || data == null ||
+                data.getBytes(StandardCharsets.UTF_8).length > 8192 || cols == null || cols < 2 || cols > 300 ||
+                rows == null || rows < 2 || rows > 150 || offset == null || offset < 0) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"터미널 요청과 크기를 확인하세요.");
+        }
+        return exchange(Map.of("canvasId",canvasId,"action","terminal","owner",owner,"terminal",terminal,
+                "operation",operation,"data",data,"cols",cols,"rows",rows,"offset",offset));
+    }
+
+    public TerminalBridge attachTerminal(Integer canvasId, Long owner, String terminal, int cols, int rows, long offset,
+            java.util.function.Consumer<Map<String,Object>> receive, Runnable disconnected) throws IOException {
+        return new TerminalBridge(Map.of("canvasId",canvasId,"action","terminal_attach","owner",owner,"terminal",terminal,
+                "operation","open","data","","cols",cols,"rows",rows,"offset",offset),receive,disconnected);
+    }
+
+    public final class TerminalBridge implements AutoCloseable {
+        private final SocketChannel channel;
+        private final Object writer = new Object();
+        private volatile boolean closed;
+        TerminalBridge(Map<String,Object> initial, java.util.function.Consumer<Map<String,Object>> receive, Runnable disconnected) throws IOException {
+            channel=SocketChannel.open(StandardProtocolFamily.UNIX);
+            try { channel.connect(UnixDomainSocketAddress.of(socketPath));send(initial); }
+            catch(IOException error){channel.close();throw error;}
+            Thread.ofVirtual().name("terminal-output").start(()->{
+                try {
+                    var line=new ByteArrayOutputStream();var input=ByteBuffer.allocate(8192);
+                    while(!closed){
+                        int count=channel.read(input);if(count<0)break;input.flip();
+                        while(input.hasRemaining()){
+                            byte b=input.get();
+                            if(b=='\n'){
+                                Map<String,Object> frame=json.readValue(line.toByteArray(),new TypeReference<>(){});line.reset();
+                                if(frame.containsKey("error"))throw new IOException("Terminal unavailable");
+                                receive.accept(frame);
+                            }else{if(line.size()>=100000)throw new IOException("Terminal frame too large");line.write(b);}
+                        }
+                        input.clear();
+                    }
+                }catch(Exception ignored){}finally{close();disconnected.run();}
+            });
+        }
+        public void send(Map<String,Object> frame) throws IOException {
+            byte[] bytes=(json.writeValueAsString(frame)+"\n").getBytes(StandardCharsets.UTF_8);
+            if(bytes.length>60000)throw new IOException("Terminal input too large");
+            synchronized(writer){if(closed)throw new IOException("Terminal closed");var buffer=ByteBuffer.wrap(bytes);while(buffer.hasRemaining())channel.write(buffer);}
+        }
+        public void close(){closed=true;try{channel.close();}catch(IOException ignored){}}
+    }
+
+    public Map<String,Object> notebook(Integer canvasId,String objectId,String operation,String code) {
+        if(objectId==null||!objectId.matches("[a-zA-Z0-9_-]{1,128}")||!Set.of("prepare","execute","reset").contains(operation==null?"":operation)||code==null||code.getBytes(StandardCharsets.UTF_8).length>65536)
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"노트북 요청을 확인하세요.");
+        return exchange(Map.of("canvasId",canvasId,"action","notebook","operation",operation,"notebook",objectId,"code",code));
+    }
+
     public Map<String, Object> settings(Integer canvasId) {
         return exchange(Map.of("canvasId", canvasId, "action", "settings_get"));
     }
@@ -116,7 +174,7 @@ public class CanvasRuntimeService {
              Selector selector = Selector.open()) {
             channel.configureBlocking(false);
             channel.connect(UnixDomainSocketAddress.of(socketPath));
-            long deadline = System.nanoTime() + ("java_dependencies".equals(payload.get("action")) ? 220_000_000_000L : "build".equals(payload.get("action")) ? 100_000_000_000L : 55_000_000_000L);
+            long deadline = System.nanoTime() + (("java_dependencies".equals(payload.get("action"))||("notebook".equals(payload.get("action"))&&"prepare".equals(payload.get("operation")))) ? 220_000_000_000L : "build".equals(payload.get("action")) ? 100_000_000_000L : 55_000_000_000L);
             channel.register(selector, SelectionKey.OP_CONNECT);
             while (!channel.finishConnect()) waitFor(selector, deadline);
             byte[] request = (json.writeValueAsString(payload) + "\n")

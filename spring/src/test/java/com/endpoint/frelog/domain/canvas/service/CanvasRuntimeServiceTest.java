@@ -72,4 +72,12 @@ class CanvasRuntimeServiceTest {
         }
     }
 
+
+    @Test void terminalRejectsInvalidInputBeforeOpeningSocket() {
+        var service=new CanvasRuntimeService(directory.resolve("absent").toString());
+        assertThrows(CustomException.class,()->service.terminal(1,7L,"../bad","open","",80,24,0L));
+        assertThrows(CustomException.class,()->service.terminal(1,7L,"term","exec","",80,24,0L));
+        assertThrows(CustomException.class,()->service.terminal(1,7L,"term","input","한".repeat(3000),80,24,0L));
+        assertThrows(CustomException.class,()->service.terminal(1,7L,"term","resize","",0,24,0L));
+    }
 }

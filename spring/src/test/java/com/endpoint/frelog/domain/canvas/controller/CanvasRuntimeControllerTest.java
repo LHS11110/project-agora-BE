@@ -189,4 +189,47 @@ class CanvasRuntimeControllerTest {
         assertThrows(CustomException.class,()->controller.executeStream(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user,new org.springframework.mock.web.MockHttpServletResponse()));
     }
 
+
+    @Test void terminalBindsOwnerAndRequiresObjectGroupExecution() {
+        var doc=new CanvasDocument();doc.setCanvasId(12);doc.setAdminUserId(99L);
+        doc.setInnerGroup(Map.of("readers",java.util.List.of(7L),"other",java.util.List.of(8L)));
+        doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",true,"write",false),"other",Map.of("read",true,"execute",true,"write",true)));
+        doc.setItems(Map.of("terminal-1",Map.of("kind","shape","runtimeRole","terminal","permission",java.util.List.of("readers"))));
+        when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasItemDocument(eq(12),eq(user),anyString())).thenReturn(doc);
+        var request=new CanvasRuntimeController.TerminalRequest("terminal-1","open","",80,24,0L,null);
+        when(runtime.terminal(12,7L,"terminal-1","open","",80,24,0L)).thenReturn(Map.of("offset",0));
+        assertEquals(0,controller.terminal(12,request,user).getBody().get("offset"));
+        verify(runtime).terminal(12,7L,"terminal-1","open","",80,24,0L);
+        clearInvocations(runtime);
+        doc.setItems(Map.of("terminal-1",Map.of("kind","shape","runtimeRole","terminal","permission",java.util.List.of("other"))));
+        assertThrows(CustomException.class,()->controller.terminal(12,request,user));verifyNoInteractions(runtime);
+        doc.setItems(Map.of());assertThrows(CustomException.class,()->controller.terminal(12,request,user));
+    }
+    @Test void terminalRejectsRevokedExecutionAndPasswordGrant() {
+        var doc=new CanvasDocument();doc.setAdminUserId(99L);doc.setVisibility("public");doc.setCanvasPasswordHash("hash");
+        doc.setInnerGroup(Map.of("default",java.util.List.of(7L)));doc.setInitGroup("default");
+        doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",true,"execute",false)));
+        when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasItemDocument(eq(12),eq(user),anyString())).thenReturn(doc);
+        var request=new CanvasRuntimeController.TerminalRequest("term","input","pwd\n",80,24,0L,null);
+        assertThrows(CustomException.class,()->controller.terminal(12,request,user));
+        doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",true,"execute",true)));
+        assertThrows(CustomException.class,()->controller.terminal(12,request,user));verifyNoInteractions(runtime);
+    }
+    @Test void notebookRequiresObjectExecutionAndRechecksRevocationBeforeReturningOutput() {
+        var doc=new CanvasDocument();doc.setCanvasId(12);doc.setAdminUserId(99L);
+        doc.setInnerGroup(Map.of("readers",java.util.List.of(7L)));
+        doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",true,"write",false)));
+        doc.setItems(Map.of("nb",Map.of("kind","shape","runtimeRole","notebook","permission",java.util.List.of("readers"))));
+        when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasItemDocument(12,user,"nb")).thenReturn(doc);
+        var request=new CanvasRuntimeController.NotebookRequest("nb","execute","1+1",null);
+        when(runtime.notebook(12,"nb","execute","1+1")).thenReturn(Map.of("exitCode",0));
+        assertEquals(0,controller.notebook(12,request,user).getBody().get("exitCode"));
+        when(runtime.notebook(12,"nb","execute","1+1")).thenAnswer(invocation->{doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",false,"write",false)));return Map.of("exitCode",0);});
+        assertThrows(CustomException.class,()->controller.notebook(12,request,user));
+        clearInvocations(runtime);assertThrows(CustomException.class,()->controller.notebook(12,request,user));verifyNoInteractions(runtime);
+        doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",true,"write",false)));
+        when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
+        assertThrows(CustomException.class,()->controller.notebook(12,new CanvasRuntimeController.NotebookRequest("nb","prepare","",null),user));verifyNoInteractions(runtime);
+    }
+
 }

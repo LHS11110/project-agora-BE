@@ -104,6 +104,38 @@ canvas.execute("python", "print(input())", stdin="hello\n")
 
 `execute()`는 기존 런타임 API를 호출해 결과를 반환합니다. 브라우저의 블루프린트 실행 계획을 자동 실행하거나 결과 객체에 출력을 자동 작성하지는 않습니다. 결과 객체를 갱신하려면 기존 `runtimeResults` 스키마로 `patch()`하세요. JSON 외 파일 응답은 `client.request("GET", "/api/...", raw=True).content`로 받을 수 있고 multipart 업로드는 `request(..., files=...)`로 기존 API를 호출할 수 있습니다. 봇의 HTTP 허용 경로는 캔버스 조회·접속·실행 등으로 제한되므로 추가 관리 API가 필요한 작업은 실제 사용자 계정을 사용하세요. 그 밖의 브로커 기능은 `send_event()`로 기존 이벤트를 전달할 수 있습니다. 응답이 없는 커서 등 일방향 이벤트는 `publish()`를 사용합니다.
 
+## 일반 사용자와 동일한 실시간 참여 (0.1.4)
+
+`client.canvas(id).connect()` 또는 `with client.canvas(id)`는 객체 동기화 연결과 참여자 채널을 자동으로 엽니다. 캔버스 연결에서 받은 증명값으로 두 채널을 묶으며, 브라우저 접속자 목록에도 표시됩니다. 같은 동작이 일반 사용자 토큰과 봇 토큰에 모두 적용됩니다. 봇은 지정된 캔버스의 초대·그룹 권한을 따릅니다.
+
+```python
+with AgoraClient.from_bot(os.environ["AGORA_BOT_TOKEN"]) as client:
+    with client.canvas(2053) as canvas:
+        print(canvas.peer_id, canvas.presence_connected, canvas.peers)
+        canvas.send_cursor(.25, .35)
+        laser = canvas.send_laser("start", .25, .35)
+        canvas.send_laser("point", .30, .40, stroke_id=laser, sequence=1)
+        canvas.send_laser("end", .30, .40, stroke_id=laser, sequence=2)
+        # 쓰기 가능한 텍스트·메모·코드 객체에 대해서만:
+        # canvas.set_editing("object-id", True)
+        while True:
+            event = canvas.next_event(timeout=5)
+            if not event:
+                continue
+            if event["type"] == "canvas_commit":
+                print(event.get("author_id"), event["changed_ids"])
+            elif event["type"] == "canvas_relay":
+                print(event["peer"], event["payload"])
+```
+
+`examples/watch_canvas.py 2053`은 권한 있는 사용자 또는 봇으로 접속해 변경과 실시간 이벤트를 관찰하는 실행 예시입니다. `--show-cursor`를 지정하면 자신의 커서도 한 번 표시합니다. 좌표는 화면 픽셀이 아닌 SDK 객체 좌표와 같은 캔버스 좌표입니다.
+
+`next_event()`에서 `rtc_peers`, `rtc_peer_joined`, `rtc_peer_left`, `canvas_relay`(cursor/laser/editor_presence), 객체 변경, 채팅·댓글, 권한 변경 이벤트를 받을 수 있습니다. 객체 데이터는 `canvas.items`에서 확인하고 `canvas_commit`의 `author_id`로 변경자를 구분합니다. 커서의 선택 영역은 `send_cursor(..., selection={"start":{"x":0,"y":0},"end":{"x":.2,"y":.2}})`로 전송합니다. 편집 상태는 해당 객체를 읽을 수 있는 참여자에게만 보내며, 객체 데이터의 읽기·쓰기 권한은 서버가 계속 검사합니다.
+
+끊어진 채널과 만료된 접속 토큰은 자동 재접속하고 새 증명값으로 다시 묶습니다. 객체 변경은 기존 저장 영수증으로 복구하지만 오래된 커서·레이저는 재전송하지 않습니다. 종료하면 두 채널을 정리합니다. 브로커 채널 이름에 rtc가 들어가지만 이 모듈이 WebRTC 미디어/P2P 통화를 자동 시작하지는 않습니다. `rtc_signal`이 자신에게 도착하면 이벤트로 받을 수 있고, 별도 통화 구현은 `publish()`로 signaling을 보낼 수 있습니다.
+
+커서는 참여자별 최신 값으로 합치고 객체 이벤트와 다른 큐를 사용하므로 커서가 객체 변경 알림을 밀어내지 않습니다. 객체 이벤트 큐 한도(256개)를 넘으면 `event_overflow`로 누락 수를 알립니다. `.items`는 계속 갱신되므로 이것은 무제한 이벤트 로그가 아닙니다. 필요하면 `refresh()`로 현재 상태를 확인하세요.
+
 ## 설정과 권한
 
 ```python

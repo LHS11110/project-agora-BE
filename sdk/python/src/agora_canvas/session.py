@@ -1,14 +1,16 @@
 from __future__ import annotations
 import copy
 import json
+import math
 import threading
 import time
 import uuid
-from collections import deque
+from collections import deque, OrderedDict
 from urllib.parse import urlencode
 from websockets.sync.client import connect
 from websockets.exceptions import ConnectionClosed
 from .errors import AgoraError, Disconnected, OutcomeUnknown
+from .presence import PresenceConnection
 
 TRANSIENT={"BROKER_BUSY","BROKER_QUEUE_FULL","RATE_LIMITED","BROKER_BACKEND_UNAVAILABLE","QUERY_OUTCOME_UNKNOWN","QUERY_UNAVAILABLE","STORAGE_UNAVAILABLE","CANVAS_WRITE_CONFLICT"}
 
@@ -27,6 +29,8 @@ class CanvasSession:
         self._cv=threading.Condition(threading.RLock());self._send_lock=threading.RLock();self._mutation_lock=threading.Lock();self._rpc_lock=threading.Lock()
         self._closed=threading.Event();self._thread=None;self._ready=False;self._terminal=None
         self._flight=None;self._flight_error=None;self._sent_at=0;self._waiters={};self._events=deque(maxlen=256)
+        self._realtime_events=deque(maxlen=256);self._cursor_events=OrderedDict();self._event_overflow=0
+        self._presence=PresenceConnection(client,canvas_id,self.client_id,timeout,self._closed,self._presence_event,self._presence_lost)
     def __repr__(self):return f"CanvasSession(canvas_id={self.canvas_id}, connected={self._ready})"
     def __enter__(self):return self.connect()
     def __exit__(self,*args):self.close()
@@ -35,6 +39,26 @@ class CanvasSession:
         with self._cv:return copy.deepcopy(self._items)
     @property
     def connected(self):return self._ready and not self._closed.is_set()
+    @property
+    def presence_connected(self):return self._presence.connected
+    @property
+    def peer_id(self):return self._presence.peer_id
+    @property
+    def peers(self):return self._presence.peers
+    def _presence_lost(self):
+        with self._cv:self._ready=False;self._cv.notify_all()
+        if self._socket:self._socket.close()
+    def _presence_event(self,event):
+        if event.get('type')=='canvas_access_revoked':self._handle(event);return
+        with self._cv:
+            value=copy.deepcopy(event)
+            if event.get('type')=='canvas_relay' and event.get('payload',{}).get('type')=='cursor':
+                key=event.get('peer',{}).get('peer_id')
+                self._cursor_events[key]=value
+                if len(self._cursor_events)>1024:self._cursor_events.popitem(last=False)
+            else:self._realtime_events.append(value)
+            if event.get('type')=='rtc_peer_left':self._cursor_events.pop(event.get('peer_id'),None)
+            self._cv.notify_all()
     def connect(self):
         if self._closed.is_set():raise Disconnected("Session is closed")
         if self._thread:return self
@@ -43,6 +67,7 @@ class CanvasSession:
         return self
     def close(self):
         self._closed.set();self._ready=False
+        self._presence.close()
         if self._socket:self._socket.close()
         with self._cv:self._cv.notify_all()
         if self._thread and self._thread is not threading.current_thread():self._thread.join(timeout=5)
@@ -61,13 +86,18 @@ class CanvasSession:
             deadline=time.monotonic()+self.timeout
             while time.monotonic()<deadline:
                 event=json.loads(sock.recv(timeout=max(.1,deadline-time.monotonic())))
-                if event.get("type")=="init_items":self._handle(event);return
+                if event.get("type")=="init_items":
+                    self._handle(event)
+                    self._presence.open(access,event)
+                    return
                 if event.get("type")=="error":raise AgoraError("Canvas join rejected",code=event.get("code"))
             raise Disconnected("Canvas snapshot timed out")
         except AgoraError:
+            self._presence.close();self._ready=False
             if self._socket:self._socket.close()
             raise
         except Exception:
+            self._presence.close();self._ready=False
             if self._socket:self._socket.close()
             raise Disconnected("WSS canvas connection failed") from None
     def _send(self,event):
@@ -122,8 +152,13 @@ class CanvasSession:
             if request_id in self._waiters:self._waiters[request_id]=event
             # Large snapshots are available through .items rather than duplicated in the event queue.
             summary={"type":kind,"revision":self.revision}
-            if kind=="canvas_commit":summary["changed_ids"]=list(event.get("items",{}));summary["translations"]=event.get("translations",[])
-            self._events.append(summary if kind in ("init_items","canvas_snapshot","canvas_commit") else event)
+            if kind=="canvas_commit":
+                summary["changed_ids"]=list(dict.fromkeys([*event.get("items",{}),*(key for move in event.get("translations",[]) for key in move["ids"])]));summary["translations"]=event.get("translations",[])
+                for key in ("author_id","client_id","request_id","request_count"):
+                    if key in event:summary[key]=event[key]
+            if kind not in ("canvas_watermark","pong","canvas_result"):
+                if len(self._events)==self._events.maxlen:self._event_overflow+=1
+                self._events.append(summary if kind in ("init_items","canvas_snapshot","canvas_commit") else event)
             self._cv.notify_all()
         if need_sync:self._sync()
     def _read_loop(self):
@@ -139,7 +174,7 @@ class CanvasSession:
                 with self._cv:flight=copy.deepcopy(self._flight) if self._ready else None
                 if flight and now-self._sent_at>=1:self._send(flight);self._sent_at=now
                 if now-synced>=10:
-                    if self._ready:self._send({"type":"broker_lease","request_id":str(uuid.uuid4())})
+                    if self._ready:self._send({"type":"ping"})
                     else:self._sync()
                     synced=now
             except Exception:
@@ -149,6 +184,7 @@ class CanvasSession:
                     for key,value in self._waiters.items():
                         if value is None:self._waiters[key]=Disconnected("Connection changed before the response; inspect current state before retrying")
                     self._cv.notify_all()
+                self._presence.close()
                 if self._socket:self._socket.close()
                 delay=.2
                 while not self._closed.wait(delay):
@@ -158,6 +194,7 @@ class CanvasSession:
                             with self._cv:self._terminal=error;self._closed.set();self._cv.notify_all()
                             return
                     delay=min(delay*2,10)
+        self._presence.close()
         if self._socket:self._socket.close()
         self._ready=False
         with self._cv:self._cv.notify_all()
@@ -264,14 +301,56 @@ class CanvasSession:
         body={"language":language,"code":code,"passwordGrant":self._password_grant}
         if stdin is not None:body["stdin"]=stdin
         return self.client.request("POST",f"/api/canvases/{self.canvas_id}/runtime/execute",json=body)
+    @staticmethod
+    def _coordinate(value):
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):raise ValueError('Expected finite canvas coordinates')
+        return value
+    def send_presence(self,payload,*,peer_ids=None):
+        if not isinstance(payload,dict):raise ValueError('Expected a presence payload')
+        if payload.get('type')=='editor_presence':
+            key=str(payload.get('item_id',''))
+            with self._cv:
+                item=self._items.get(key)
+                if not item:raise AgoraError('Object is not visible',code='ITEM_ACCESS_DENIED')
+                permission=item.get('permission',[])
+                groups={permission} if isinstance(permission,str) else set(permission) if isinstance(permission,list) else {g for g,v in permission.items() if v is True or isinstance(v,(int,float)) and v>0} if isinstance(permission,dict) else set()
+                if payload.get('editing') and not self.capabilities.get('is_admin') and not groups.intersection(self.capabilities.get('write_groups') or []):raise AgoraError('Object is read-only',code='ITEM_WRITE_DENIED')
+                if payload.get('editing') and item.get('locked'):raise AgoraError('Object is locked',code='ITEM_LOCKED')
+            permitted={p['peer_id'] for p in self.peers if p.get('is_admin') or groups.intersection(p.get('groups') or [])}
+            peer_ids=list(permitted if peer_ids is None else permitted.intersection(peer_ids))
+        return self._presence.relay(payload,peer_ids)
+    def send_cursor(self,x=None,y=None,*,visible=True,selection=None):
+        payload={'type':'cursor','visible':bool(visible)}
+        if visible:
+            payload.update(x=self._coordinate(x),y=self._coordinate(y),selection=selection)
+        return self.send_presence(payload)
+    def send_laser(self,phase,x,y,*,stroke_id=None,sequence=0):
+        if phase not in ('start','point','end') or type(sequence) is not int or not 0<=sequence<9007199254740991:raise ValueError('Invalid laser phase or sequence')
+        if stroke_id is None:
+            if phase!='start':raise ValueError('stroke_id is required after start')
+            stroke_id=str(uuid.uuid4())
+        if not isinstance(stroke_id,str) or not 1<=len(stroke_id)<=128:raise ValueError('Invalid laser stroke ID')
+        self.send_presence({'type':'laser','phase':phase,'stroke_id':stroke_id,'sequence':sequence,'x':self._coordinate(x),'y':self._coordinate(y)})
+        return stroke_id
+    def set_editing(self,item_id,editing=True):return self.send_presence({'type':'editor_presence','item_id':str(item_id),'editing':bool(editing)})
     def publish(self,event):
+        kind=event.get('type')
+        if kind in ('cursor','laser','editor_presence'):return self.send_presence(event)
+        if kind=='canvas_relay':return self.send_presence(event.get('payload'),peer_ids=event.get('peer_ids'))
+        if kind in ('rtc_list','rtc_signal'):return self._presence.send_control(event)
         with self._cv:self._wait(lambda:self._ready)
         self._send(event)
     def send_event(self,event):
         """Other existing broker APIs (chat, comments, mentions, cursors, etc.)."""
+        if event.get('type') in ('cursor','laser','editor_presence','canvas_relay','rtc_list','rtc_signal'):return self.publish(event)
         return self._request(event)
     def next_event(self,timeout=None):
         with self._cv:
-            try:self._wait(lambda:bool(self._events),timeout)
+            try:self._wait(lambda:bool(self._events or self._realtime_events or self._cursor_events or self._event_overflow),timeout)
             except TimeoutError:return None
-            return self._events.popleft()
+            if self._event_overflow:
+                count=self._event_overflow;self._event_overflow=0
+                return {'type':'event_overflow','dropped':count,'revision':self.revision}
+            if self._events:return self._events.popleft()
+            if self._realtime_events:return self._realtime_events.popleft()
+            return self._cursor_events.popitem(last=False)[1]

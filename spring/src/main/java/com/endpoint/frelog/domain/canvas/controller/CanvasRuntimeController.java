@@ -136,9 +136,55 @@ public class CanvasRuntimeController {
                 .body(runtime.build(canvasId, request.language(), request.code()));
     }
 
-    private void authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
+    public record TerminalRequest(String objectId, String operation, String data, Integer cols, Integer rows, Long offset, String passwordGrant) {}
+
+    @PostMapping("/{canvasId}/runtime/terminal")
+    public ResponseEntity<Map<String,Object>> terminal(@PathVariable Integer canvasId,
+            @RequestBody TerminalRequest request, @AuthenticationPrincipal CustomUserDetails user) {
+        authorizeTerminal(canvasId,request.objectId(),request.passwordGrant(),user);
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(runtime.terminal(canvasId,user.getUserId(),
+                request.objectId(),request.operation(),request.data(),request.cols(),request.rows(),request.offset()));
+    }
+
+    public record NotebookRequest(String objectId,String operation,String code,String passwordGrant) {}
+    @PostMapping("/{canvasId}/runtime/notebook")
+    public ResponseEntity<Map<String,Object>> notebook(@PathVariable Integer canvasId,@RequestBody NotebookRequest request,@AuthenticationPrincipal CustomUserDetails user) {
+        var document=authorizeRuntimeObject(canvasId,request.objectId(),request.passwordGrant(),user,"notebook");
+        if("prepare".equals(request.operation())&&!CanvasGroupPermissions.allows(document,user,"write"))throw new CustomException(ErrorCode.ACCESS_DENIED,"실행 환경을 변경할 권한이 없습니다.");
+        var result=runtime.notebook(canvasId,request.objectId(),request.operation(),request.code()==null?"":request.code());
+        authorizeRuntimeObject(canvasId,request.objectId(),request.passwordGrant(),user,"notebook");
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(result);
+    }
+
+    public void authorizeTerminal(Integer canvasId, String objectId, String passwordGrant, CustomUserDetails user) {
+        authorizeRuntimeObject(canvasId,objectId,passwordGrant,user,"terminal");
+    }
+
+    private CanvasDocument authorizeRuntimeObject(Integer canvasId, String objectId, String passwordGrant, CustomUserDetails user,String role) {
+        if(objectId==null||!objectId.matches("[a-zA-Z0-9_-]{1,128}"))throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"실행 객체를 확인하세요.");
+        CanvasDocument doc = authorize(canvasId,passwordGrant,user,"execute",objectId);
+        Object raw = doc.getItems().get(objectId);
+        if (!(raw instanceof Map<?,?> item) || !"shape".equals(item.get("kind")) || !role.equals(item.get("runtimeRole")))
+            throw new CustomException(ErrorCode.ACCESS_DENIED,"실행 객체가 없거나 접근할 수 없습니다.");
+        if (!CanvasGroupPermissions.admin(doc,user.getUserId())) {
+            var bits = new com.endpoint.frelog.domain.canvas.service.CanvasGroupBits(doc);
+            var groups = new java.util.HashSet<String>();
+            doc.getInnerGroup().forEach((name,members)->{
+                if (((members != null && members.contains(user.getUserId())) || ("public".equals(doc.getVisibility()) && name.equals(doc.getInitGroup())))
+                        && CanvasGroupPermissions.group(doc,name,"read") && CanvasGroupPermissions.group(doc,name,"execute")) groups.add(name);
+            });
+            if ((bits.permissionMask(item.get("permission")) & bits.mask(groups)) == 0)
+                throw new CustomException(ErrorCode.ACCESS_DENIED,"실행 객체의 실행 권한이 없습니다.");
+        }
+        return doc;
+    }
+
+    private CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
+        return authorize(canvasId,passwordGrant,user,capability,null);
+    }
+    public CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability, String itemId) {
         // The authoritative live canvas document checks current membership or public visibility.
-        CanvasDocument doc = canvases.getCanvasDocument(canvasId, user);
+        CanvasDocument doc = itemId == null ? canvases.getCanvasDocument(canvasId, user) : canvases.getCanvasItemDocument(canvasId,user,itemId);
         boolean allowed="manage_runtime".equals(capability)
                 ? CanvasGroupPermissions.allows(doc,user,"write")&&CanvasGroupPermissions.allows(doc,user,"execute")
                 : CanvasGroupPermissions.allows(doc,user,capability);
@@ -149,6 +195,7 @@ public class CanvasRuntimeController {
                 passwordGrant, user.getUserId(), canvasId, revision)) {
             throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
         }
+        return doc;
     }
 
 }

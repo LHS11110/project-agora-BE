@@ -75,7 +75,9 @@ public class CanvasRedisDocumentReader {
         this.logService = logService;
     }
 
-    public CanvasDocument read(CanvasInfo info) {
+    public CanvasDocument read(CanvasInfo info) { return read(info, null); }
+
+    public CanvasDocument read(CanvasInfo info, String itemId) {
         if (info == null || password.isBlank()) throw unavailable();
         String key = "canvas:" + info.getCanvasId();
 
@@ -84,7 +86,7 @@ public class CanvasRedisDocumentReader {
             try {
                 RedisAddress endpoint = new RedisAddress(info.getRedisInfo().getRedisIp(),
                         Integer.parseInt(info.getRedisInfo().getRedisPort()));
-                String json = readDocument(endpoint, false, key);
+                String json = readDocument(endpoint, false, key, itemId);
                 logService.reportAvailability("redis", true, Map.of("endpoint", endpoint.host() + ":" + endpoint.port()));
                 return objectMapper.readValue(json, CanvasDocument.class);
             } catch (Exception e) {
@@ -102,7 +104,7 @@ public class CanvasRedisDocumentReader {
                 String json;
                 try {
                     master = discoverMaster(seed);
-                    json = readDocument(master, true, key);
+                    json = readDocument(master, true, key, itemId);
                 } catch (Exception ignored) {
                     // A seed can briefly return its old view during promotion.
                     // Query the other seeds and verify the candidate's ROLE.
@@ -171,7 +173,7 @@ public class CanvasRedisDocumentReader {
         }
     }
 
-    private String readDocument(RedisAddress endpoint, boolean requirePrimary, String key) throws Exception {
+    private String readDocument(RedisAddress endpoint, boolean requirePrimary, String key, String itemId) throws Exception {
         try (Socket socket = openSocket(endpoint)) {
             InputStream in = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
@@ -190,6 +192,11 @@ public class CanvasRedisDocumentReader {
 
             List<String> command = new ArrayList<>(List.of("JSON.GET", key));
             for (String field : METADATA_FIELDS) command.add("$[" + objectMapper.writeValueAsString(field) + "]");
+            var itemPaths = new java.util.LinkedHashMap<String,String>();
+            if (itemId != null) for (String field : List.of("kind","runtimeRole","permission")) {
+                String path = "$[\"items\"][" + objectMapper.writeValueAsString(itemId) + "][" + objectMapper.writeValueAsString(field) + "]";
+                itemPaths.put(field,path); command.add(path);
+            }
             writeCommand(out, command.toArray(String[]::new));
             Object reply = readReply(in);
             if (!(reply instanceof String json) || json.isBlank()) {
@@ -202,6 +209,11 @@ public class CanvasRedisDocumentReader {
                 if (values != null && values.isArray() && !values.isEmpty()) metadata.set(METADATA_FIELDS.get(i), values.get(0));
             }
             if (metadata.isEmpty()) throw new IOException("Canvas metadata is missing");
+            if (itemId != null) {
+                var item = objectMapper.createObjectNode();
+                itemPaths.forEach((field,path)-> { var values=projection.get(path); if(values!=null && values.isArray() && !values.isEmpty())item.set(field,values.get(0)); });
+                if(!item.isEmpty())metadata.putObject("items").set(itemId,item);
+            }
             return objectMapper.writeValueAsString(CanvasDocumentJson.normalize(metadata));
         }
     }

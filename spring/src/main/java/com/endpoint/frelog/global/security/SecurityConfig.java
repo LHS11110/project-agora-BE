@@ -82,6 +82,7 @@ public class SecurityConfig {
                                 "/favicon.ico",
                                 "/favicon.png",
                                 "/api/auth/providers",
+                                "/api/terminal/ws",
                                 "/api/auth/qr/start",
                                 "/api/auth/qr/poll",
                                 "/api/auth/qr/cancel",

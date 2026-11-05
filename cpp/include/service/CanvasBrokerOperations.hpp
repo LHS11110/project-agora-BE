@@ -1,3 +1,5 @@
+#include "service/CanvasNotebookValidation.hpp"
+#include "service/CanvasValueValidation.hpp"
 #pragma once
 #include "service/CanvasQueryRules.hpp"
 #include "service/CanvasQuestion.hpp"
@@ -9,18 +11,18 @@ namespace agora::broker {
 using Json=nlohmann::json;
 struct Mutation {Json items=Json::object(),previous=Json::object(),expected=Json::object(),translations=Json::array();bool only_translations=true;};
 inline void validate(const Json& item){
- static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","chart","question","image","link","connector","stroke","pdf","user-group"};
- static const std::unordered_set<std::string> fields={"questionType","questionPrompt","questionOptions","questionAnswer","questionSubmitted","questionMaxScore","questionScore","questionFeedback","questionVersion","questionGradedVersion","kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
+ static const std::unordered_set<std::string> kinds={"text","note","code","math","shape","table","chart","question","value","image","link","connector","stroke","pdf","user-group"};
+ static const std::unordered_set<std::string> fields={"notebookCells","notebookResults","valueType","valueNumber","valueMin","valueMax","valueStep","valueText","valueOptions","pdfPage","mediaState","runtimeState","questionType","questionPrompt","questionOptions","questionAnswer","questionSubmitted","questionMaxScore","questionScore","questionFeedback","questionVersion","questionGradedVersion","kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","automerge_snapshot","automerge_changes"};
  if(!item.is_object()||!kinds.count(item.value("kind","")))throw std::invalid_argument("ITEM_KIND_INVALID");
  for(const auto& field:item.items()){
   if(!fields.count(field.key()))throw std::invalid_argument("ITEM_FIELD_INVALID");
   if(field.value().is_number()&&!std::isfinite(field.value().get<double>()))throw std::invalid_argument("ITEM_NUMBER_INVALID");
  }
- for(const auto* field:{"x","y","width","height","rotation","fontSize","strokeWidth","depth","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity"})if(item.contains(field)&&!item[field].is_number())throw std::invalid_argument("ITEM_NUMBER_INVALID");
+ for(const auto* field:{"valueNumber","valueMin","valueMax","valueStep","pdfPage","x","y","width","height","rotation","fontSize","strokeWidth","depth","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity"})if(item.contains(field)&&!item[field].is_number())throw std::invalid_argument("ITEM_NUMBER_INVALID");
  for(const auto* field:{"width","height","fontSize","strokeWidth"})if(item.contains(field)&&item[field].get<double>()<=0)throw std::invalid_argument("ITEM_SIZE_INVALID");
  if(item.contains("locked")&&!item["locked"].is_boolean())throw std::invalid_argument("ITEM_LOCK_INVALID");
  if(item.contains("volumeStyle")&&(!item["volumeStyle"].is_string()||(item["volumeStyle"]!="solid"&&item["volumeStyle"]!="wireframe")))throw std::invalid_argument("ITEM_VOLUME_STYLE_INVALID");
- if(item.contains("runtimeRole")&&(item.value("kind","")!="shape"||!item["runtimeRole"].is_string()||(item["runtimeRole"]!="executor"&&item["runtimeRole"]!="output")))throw std::invalid_argument("ITEM_RUNTIME_ROLE_INVALID");
+ if(item.contains("runtimeRole")&&(item.value("kind","")!="shape"||!item["runtimeRole"].is_string()||(item["runtimeRole"]!="executor"&&item["runtimeRole"]!="output"&&item["runtimeRole"]!="terminal"&&item["runtimeRole"]!="notebook")))throw std::invalid_argument("ITEM_RUNTIME_ROLE_INVALID");
  if(item.contains("runtimeResults")) {
   const auto& results=item["runtimeResults"];
   if(item.value("runtimeRole","")!="output"||!results.is_array()||results.size()>32||results.dump().size()>524288)throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
@@ -33,7 +35,11 @@ inline void validate(const Json& item){
    for(const auto* field:{"timedOut","truncated"})if(entry.contains(field)&&!entry[field].is_boolean())throw std::invalid_argument("ITEM_RUNTIME_RESULT_INVALID");
   }
  }
+ agora::notebook::validate(item);
  agora::question::validate(item);
+ agora::value::validate(item);
+ agora::shared::validate(item);
+ if(item.contains("pdfPage")&&(item.value("kind","")!="pdf"||!item["pdfPage"].is_number_integer()||item["pdfPage"].get<long long>()<1||item["pdfPage"].get<long long>()>1000000))throw std::invalid_argument("ITEM_PDF_PAGE_INVALID");
  if(item.value("kind","")=="chart"){
   static const std::unordered_set<std::string> chart_types={"bar","line","area","pie","donut","scatter"};
   if(!item.contains("chartType")||!item["chartType"].is_string()||!chart_types.count(item["chartType"].get<std::string>()))throw std::invalid_argument("ITEM_CHART_TYPE_INVALID");
@@ -75,6 +81,10 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    if(!ids.is_array()||ids.empty()||ids.size()>10000||!operation.contains("dx")||!operation["dx"].is_number()||!operation.contains("dy")||!operation["dy"].is_number())throw std::invalid_argument("ITEM_TRANSLATION_INVALID");
    const double dx=operation["dx"].get<double>(),dy=operation["dy"].get<double>();
    if(!std::isfinite(dx)||!std::isfinite(dy))throw std::invalid_argument("ITEM_TRANSLATION_INVALID");
+   if(operation.contains("start")||operation.contains("end")){
+    for(const auto* endpoint:{"start","end"})if(!operation.contains(endpoint)||!operation[endpoint].is_object()||operation[endpoint].size()!=2||!operation[endpoint].contains("x")||!operation[endpoint].contains("y")||!operation[endpoint]["x"].is_number()||!operation[endpoint]["y"].is_number()||!std::isfinite(operation[endpoint]["x"].get<double>())||!std::isfinite(operation[endpoint]["y"].get<double>()))throw std::invalid_argument("ITEM_TRANSLATION_INVALID");
+    if(std::abs(operation["end"]["x"].get<double>()-operation["start"]["x"].get<double>()-dx)>1e-7||std::abs(operation["end"]["y"].get<double>()-operation["start"]["y"].get<double>()-dy)>1e-7)throw std::invalid_argument("ITEM_TRANSLATION_INVALID");
+   }
    std::unordered_set<std::string> unique;
    for(const auto& value:ids){
     if(!value.is_string()||!unique.insert(value.get<std::string>()).second)throw std::invalid_argument("ITEM_TRANSLATION_INVALID");
@@ -86,7 +96,7 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
     else{item["x"]=item.value("x",0.0)+dx;item["y"]=item.value("y",0.0)+dy;}
     validate(item);result.items[id]=item;
    }
-   result.translations.push_back({{"ids",ids},{"dx",dx},{"dy",dy}});
+   Json translated={{"ids",ids},{"dx",dx},{"dy",dy}};if(operation.contains("start")){translated["start"]=operation["start"];translated["end"]=operation["end"];}result.translations.push_back(translated);
   }else{
    result.only_translations=false;const auto id=operation.value("id","");auto old=get(id);
    if(action=="delete"){
@@ -105,9 +115,12 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    for(const auto& field:unset){if(!field.is_string()||field.get<std::string>().rfind("__",0)==0)throw std::invalid_argument("ITEM_PATCH_INVALID");item.erase(field.get<std::string>());}
    if(!old.is_null()&&old.value("kind","")!=item.value("kind",""))throw std::invalid_argument("ITEM_KIND_INVALID");
    const bool output_only=action=="patch"&&old.is_object()&&old.value("runtimeRole","")=="output"&&patch.size()==1&&patch.contains("runtimeResults")&&unset.empty();
-   const auto& writers=output_only&&executable?*executable:groups;
+   const bool state_only=action=="patch"&&old.is_object()&&agora::shared::runtimeTarget(old)&&patch.size()==1&&patch.contains("runtimeState")&&unset.empty();
+   const bool notebook_only=action=="patch"&&old.is_object()&&old.value("runtimeRole","")=="notebook"&&patch.size()==1&&patch.contains("notebookResults")&&unset.empty();
+   const bool execution_only=output_only||state_only||notebook_only;
+   const auto& writers=execution_only&&executable?*executable:groups;
    if(!old.is_null()&&!queryCanAccess(old,writers,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");
-   agora::question::validateRevision(old,item);validate(item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable);
+   agora::question::validateRevision(old,item);validate(item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable,execution_only);
    const auto kind=item.value("kind","");
    if(!old.is_null()&&(kind=="text"||kind=="note"||kind=="code")&&item.contains("automerge_snapshot")){
     if(old.contains("automerge_snapshot"))item["automerge_snapshot"]=old["automerge_snapshot"];
