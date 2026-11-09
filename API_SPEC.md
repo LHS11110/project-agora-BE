@@ -335,3 +335,34 @@ PDF 객체의 `pdfPage`는 1 이상의 정수입니다. 영상 링크의 `mediaS
 `POST /api/canvases/{canvasId}/runtime/notebook`은 Bearer 인증과 대상 객체의 읽기·실행 권한을 확인합니다. 요청은 `{objectId, operation: "prepare"|"execute"|"reset", code, passwordGrant?}`입니다. `prepare`는 추가로 실행 환경 관리 권한(캔버스 쓰기·실행)이 필요합니다. 응답 전에도 권한을 재확인합니다. `execute`는 선택된 Python 인터프리터의 실제 IPython/Jupyter 커널에서 실행하고 `{outputs, executionCount, exitCode, timedOut?, truncated?, error?, engine}`을 반환합니다. `outputs`는 표준 노트북의 `stream`, `execute_result`, `display_data`, `error` 형식입니다. 표시 MIME은 text/plain, text/html, image/png, image/jpeg, image/svg+xml입니다. 셀은 15초 제한, stdin 요청은 비활성화합니다.
 
 저장 객체는 `kind: "shape", shapeType: "rectangle", runtimeRole: "notebook"`입니다. `notebookCells: [{id,cellType:"code"|"markdown",source}]`는 쓰기 권한으로 변경합니다. 최대 32셀이고 셀 소스는 UTF-8 64KB 이하입니다. `notebookResults: {cellId: {outputs,executionCount,exitCode,error?,truncated?}}`와 `runtimeState`만 바꾸는 정확한 patch는 실행 권한으로 허용합니다. 내용·권한·위치를 함께 바꾸면 일반 쓰기 권한과 잠금 검사가 적용됩니다. 저장 승인 후 기존 브로커 경로로 공유하며 신규 참가자도 저장된 셀·출력을 받습니다. Python 커널 메모리 상태는 VM/런타임 수명에 종속되며 노트북별 최근 4개 커널을 유지합니다.
+
+### GitHub 브랜치 캔버스 연결
+
+GitHub 인증/커밋/병합은 브라우저에서 수행한다. 아래 API는 FreLog 인증을 사용하며 GitHub 토큰을 받지 않는다.
+
+- `GET /api/canvases/{id}/github`: 현재 방과 루트 방의 읽기 권한을 확인해 `rootId`, `currentBranch`, `project: {target:{owner,repo,path},branches:{branch:{canvasId,initialized}}}`를 반환한다.
+- `POST .../github/bind`: 관리자만 `{owner,repo,path,branch}`로 첫 프로젝트와 현재 방의 브랜치를 연결한다. 기존 연결 변경도 루트 관리자만 수행하며 브랜치 방 연결을 보존한다.
+- `POST .../github/branches`: 작업 권한이 있는 사용자가 `{branch}`로 기존 방을 조회하거나 원본 ACL·공개 여부·비밀번호를 복사한 방을 생성한다. 최대 128개. 동일 브랜치는 기존 ID를 반환한다.
+- `POST .../github/initialized`: `{branch}` 방의 초기 객체가 브로커에서 저장 확인된 뒤 초기화 완료로 표시한다.
+
+연결 정보는 영구 리소스 볼륨의 내부 JSON 파일에 저장하며 파일 잠금과 원자적 교체를 사용한다. 캔버스 객체는 이 API에서 직접 저장하지 않으며 기존 인증된 브로커 WebSocket을 사용한다.
+
+#### GitHub 그룹 작업 권한
+
+- `POST /api/canvases/{id}/github/permissions`: 루트 관리자만 `{groups:{group:[commit,push,pr,create_branch,switch_branch]}}`를 저장한다. 생략된 일반 그룹은 거부한다.
+- `POST .../github/authorize`: `{action,owner,repo,path,branch}`를 받아 현재 사용자 그룹과 서버의 연결 대상을 재검사한다. 일반 사용자는 위임 작업만 허용하며 관리자는 복구/병합도 허용한다.
+- context는 `capabilities`, `groups`, `readGroups`와 프로젝트의 `permissions`를 반환한다. 연결 변경은 관리자만 가능하다.
+- branches 요청에 `canvas_password_token`을 포함할 수 있다. 보호된 원본의 유효한 입장 인증을 확인하고 대상과 같은 비밀번호 해시인 경우 응답에 대상 전용 입장 인증을 반환한다. 브랜치 방은 원본 공개 여부/비밀번호를 상속한다.
+- GitHub 토큰은 이 API에 전달하지 않는다. 브라우저 보관 기한은 24시간이며 GitHub 자체의 만료/권한 검사는 별도로 적용된다. 클라이언트 PAT의 외부 사용은 FreLog 정책으로 통제할 수 없다.
+
+### 접속 중 캔버스 비밀번호 인증 갱신
+
+`POST /api/canvases/{canvasId}/password-session` (로그인 필요)
+
+```json
+{"connectionId":"<init_items.rtc_canvas_connection_id>","proof":"<init_items.rtc_canvas_connection_hash>","passwordGrant":"<기존 canvas_password_token>"}
+```
+
+브로커가 해당 캔버스·사용자의 실제 살아 있는 데이터 소켓과 연결 증명값을 확인한 경우에만 비밀번호 인증을 새로 30분간 발급합니다. 연결된 세션에서는 기존 비밀번호 JWT가 만료됐어도 서명·사용자·캔버스·현재 비밀번호 버전을 확인하여 갱신할 수 있습니다. 접속 증명이 없거나, 탈퇴/강퇴/권한 회수 또는 비밀번호 변경으로 인증이 유효하지 않으면 거부합니다. 브로커 장애 시에도 갱신하지 않습니다. 응답은 `Cache-Control: no-store`이며 `{canvas_password_token: "..."}`를 반환합니다. 비밀번호가 제거되었으면 null입니다.
+
+일반 `/access`의 30분 토큰은 재입장만으로 자동 연장하지 않습니다. 프런트엔드는 실제 접속 중 2분마다 갱신하고 탭 복귀 및 런타임 요청 직전에도 필요 시 갱신합니다. 입장한 동안에는 30분이 지나도 비밀번호를 다시 묻지 않으며, 나간 뒤에는 마지막 갱신된 인증의 만료 시각까지만 재입장 유예가 유지됩니다. 비밀번호 원문은 저장하지 않습니다.

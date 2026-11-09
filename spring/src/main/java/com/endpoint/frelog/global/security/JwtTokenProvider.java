@@ -108,6 +108,15 @@ public class JwtTokenProvider {
                 .compact();
     }
 
+    /** Delegating entry to a sibling room never extends the original password proof. */
+    public String createInheritedCanvasPasswordGrant(String sourceToken, Long userId, Integer canvasId, long revision) {
+        Claims source=getClaims(sourceToken);
+        Date now=new Date();
+        Date validity=new Date(Math.min(source.getExpiration().getTime(),now.getTime()+CANVAS_PASSWORD_GRANT_EXPIRATION_MS));
+        return Jwts.builder().subject("canvas-password-grant").claim("userId",userId).claim("canvasId",canvasId)
+                .claim("settingsRevision",revision).issuedAt(now).expiration(validity).signWith(key,Jwts.SIG.HS256).compact();
+    }
+
     public boolean validateCanvasPasswordGrant(String token, Long userId, Integer canvasId, long settingsRevision) {
         if (token == null || token.isBlank()) return false;
 
@@ -128,6 +137,20 @@ public class JwtTokenProvider {
         } catch (JwtException | IllegalArgumentException e) {
             return false;
         }
+    }
+
+    /** Expiry may be bypassed ONLY after the broker has confirmed a live session. */
+    public boolean validateActiveCanvasPasswordGrant(String token, Long userId, Integer canvasId, long revision) {
+        if(token==null||token.isBlank())return false;
+        try { return matchesPasswordGrant(getClaims(token),userId,canvasId,revision); }
+        catch(ExpiredJwtException expired) { return matchesPasswordGrant(expired.getClaims(),userId,canvasId,revision); }
+        catch(JwtException|IllegalArgumentException error) { return false; }
+    }
+    private boolean matchesPasswordGrant(Claims claims,Long userId,Integer canvasId,long revision) {
+        return "canvas-password-grant".equals(claims.getSubject())
+            && claims.get("userId") instanceof Number u && u.longValue()==userId
+            && claims.get("canvasId") instanceof Number c && c.intValue()==canvasId
+            && claims.get("settingsRevision") instanceof Number r && r.longValue()==revision;
     }
 
     public String getEmailFromToken(String token) {

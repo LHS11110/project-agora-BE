@@ -150,6 +150,53 @@ public class CanvasService {
         return CanvasSummaryResponse.of(document, imagePath);
     }
 
+    /** Branch rooms start empty; contents enter through the normal authenticated broker. */
+    @Transactional
+    public CanvasSummaryResponse createBranchCanvas(Integer parentId, String branch, CustomUserDetails user) {
+        CanvasInfo parentInfo = getCanvasInfoWithLockOrThrow(parentId);
+        CanvasDocument parent = Boolean.TRUE.equals(parentInfo.getIsCached()) ? redisDocumentReader.read(parentInfo) : getCanvasDocumentOrThrow(parentId);
+        // The GitHub service authorizes create_branch before calling this helper.
+        if (!CanvasVisibility.allows(parent,user)) throw new CustomException(ErrorCode.ACCESS_DENIED);
+        String name = parent.getCanvasName() + " · " + branch;
+        var summary = createCanvas(name.substring(0, Math.min(name.length(), 255)), "GitHub branch: " + branch, null, null, user, "private");
+        CanvasDocument child = getCanvasDocumentOrThrow(summary.canvasId());
+        child.setPeople(new ArrayList<>(parent.getPeople()));
+        var groups = new LinkedHashMap<String, List<Long>>();
+        parent.getInnerGroup().forEach((key, members) -> groups.put(key, new ArrayList<>(members)));
+        child.setInnerGroup(groups);
+        child.setGroupBits(new LinkedHashMap<>(parent.getGroupBits()));
+        child.setGroupPermissions(new LinkedHashMap<>(parent.getGroupPermissions()));
+        child.setInitGroup(parent.getInitGroup());
+        child.setAdminUserId(parent.getAdminUserId());
+        child.setVisibility(parent.getVisibility());
+        child.setCanvasPasswordHash(parent.getCanvasPasswordHash());
+        child.setPasswordRevision(parent.getPasswordRevision());
+        if (!canvasElasticsearchService.saveCanvas(child)) throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "브랜치 캔버스를 저장하지 못했습니다.");
+        return summary;
+    }
+
+    @Transactional(readOnly = true)
+    public void verifyBranchSourcePassword(Integer sourceId, CustomUserDetails user, String grant) {
+        CanvasInfo info=getCanvasInfoWithLockOrThrow(sourceId);
+        CanvasDocument source=Boolean.TRUE.equals(info.getIsCached())?redisDocumentReader.read(info):getCanvasDocumentOrThrow(sourceId);
+        if(!CanvasVisibility.allows(source,user))throw new CustomException(ErrorCode.ACCESS_DENIED);
+        if("public".equals(source.getVisibility())&&source.getCanvasPasswordHash()!=null&&!source.getCanvasPasswordHash().isBlank()
+                &&!jwtTokenProvider.validateCanvasPasswordGrant(grant,user.getUserId(),sourceId,source.getPasswordRevision()))
+            throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
+    }
+
+    @Transactional(readOnly = true)
+    public String inheritedBranchPasswordGrant(Integer sourceId,Integer targetId,CustomUserDetails user,String grant) {
+        verifyBranchSourcePassword(sourceId,user,grant);
+        CanvasInfo sourceInfo=getCanvasInfoWithLockOrThrow(sourceId),targetInfo=getCanvasInfoWithLockOrThrow(targetId);
+        CanvasDocument source=Boolean.TRUE.equals(sourceInfo.getIsCached())?redisDocumentReader.read(sourceInfo):getCanvasDocumentOrThrow(sourceId);
+        CanvasDocument target=Boolean.TRUE.equals(targetInfo.getIsCached())?redisDocumentReader.read(targetInfo):getCanvasDocumentOrThrow(targetId);
+        if(!CanvasVisibility.allows(target,user))throw new CustomException(ErrorCode.ACCESS_DENIED);
+        if(!"public".equals(target.getVisibility())||target.getCanvasPasswordHash()==null||target.getCanvasPasswordHash().isBlank())return null;
+        if(!java.util.Objects.equals(source.getCanvasPasswordHash(),target.getCanvasPasswordHash()))return null;
+        return jwtTokenProvider.createInheritedCanvasPasswordGrant(grant,user.getUserId(),targetId,target.getPasswordRevision());
+    }
+
     /**
      * 2. 캔버스 검색:
      * - 로그인한 사용자만 허용

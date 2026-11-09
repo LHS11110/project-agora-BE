@@ -394,4 +394,38 @@ class CanvasServiceTest {
         // assertThat(testUser.getIsAccessed()).isTrue();
     }
 
+    @Test
+    void branchCanvasCopiesAclButNotObjectsOrRuntimeState() {
+        var parent = new CanvasDocument("Parent", 11, 1L, null, "default");
+        parent.setPeople(new java.util.ArrayList<>(List.of(1L,2L)));
+        parent.setInnerGroup(new java.util.LinkedHashMap<>(Map.of("admin-group", List.of(1L), "default", List.of(2L))));
+        parent.setItems(Map.of("source-only", Map.of("kind","shape")));
+        var child = new CanvasDocument("Child", 101, 1L, null, "default");
+        given(canvasInfoRepository.findByIdWithPessimisticLock(11)).willReturn(Optional.of(new CanvasInfo(11)));
+        given(canvasElasticsearchService.getCanvasDocumentById(11)).willReturn(Optional.of(parent));
+        given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(new CanvasInfo(101));
+        given(canvasResourceService.saveRepresentativeImage(eq(101), any())).willReturn("/api/canvases/101/image");
+        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
+        given(canvasElasticsearchService.getCanvasDocumentById(101)).willReturn(Optional.of(child));
+        var result=canvasService.createBranchCanvas(11,"feature",userDetails);
+        assertThat(result.canvasId()).isEqualTo(101);
+        assertThat(child.getPeople()).containsExactly(1L,2L);
+        assertThat(child.getInnerGroup()).isEqualTo(parent.getInnerGroup());
+        assertThat(child.getInnerGroup()).isNotSameAs(parent.getInnerGroup());
+        assertThat(child.getItems()).isEmpty();
+        assertThat(child.getVisibility()).isEqualTo("private");
+    }
+    @Test
+    void publicBranchInheritsThePasswordHashAndRevision() {
+        var parent = new CanvasDocument("Parent",11,1L,CanvasPasswords.hashForStorage("secret"),"default");parent.setVisibility("public");parent.setPasswordRevision(7L);
+        var child = new CanvasDocument("Child",101,1L,null,"default");
+        given(canvasInfoRepository.findByIdWithPessimisticLock(11)).willReturn(Optional.of(new CanvasInfo(11)));
+        given(canvasElasticsearchService.getCanvasDocumentById(11)).willReturn(Optional.of(parent));
+        given(canvasInfoRepository.save(any(CanvasInfo.class))).willReturn(new CanvasInfo(101));
+        given(canvasResourceService.saveRepresentativeImage(eq(101),any())).willReturn("image");
+        given(canvasElasticsearchService.saveCanvas(any(CanvasDocument.class))).willReturn(true);
+        given(canvasElasticsearchService.getCanvasDocumentById(101)).willReturn(Optional.of(child));
+        canvasService.createBranchCanvas(11,"feature",userDetails);
+        assertThat(child.getVisibility()).isEqualTo("public");assertThat(child.getCanvasPasswordHash()).isEqualTo(parent.getCanvasPasswordHash());assertThat(child.getPasswordRevision()).isEqualTo(7L);
+    }
 }
