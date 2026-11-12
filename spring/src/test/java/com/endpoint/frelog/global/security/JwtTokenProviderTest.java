@@ -98,15 +98,4 @@ class JwtTokenProviderTest {
         assertThat(jwtTokenProvider.validateCanvasPasswordGrant(child,1L,20,7L)).isTrue();
         assertThat(jwtTokenProvider.validateCanvasPasswordGrant(child,1L,10,7L)).isFalse();
     }
-    @Test void activeSessionProofCanRenewSignedExpiredGrantButNeverWrongScopeOrSignature() {
-        var key=new javax.crypto.spec.SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8),"HmacSHA256");
-        String expired=io.jsonwebtoken.Jwts.builder().subject("canvas-password-grant").claim("userId",7).claim("canvasId",12).claim("settingsRevision",4)
-            .issuedAt(new java.util.Date(System.currentTimeMillis()-3600000)).expiration(new java.util.Date(System.currentTimeMillis()-1000)).signWith(key,io.jsonwebtoken.Jwts.SIG.HS256).compact();
-        assertThat(jwtTokenProvider.validateCanvasPasswordGrant(expired,7L,12,4)).isFalse();
-        assertThat(jwtTokenProvider.validateActiveCanvasPasswordGrant(expired,7L,12,4)).isTrue();
-        assertThat(jwtTokenProvider.validateActiveCanvasPasswordGrant(expired,8L,12,4)).isFalse();
-        assertThat(jwtTokenProvider.validateActiveCanvasPasswordGrant(expired,7L,13,4)).isFalse();
-        assertThat(jwtTokenProvider.validateActiveCanvasPasswordGrant(expired,7L,12,5)).isFalse();
-        assertThat(jwtTokenProvider.validateActiveCanvasPasswordGrant(expired.substring(0,expired.lastIndexOf('.')+1)+"invalid",7L,12,4)).isFalse();
-    }
 }

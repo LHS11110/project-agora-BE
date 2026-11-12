@@ -29,6 +29,22 @@ Spring 오류는 다음 형태입니다.
 
 `errors`는 입력 검증 오류에서만 포함되며 필드별 `field`, `rejectedValue`, `reason`을 담습니다. 주요 상태 코드는 `400`(잘못된 입력), `401`(인증 실패), `403`(권한/비밀번호), `404`(리소스 없음), `409`(중복·동시성 충돌), `503`(일시적으로 사용 가능한 C++ 서버 없음), `500`(서버 오류)입니다. `LB_001`은 활성 C++ 서버를 찾지 못했음을 나타내며 `503`을 반환합니다.
 
+`VM_001`은 Spring이 호스트의 가상머신 매니저 소켓에 연결하지 못했음을, `VM_002`는 매니저는 연결됐으나 이 캔버스의 VM 시작·실행이 실패했음을 나타내며 모두 `503`을 반환합니다. 이는 C++ 실시간 서버 할당 오류 `LB_001`과 구분됩니다.
+
+## C++ 서버 등록 관리
+
+서버 등록 목록은 SQL `cpp_server` 테이블을 기준으로 합니다. C++ 서버는 시작 시 자기 주소와 REST/WebSocket 포트를 등록하고 5초마다 heartbeat를 갱신합니다. 목록과 등록 관리 API는 관리자만 호출할 수 있습니다.
+
+| 메서드 | 경로 | 본문/응답 |
+|---|---|---|
+| `GET` | `/api/servers` | 서버 배열. 각 항목에 `serverId`, `serverIp`, `serverPort`, `wsPort`, `isActive`, `currentLoad` 포함 |
+| `GET` | `/api/servers/{serverId}` | 등록된 서버 한 개 |
+| `POST` | `/api/servers` | `{ "serverIp":"agora-cpp", "serverPort":"8000", "wsPort":"8002" }`로 서버 등록·활성화 |
+| `PUT` | `/api/servers/{serverId}` | 서버 주소·포트 변경 또는 비활성 서버 재활성화 |
+| `DELETE` | `/api/servers/{serverId}` | 미사용 서버 삭제. 사용 중이면 삭제 대신 비활성화 |
+
+캔버스 접속용 서버 선택은 최근 15초 내 heartbeat가 있고 내부 C++ 상태 확인에 성공한 서버만 사용합니다. DB에 등록된 행이 있어도 heartbeat가 오래됐거나 상태 확인이 실패하면 `503 LB_001`이 반환됩니다.
+
 ## 1. 인증 API
 
 ### 회원가입
@@ -172,19 +188,19 @@ Spring 오류는 다음 형태입니다.
 {"password":"캔버스 비밀번호"}
 ```
 
-비밀번호 확인에 성공하면 서버가 30분짜리 `canvas_password_token`도 발급합니다. 같은 로그인 사용자와 캔버스, 현재 설정 revision에만 사용할 수 있습니다. 다음 접속부터는 비밀번호 대신 해당 토큰을 보냅니다. 비밀번호나 캔버스 설정이 변경되면 기존 토큰은 사용할 수 없습니다.
+비밀번호 확인에 성공하면 서버가 4시간짜리 `canvas_password_token`도 발급합니다. 같은 로그인 사용자와 캔버스, 현재 설정 revision에만 사용할 수 있습니다. 다음 접속부터는 비밀번호 대신 해당 토큰을 보냅니다. 토큰 재사용은 유효 기간을 연장하지 않습니다. 이전 세대의 30분 토큰은 거부하며, 비밀번호나 캔버스 설정이 변경된 뒤에는 기존 토큰을 사용할 수 없습니다.
 
 ```json
-{"canvas_password_token":"<30분 비밀번호 확인 JWT>"}
+{"canvas_password_token":"<4시간 비밀번호 확인 JWT>"}
 ```
 
 비밀번호가 없는 캔버스는 본문을 생략하거나 `{}`를 보냅니다. 성공 응답:
 
 ```json
-{"server_id":5,"ws_port":"8002","canvas_access_token":"<canvas-jwt>","canvas_password_token":"<30분 비밀번호 확인 JWT 또는 null>"}
+{"server_id":5,"ws_port":"8002","canvas_access_token":"<canvas-jwt>","canvas_password_token":"<4시간 비밀번호 확인 JWT 또는 null>"}
 ```
 
-WebSocket에는 `canvas_access_token`만 사용합니다. `canvas_password_token`은 비밀번호 재입력 생략용이며 브라우저 탭의 세션 저장소에만 보관할 수 있습니다. 서버 후보는 DB의 활성화 상태와 최근 15초 heartbeat로 찾고, C++ `GET /api/canvas/count`에서 실시간 활성 캔버스 수를 조회해 P2C로 선택합니다. 서버가 재기동 중이어서 후보를 찾지 못하면 `503 LB_001`을 반환하므로 클라이언트는 짧게 기다렸다가 접속 정보를 다시 요청할 수 있습니다. 활성 세션이 있는 캔버스의 할당 서버 heartbeat가 만료되면 다른 서버로 임의 재할당하지 않고 `409 CANVAS_006`을 반환합니다.
+WebSocket에는 `canvas_access_token`만 사용합니다. `canvas_password_token`은 비밀번호 재입력 생략용으로 브라우저 저장소에 보관되며, 최초 비밀번호 확인 시점부터 4시간 뒤 만료됩니다. 재사용이나 재접속으로 만료 시각이 연장되지 않습니다. 보호된 캔버스의 WebSocket 토큰도 이 인증의 남은 시간보다 오래 유효하지 않아, 만료되면 연결을 다시 인증해야 합니다. 서버 후보는 DB의 활성화 상태와 최근 15초 heartbeat로 찾고, C++ `GET /api/canvas/count`에서 실시간 활성 캔버스 수를 조회해 P2C로 선택합니다. 서버가 재기동 중이어서 후보를 찾지 못하면 `503 LB_001`을 반환하므로 클라이언트는 짧게 기다렸다가 접속 정보를 다시 요청할 수 있습니다. 활성 세션이 있는 캔버스의 할당 서버 heartbeat가 만료되면 다른 서버로 임의 재할당하지 않고 `409 CANVAS_006`을 반환합니다.
 
 ## 3. 로드 밸런서·내부 API
 
@@ -238,11 +254,11 @@ Phoenix → C++는 `wss://<cpp-host>:<wsPort>/broker/queries` 지속 연결에�
 
 `GET /api/canvases/{id}/settings` 응답의 `group_permissions`에는 그룹별 `{read, write, execute}` boolean, `can_manage`에는 호출자의 관리 가능 여부가 포함됩니다. 활성 캔버스의 관리자는 WSS `canvas_settings_update` 이벤트에 `field: "group_permissions"`, 권한 맵 `value`, 현재 `expected_revision`을 보냅니다. 관리자 그룹을 제한하거나 읽기 없이 쓰기/실행을 부여하는 요청은 거부합니다. 권한 변경은 기존 연결에도 반영됩니다.
 
-읽기는 조회·접속, 쓰기는 객체 변경·채팅/댓글, 실행은 코드 실행을 허용합니다. 결과 객체의 결과 데이터 갱신에는 실행 권한을 적용하며, 실행 환경 설정·리소스 변경·초기화에는 쓰기와 실행이 모두 필요합니다. 실행 권한이 없으면 `/runtime/execute`는 VM에 전달하기 전에 403으로 거부합니다. 객체 ACL 및 잠금 규칙은 계속 적용됩니다. 권한 설정이 없는 기존 문서는 이전 동작을 유지합니다.
+읽기는 조회·접속, 쓰기는 객체 변경·채팅/댓글, 실행은 코드 실행을 허용합니다. 결과 객체의 결과 데이터 갱신에는 실행 권한을 적용하며, 실행 환경 설정·리소스 변경·초기화에는 쓰기와 실행이 모두 필요합니다. 캔버스 UI의 코드 객체·노트북 셀 실행은 이미 인증된 캔버스 WebSocket에서 브로커로 전송하며 Spring 실행 API를 거치지 않습니다. Phoenix 브로커는 실행 그룹 권한을 확인해 요청을 비동기 전달하고, C++ 브로커는 최신 캔버스 revision과 대상 객체 ACL을 다시 확인한 뒤 VM 관리자 Unix 소켓으로 전달합니다. 결과는 같은 WebSocket 연결의 `runtime_result` 이벤트로 요청자에게 돌아옵니다. 실행 중에도 캔버스 편집·채팅 질의는 계속 처리됩니다.
 
 ### Runtime standard input
 
-`POST /api/canvases/{canvasId}/runtime/execute` accepts an optional `stdin` string in addition to `language`, `code`, and `passwordGrant`. It is limited to 65,536 UTF-8 bytes. Missing stdin retains EOF behavior; an explicitly empty string represents connected but empty input. Existing execution authorization and password grants apply unchanged. Input is forwarded as data through the local manager to the guest worker and resets for each cell without resetting the language environment. The frontend builds stdin from output-to-code connections in display order, appending a newline boundary between nonempty output records. Result-to-code edges participate in DAG ordering and cycle rejection.
+The canvas UI sends `{ type: "runtime_execute", action: "execute"|"build", object_id, language, code, stdin?, request_id }` over its authenticated canvas WebSocket. Notebook cells use `action: "notebook"` with `object_id` (cell object or legacy notebook root), `notebook_id`, `cell_id`, and `code`. Phoenix derives the user identity from the connected canvas session, checks canvas-level execute permission, and sends the request asynchronously to C++. C++ checks the current settings revision, execute-group intersection, and code/notebook cell ACL, then forwards a bounded request over the VM manager Unix socket. For normal code execution, stdout/stderr chunks return as correlated `runtime_output` frames while the worker is running; the final worker result or error returns as `runtime_result` on the same WebSocket. Notebook rich outputs and build results return in their final `runtime_result`. Code and stdin are each limited to 65,536 UTF-8 bytes. The REST endpoints remain for SDK/automation compatibility; the canvas UI does not use them to execute code. Missing stdin retains EOF behavior; an explicitly empty string represents connected but empty input. Input resets for each code step without resetting the language environment. The frontend builds stdin from output-to-code connections in display order, appending a newline boundary between nonempty output records. Result-to-code edges participate in DAG ordering and cycle rejection.
 
 ### Canvas-scoped bot participants / Python SDK
 
@@ -275,7 +291,7 @@ Canvas settings responses now include `groups: {name: [{nickname,tag_number}]}`,
 
 ### 사전 빌드 실행
 
-`POST /api/canvases/{canvasId}/runtime/build`는 실행 API와 같은 `language`, `code`, `passwordGrant`를 받습니다. 현재 캔버스 접근 및 실행 권한을 확인하고 사용자 코드는 실행하지 않은 채 빌드합니다. 응답은 실행과 같은 `exitCode`, `output`, `timedOut`, `truncated`, `environmentReset` 구조입니다. 빌드 시간 제한은 60초이며 출력은 기존 결과 객체를 덮어쓰지 않습니다.
+Legacy API clients can use `POST /api/canvases/{canvasId}/runtime/build` with `language`, `code`, and `passwordGrant`. The canvas UI sends build requests through `runtime_execute` on its current WebSocket. The request checks execute access and builds without running user code. Its result has the same `exitCode`, `output`, `timedOut`, `truncated`, and `environmentReset` shape. Build time is limited to 60 seconds and does not overwrite existing result objects.
 
 언어별 실행 설정에 `executionMode`를 추가합니다. 기본 `interactive`는 기존 동작을 유지하며, `precompiled`에서는 사전 빌드된 동일 코드·옵션의 결과물만 실행합니다. 결과물이 없거나 코드·옵션이 바뀌면 다시 빌드하라는 오류를 반환하며 자동 컴파일하지 않습니다. C/C++은 네이티브 실행 파일(main 필수), Java는 javac 클래스(main 필수), Python은 버전별 pyc, JavaScript는 V8 코드 캐시, Shell은 구문 검사된 스크립트를 사용합니다. JavaScript 런타임 JIT는 여전히 발생할 수 있고 Shell은 컴파일 언어가 아닙니다. 이 모드는 코드 객체 간 메모리를 공유하지 않으며 결과→코드 표준 입력 연결은 유지합니다. 결과물은 VM 재시작·실행 환경 초기화 후에도 유지되고 VM 삭제 시 함께 삭제됩니다. `interactive` 코드에 대한 빌드는 실행 없이 건너뜁니다.
 
@@ -302,7 +318,7 @@ Python SDK 0.1.3 supports live capability changes and terminal revocation notifi
 
 ### 실시간 실행 출력
 
-`POST /api/canvases/{id}/runtime/execute/stream`은 `/runtime/execute`와 동일한 요청·권한 검사를 사용하며 `application/x-ndjson`으로 응답합니다. 출력마다 `{type:"output",output:"..."}`, 종료 시 `{type:"result",result:{exitCode,output,timedOut,truncated,environmentReset}}`를 전달합니다. 스트림 시작 후 오류는 `{type:"error",code?,message}`로 전달합니다. 결과의 output은 전체 출력이므로 앞서 받은 조각에 다시 덧붙이지 않습니다. 출력·코드·표준 입력 한도와 실행 시간 제한은 기존과 같습니다. 결과 객체는 같은 runId/codeId의 항목을 갱신하며 브로커를 통해 저장·공유합니다. 언어의 출력 버퍼가 flush되어야 조각이 발생합니다. 클라이언트 전송 실패가 실행 재시도를 유발하지 않습니다.
+The legacy `POST /api/canvases/{id}/runtime/execute/stream` endpoint remains for API clients and returns `application/x-ndjson`. Canvas UI execution receives output chunks as correlated `runtime_output` frames and the final worker result as `runtime_result` on the authenticated canvas WebSocket. Blueprint output nodes display arriving chunks and persist the completed result through the normal broker canvas operation; execution is not retried if the WebSocket disconnects after submission.
 
 ### Python SDK 0.1.4: real participant presence
 
@@ -332,9 +348,11 @@ PDF 객체의 `pdfPage`는 1 이상의 정수입니다. 영상 링크의 `mediaS
 
 ### Jupyter 노트북 객체
 
-`POST /api/canvases/{canvasId}/runtime/notebook`은 Bearer 인증과 대상 객체의 읽기·실행 권한을 확인합니다. 요청은 `{objectId, operation: "prepare"|"execute"|"reset", code, passwordGrant?}`입니다. `prepare`는 추가로 실행 환경 관리 권한(캔버스 쓰기·실행)이 필요합니다. 응답 전에도 권한을 재확인합니다. `execute`는 선택된 Python 인터프리터의 실제 IPython/Jupyter 커널에서 실행하고 `{outputs, executionCount, exitCode, timedOut?, truncated?, error?, engine}`을 반환합니다. `outputs`는 표준 노트북의 `stream`, `execute_result`, `display_data`, `error` 형식입니다. 표시 MIME은 text/plain, text/html, image/png, image/jpeg, image/svg+xml입니다. 셀은 15초 제한, stdin 요청은 비활성화합니다.
+`POST /api/canvases/{canvasId}/runtime/notebook` remains for API clients and environment `prepare`/`reset`. Canvas UI sends cell execution as `runtime_execute` with `action: "notebook"` over the canvas WebSocket. The C++ broker validates both the notebook root and the selected cell object's execute ACL before forwarding to the VM manager Unix socket. The selected Python IPython/Jupyter kernel returns `{outputs, executionCount, exitCode, timedOut?, truncated?, error?, engine}` to the C++ broker, which returns it as `runtime_result` to the requester over the same WebSocket. `outputs` use standard notebook `stream`, `execute_result`, `display_data`, and `error` forms. Supported display MIME types are text/plain, text/html, image/png, image/jpeg, and image/svg+xml. Cells have a 15-second execution limit and do not accept stdin.
 
-저장 객체는 `kind: "shape", shapeType: "rectangle", runtimeRole: "notebook"`입니다. `notebookCells: [{id,cellType:"code"|"markdown",source}]`는 쓰기 권한으로 변경합니다. 최대 32셀이고 셀 소스는 UTF-8 64KB 이하입니다. `notebookResults: {cellId: {outputs,executionCount,exitCode,error?,truncated?}}`와 `runtimeState`만 바꾸는 정확한 patch는 실행 권한으로 허용합니다. 내용·권한·위치를 함께 바꾸면 일반 쓰기 권한과 잠금 검사가 적용됩니다. 저장 승인 후 기존 브로커 경로로 공유하며 신규 참가자도 저장된 셀·출력을 받습니다. Python 커널 메모리 상태는 VM/런타임 수명에 종속되며 노트북별 최근 4개 커널을 유지합니다.
+노트북 도구 객체는 `kind: "shape", runtimeRole: "notebook"`이고 셀 ID 순서를 `notebookCellIds: [cellObjectId, ...]`로 보관합니다. 각 셀은 별도 캔버스 객체인 `kind: "shape", runtimeRole: "notebook-cell"`이며 `{notebookId, notebookCell: {id, cellType, source}}`를 저장합니다. 출력은 해당 셀 객체의 `notebookResult`에 저장됩니다. 셀 편집은 그 셀 객체만 패치·브로드캐스트하고, 셀 추가·삭제·순서 변경 때만 노트북의 ID 목록도 바뀝니다. 따라서 다른 셀의 소스나 출력은 매 편집마다 다시 전송되지 않습니다.
+
+셀 객체는 노트북 root와 같은 그룹 권한을 사용하고 같은 노트북 그룹으로 함께 이동·복사됩니다. 최대 32셀, 셀 소스는 UTF-8 64KB 이하이며 셀 결과 객체는 512KB 이하입니다. `notebookResult`만 바꾸는 정확한 patch는 실행 권한으로 허용합니다. 내용·권한·위치를 함께 바꾸면 일반 쓰기 권한과 잠금 검사가 적용됩니다. 저장 승인 후 기존 브로커 경로로 개별 셀 객체가 브로드캐스트되며 신규 참가자는 권한 필터링된 노트북·셀 객체 스냅샷을 받습니다. 예전 `notebookCells` 배열 형식으로 저장된 노트북은 캔버스 관리자 클라이언트가 접속하면 셀 객체로 한 번 변환합니다. Python 커널 메모리 상태는 VM/런타임 수명에 종속되며 노트북별 최근 4개 커널을 유지합니다.
 
 ### GitHub 브랜치 캔버스 연결
 
@@ -355,14 +373,13 @@ GitHub 인증/커밋/병합은 브라우저에서 수행한다. 아래 API는 Fr
 - branches 요청에 `canvas_password_token`을 포함할 수 있다. 보호된 원본의 유효한 입장 인증을 확인하고 대상과 같은 비밀번호 해시인 경우 응답에 대상 전용 입장 인증을 반환한다. 브랜치 방은 원본 공개 여부/비밀번호를 상속한다.
 - GitHub 토큰은 이 API에 전달하지 않는다. 브라우저 보관 기한은 24시간이며 GitHub 자체의 만료/권한 검사는 별도로 적용된다. 클라이언트 PAT의 외부 사용은 FreLog 정책으로 통제할 수 없다.
 
-### 접속 중 캔버스 비밀번호 인증 갱신
+비밀번호 인증 토큰은 최초 비밀번호 확인 시점부터 4시간 동안 유효합니다. 접속 중 토큰을 갱신하는 별도 API는 없으며, 토큰 재사용은 만료 시각을 연장하지 않습니다. 비밀번호 원문은 브라우저에 저장하지 않습니다.
 
-`POST /api/canvases/{canvasId}/password-session` (로그인 필요)
+## 캔버스 VM WebSocket 관리 (2026-11-12)
 
-```json
-{"connectionId":"<init_items.rtc_canvas_connection_id>","proof":"<init_items.rtc_canvas_connection_hash>","passwordGrant":"<기존 canvas_password_token>"}
-```
-
-브로커가 해당 캔버스·사용자의 실제 살아 있는 데이터 소켓과 연결 증명값을 확인한 경우에만 비밀번호 인증을 새로 30분간 발급합니다. 연결된 세션에서는 기존 비밀번호 JWT가 만료됐어도 서명·사용자·캔버스·현재 비밀번호 버전을 확인하여 갱신할 수 있습니다. 접속 증명이 없거나, 탈퇴/강퇴/권한 회수 또는 비밀번호 변경으로 인증이 유효하지 않으면 거부합니다. 브로커 장애 시에도 갱신하지 않습니다. 응답은 `Cache-Control: no-store`이며 `{canvas_password_token: "..."}`를 반환합니다. 비밀번호가 제거되었으면 null입니다.
-
-일반 `/access`의 30분 토큰은 재입장만으로 자동 연장하지 않습니다. 프런트엔드는 실제 접속 중 2분마다 갱신하고 탭 복귀 및 런타임 요청 직전에도 필요 시 갱신합니다. 입장한 동안에는 30분이 지나도 비밀번호를 다시 묻지 않으며, 나간 뒤에는 마지막 갱신된 인증의 만료 시각까지만 재입장 유예가 유지됩니다. 비밀번호 원문은 저장하지 않습니다.
+현재 캔버스 클라이언트의 VM 설정·리소스·디스크·Java 의존성·커널 초기화와
+노트북 준비·초기화는 브로커 WebSocket을 사용합니다. 기존 Spring HTTP API는
+호환 경로로 남아 있으며 Spring에서 독립적으로 권한을 확인합니다.
+`runtime_execute.action=manage`의 management 필드와 권한은 Wall의
+BROKER_PROTOCOL.md를 참조하세요. C++은 연결된 캔버스와 인증된 사용자로
+요청을 검증한 후 Unix 소켓으로 VM 관리자에 전달합니다.

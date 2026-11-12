@@ -19,7 +19,8 @@ import java.util.Date;
 public class JwtTokenProvider {
 
     private static final Logger log = LoggerFactory.getLogger(JwtTokenProvider.class);
-    private static final long CANVAS_PASSWORD_GRANT_EXPIRATION_MS = 30 * 60 * 1000L;
+    private static final long CANVAS_PASSWORD_GRANT_EXPIRATION_MS = 4 * 60 * 60 * 1000L;
+    private static final long CANVAS_PASSWORD_GRANT_VERSION = 2L;
 
     private final SecretKey key;
     private final long expirationMs;
@@ -102,6 +103,7 @@ public class JwtTokenProvider {
                 .claim("userId", userId)
                 .claim("canvasId", canvasId)
                 .claim("settingsRevision", settingsRevision)
+                .claim("grantVersion", CANVAS_PASSWORD_GRANT_VERSION)
                 .issuedAt(now)
                 .expiration(validity)
                 .signWith(key, Jwts.SIG.HS256)
@@ -114,7 +116,8 @@ public class JwtTokenProvider {
         Date now=new Date();
         Date validity=new Date(Math.min(source.getExpiration().getTime(),now.getTime()+CANVAS_PASSWORD_GRANT_EXPIRATION_MS));
         return Jwts.builder().subject("canvas-password-grant").claim("userId",userId).claim("canvasId",canvasId)
-                .claim("settingsRevision",revision).issuedAt(now).expiration(validity).signWith(key,Jwts.SIG.HS256).compact();
+                .claim("settingsRevision",revision).claim("grantVersion",CANVAS_PASSWORD_GRANT_VERSION)
+                .issuedAt(now).expiration(validity).signWith(key,Jwts.SIG.HS256).compact();
     }
 
     public boolean validateCanvasPasswordGrant(String token, Long userId, Integer canvasId, long settingsRevision) {
@@ -129,28 +132,30 @@ public class JwtTokenProvider {
             Object tokenUserId = claims.get("userId");
             Object tokenCanvasId = claims.get("canvasId");
             Object tokenSettingsRevision = claims.get("settingsRevision");
+            Object tokenGrantVersion = claims.get("grantVersion");
             return "canvas-password-grant".equals(claims.getSubject())
                     && tokenUserId instanceof Number userIdNumber && userIdNumber.longValue() == userId
                     && tokenCanvasId instanceof Number canvasIdNumber && canvasIdNumber.intValue() == canvasId
                     && tokenSettingsRevision instanceof Number revisionNumber
-                    && revisionNumber.longValue() == settingsRevision;
+                    && revisionNumber.longValue() == settingsRevision
+                    && tokenGrantVersion instanceof Number grantVersionNumber
+                    && grantVersionNumber.longValue() == CANVAS_PASSWORD_GRANT_VERSION;
         } catch (JwtException | IllegalArgumentException e) {
             return false;
         }
     }
 
-    /** Expiry may be bypassed ONLY after the broker has confirmed a live session. */
-    public boolean validateActiveCanvasPasswordGrant(String token, Long userId, Integer canvasId, long revision) {
-        if(token==null||token.isBlank())return false;
-        try { return matchesPasswordGrant(getClaims(token),userId,canvasId,revision); }
-        catch(ExpiredJwtException expired) { return matchesPasswordGrant(expired.getClaims(),userId,canvasId,revision); }
-        catch(JwtException|IllegalArgumentException error) { return false; }
-    }
-    private boolean matchesPasswordGrant(Claims claims,Long userId,Integer canvasId,long revision) {
-        return "canvas-password-grant".equals(claims.getSubject())
-            && claims.get("userId") instanceof Number u && u.longValue()==userId
-            && claims.get("canvasId") instanceof Number c && c.intValue()==canvasId
-            && claims.get("settingsRevision") instanceof Number r && r.longValue()==revision;
+    public long getCanvasPasswordGrantRemainingMs(String token) {
+        Claims claims = getClaims(token);
+        Object version = claims.get("grantVersion");
+        if (!"canvas-password-grant".equals(claims.getSubject())
+                || !(version instanceof Number number)
+                || number.longValue() != CANVAS_PASSWORD_GRANT_VERSION) {
+            throw new IllegalArgumentException("Invalid canvas password grant");
+        }
+        long remaining = claims.getExpiration().getTime() - System.currentTimeMillis();
+        if (remaining <= 0) throw new IllegalArgumentException("Expired canvas password grant");
+        return remaining;
     }
 
     public String getEmailFromToken(String token) {

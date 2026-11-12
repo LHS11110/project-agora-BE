@@ -64,6 +64,13 @@ def validate(build=False, gateway=False):
                         if not (path / name / filename).is_file():
                             raise ValueError(f'Missing manually supplied certificate file: {path / name / filename}')
                 continue
+            if mount['target'] == '/run/agora-runtime':
+                if not path.is_dir():
+                    raise ValueError('Runtime manager socket directory is missing; install and start hypervisor-for-agora first.')
+                info = path.stat()
+                if info.st_gid != 10001 or not info.st_mode & stat.S_IXGRP:
+                    raise ValueError('Runtime manager socket directory must grant group 10001 traversal access.')
+                continue
             if not path.is_file() or not os.access(path, os.R_OK):
                 raise ValueError(f'{service}: unreadable/missing bind file for {mount["target"]}. Configure its host path in .env.')
             if str(definition.get('user', '10001')).split(':', 1)[0] == '0':

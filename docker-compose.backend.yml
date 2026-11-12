@@ -49,6 +49,12 @@ services:
         source: spring-resources
         target: /home/agora/project-agora/canvas-resource
       - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
         target: /run/certs/elasticsearch-ca.crt
         read_only: true
@@ -184,6 +190,7 @@ services:
       CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
       CPP_CANVAS_LRU_ITEMS_PER_CANVAS: ${CPP_CANVAS_LRU_ITEMS_PER_CANVAS:-64}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
       DB_PORT: ${DOCKER_DB_PORT:-1433}
       DB_NAME: ${DB_NAME:-agora_db}
@@ -217,6 +224,12 @@ services:
       DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
     volumes:
       - cpp-tls:/run/tls:ro
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${SQL_TLS_CA_CERT:?Set SQL_TLS_CA_CERT to the SQL issuing CA file}
         target: /run/certs/sql-ca.crt

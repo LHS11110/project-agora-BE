@@ -82,6 +82,7 @@ public class SecurityConfig {
                                 "/favicon.ico",
                                 "/favicon.png",
                                 "/api/auth/providers",
+                                "/internal/canvas/socket",
                                 "/api/terminal/ws",
                                 "/api/auth/qr/start",
                                 "/api/auth/qr/poll",
@@ -109,6 +110,7 @@ public class SecurityConfig {
                         .requestMatchers("/api/servers/**", "/api/redis/**", "/api/load-balancer/**", "/api/database/**", "/api/test/**", "/api/internal/**").hasRole("ADMIN")
                         .requestMatchers("/api/users/**").authenticated()
                         .requestMatchers("/api/canvases/**").authenticated()
+                        .requestMatchers("/api/workspaces/**").authenticated()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

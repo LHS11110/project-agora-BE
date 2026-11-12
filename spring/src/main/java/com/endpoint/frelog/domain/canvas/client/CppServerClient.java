@@ -98,16 +98,6 @@ public class CppServerClient {
         }
     }
 
-    public boolean isCanvasSessionActive(Integer canvasId, Long userId, String connectionId, String proof) {
-        try {
-            JsonNode response=restClient.post().uri(wallOrigin.resolve("/internal/broker/password-session"))
-                .header("X-Agora-Internal-Token",internalApiToken)
-                .body(java.util.Map.of("canvas_id",canvasId,"user_id",userId,"connection_id",connectionId,"proof",proof))
-                .retrieve().body(JsonNode.class);
-            return response!=null && response.path("active").asBoolean(false);
-        } catch(Exception error) { return false; }
-    }
-
     public boolean isHealthy(Integer serverId) {
         return getCanvasCountFromServer(serverId) != UNAVAILABLE;
     }

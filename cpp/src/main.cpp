@@ -28,6 +28,7 @@
 #include "service/CanvasControlService.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
 #include "service/HealthService.hpp"
+#include "service/RuntimeForwardService.hpp"
 #include "api/HttpApiServer.hpp"
 #include "service/CanvasQueryService.hpp"
 #include "service/BrokerQuerySocketService.hpp"
@@ -361,7 +362,8 @@ int main(int argc, char* argv[]) {
 
     std::vector<std::unique_ptr<HttpServiceModule>> api_modules;
     api_modules.push_back(std::make_unique<CanvasControlService>(canvas_pool));
-    CanvasQueryService queries(canvas_pool, ws_port);
+    api_modules.push_back(std::make_unique<RuntimeForwardService>(canvas_pool, environmentValue("AGORA_RUNTIME_SOCKET")));
+    CanvasQueryService queries(canvas_pool, ws_port, environmentValue("AGORA_RUNTIME_SOCKET"));
     api_modules.push_back(std::make_unique<HealthService>());
     HttpApiServer server(host, g_port, std::move(api_modules));
     BrokerQuerySocketService broker_socket(queries, host, ws_port, environmentValue("CPP_INTERNAL_API_TOKEN"));

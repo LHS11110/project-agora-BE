@@ -1,6 +1,8 @@
 #include "service/CanvasQueryService.hpp"
 #include "service/CanvasQueryRules.hpp"
 #include "service/CanvasSettingsService.hpp"
+#include "service/CanvasPublicEnrollment.hpp"
+#include "service_memory/CanvasSnapshotMemory.hpp"
 #include "service_memory/CanvasServiceMemory.hpp"
 #include "service_memory/CanvasEventMemory.hpp"
 #include "service_memory/CanvasItemRules.hpp"
@@ -12,6 +14,7 @@
 #include <openssl/sha.h>
 #include "service/CanvasBrokerOperations.hpp"
 #include "service/CanvasMentions.hpp"
+#include "service/RuntimeKernelClient.hpp"
 
 namespace {
 using Json = nlohmann::json;
@@ -45,11 +48,14 @@ std::string commentRoomId(const std::string& object_id) {
 }
 }
 Json CanvasQueryService::execute(const Json& input) {
+    return execute(input, {});
+}
+Json CanvasQueryService::execute(const Json& input, const OutputHandler& on_output) {
     Json route = Json::object();
     try {
         route = routing(input);
         if (input.value("command", "") == "connect") return join(input);
-        if (input.value("command", "") == "query") return query(input);
+        if (input.value("command", "") == "query") return query(input, on_output);
         throw std::invalid_argument("QUERY_COMMAND_INVALID");
     } catch (const std::invalid_argument& error) {
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", error.what()}});
@@ -57,7 +63,8 @@ Json CanvasQueryService::execute(const Json& input) {
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", "QUERY_DATA_INVALID"}});
     } catch (const std::runtime_error& error) {
         const std::string code=error.what();
-        return envelope(route, {{"type", "error"}, {"ok", false}, {"code", code=="STORAGE_UNAVAILABLE"||code=="QUERY_OUTCOME_UNKNOWN"||code=="CANVAS_NOT_READY"?code:"QUERY_UNAVAILABLE"}});
+        const bool runtime_error=code.rfind("RUNTIME_",0)==0;
+        return envelope(route, {{"type", "error"}, {"ok", false}, {"code", runtime_error||code=="STORAGE_UNAVAILABLE"||code=="QUERY_OUTCOME_UNKNOWN"||code=="CANVAS_NOT_READY"?code:"QUERY_UNAVAILABLE"}});
     } catch (...) {
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", "QUERY_UNAVAILABLE"}});
     }
@@ -82,7 +89,7 @@ Json CanvasQueryService::join(const Json& input) {
     if (canvas->unloading) throw std::runtime_error("CANVAS_NOT_READY");
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
     auto raw = memory.loadCanvas(id); if (!raw) throw std::runtime_error("STORAGE_UNAVAILABLE");
-    const auto doc = Json::parse(*raw);
+    auto doc = Json::parse(*raw);
     if (doc.value("settings-revision", 0LL) != revision) throw std::invalid_argument("SETTINGS_CHANGED");
     auto [groups, admin] = groupsForUser(doc, user_id);
     if(groups.empty()&&!admin)throw std::invalid_argument("CANVAS_READ_DENIED");
@@ -100,14 +107,26 @@ Json CanvasQueryService::join(const Json& input) {
     const auto client = input.value("client_id", "");
     const auto sync = memory.brokerSyncState(id, std::to_string(user_id) + ":" + client);
     if (!sync) throw std::runtime_error("STORAGE_UNAVAILABLE");
+    const Json previousPeople = doc.value("people", Json::array()), previousGroups = doc.value("inner-group", Json::object());
+    const bool participantJoined = enrollPublicParticipant(doc, user_id);
+    if (participantJoined) {
+        const std::vector<std::pair<std::string, Json>> changes{{"people",doc["people"]},{"inner-group",doc["inner-group"]}};
+        if (memory.compareAndSetFields(id, revision, changes) != CanvasServiceMemory::CompareSetResult::Applied) throw std::runtime_error("STORAGE_UNAVAILABLE");
+        CanvasSnapshotMemory es(pool_.getEsHost(), pool_.getEsPort());
+        if (!es.patchCanvasFields(id, {{"people",doc["people"]},{"inner-group",doc["inner-group"]}})) {
+            memory.compareAndSetFields(id, revision, {{"people",previousPeople},{"inner-group",previousGroups}});
+            es.patchCanvasFields(id, {{"people",previousPeople},{"inner-group",previousGroups}});
+            throw std::runtime_error("STORAGE_UNAVAILABLE");
+        }
+    }
     const auto receipt = sync->value("receipt", Json());
     Json identity{{"user_id", user_id}, {"nickname", nickname}, {"tag_number", tag},
         {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin", admin}, {"settings_revision", revision}, {"canvas_id", id}};
     return {{"route", route}, {"identity", identity},
         {"response", {{"type", "init_items"}, {"canvas_id", id}, {"items", visible}, {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin",admin},
-                      {"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
+                      {"participant_joined", participantJoined}, {"edit_protocol",2},{"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
 }
-Json CanvasQueryService::query(const Json& input) {
+Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output) {
     auto route = routing(input); int id = route["canvas_id"];
     // Only the authenticated broker socket invokes this handler. Identity is
     // established by broker JWT authentication and authoritative canvas lookup.
@@ -158,6 +177,81 @@ Json CanvasQueryService::query(const Json& input) {
     const auto member_groups=identity.value("member_groups",identity["groups"]).get<std::unordered_set<std::string>>();
     CanvasAclScope access(identity.value("group_bits",Json::object()),{&groups,&write_groups,&execute_groups,&member_groups});
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    if (type == "runtime_execute") {
+        if (!event.contains("action") || !event["action"].is_string()) throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+        const auto action=event["action"].get<std::string>();
+        if (action!="execute"&&action!="build"&&action!="notebook"&&action!="manage") throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+        if(action=="manage"){
+            const auto management=event.value("management",Json::object());
+            if(!management.is_object())throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+            const auto operation=management.value("action",std::string());
+            const std::unordered_set<std::string> allowed={"settings_get","settings_set","resources_set","disk_set","java_dependencies","reset"};
+            if(!allowed.count(operation))throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+            if(!admin&&(operation=="settings_get"?groups.empty():(write_groups.empty()||execute_groups.empty())))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            Json payload=management;payload["canvasId"]=id;
+            lock.unlock();
+            const auto result=RuntimeKernelClient(runtime_socket_).request(payload);
+            if(result.contains("error"))return envelope(route,{{"type","runtime_result"},{"ok",false},{"code",result.value("error",std::string("RUNTIME_VM_UNAVAILABLE"))}});
+            return envelope(route,{{"type","runtime_result"},{"ok",true},{"result",result}});
+        }
+        if (execute_groups.empty()&&!admin) throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+        const auto object_id=event.value("object_id",std::string());
+        const auto language=event.value("language",std::string("python"));
+        const auto code=event.value("code",std::string());
+        if(!validQueryItemId(object_id)||code.size()>65536||
+           (language!="python"&&language!="javascript"&&language!="c"&&language!="cpp"&&language!="bash"&&language!="java"))
+            throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+
+        Json manager_request{{"canvasId",id},{"code",code}};
+        if(action=="notebook"){
+            const auto notebook_id=event.value("notebook_id",std::string());
+            const auto cell_id=event.value("cell_id",std::string());
+            const auto operation=event.value("operation",std::string("execute"));
+            if(operation!="execute"&&operation!="prepare"&&operation!="reset")throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+            if(operation=="prepare"&&write_groups.empty()&&!admin)throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            if(!validQueryItemId(notebook_id)||(operation=="execute"&&!validQueryItemId(cell_id)))throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+            const auto notebook=readItem(memory,id,notebook_id);
+            if(!notebook||notebook->value("kind","")!="shape"||notebook->value("runtimeRole","")!="notebook"
+               ||!queryCanAccess(*notebook,execute_groups,admin))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            if(operation!="execute"){
+                if(object_id!=notebook_id)throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            }else if(object_id==notebook_id){
+                const auto cells=notebook->value("notebookCells",Json::array());
+                const bool found=cells.is_array()&&std::any_of(cells.begin(),cells.end(),[&](const Json& cell){return cell.is_object()&&cell.value("id",std::string())==cell_id&&cell.value("cellType",std::string("code"))=="code";});
+                if(!found)throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            }else{
+                const auto child=readItem(memory,id,object_id);
+                const auto child_ids=notebook->value("notebookCellIds",Json::array());
+                const bool linked=child_ids.is_array()&&std::find(child_ids.begin(),child_ids.end(),Json(object_id))!=child_ids.end();
+                if(!child||!linked||child->value("kind","")!="shape"||child->value("runtimeRole","")!="notebook-cell"
+                   ||child->value("notebookId","")!=notebook_id||child->value("notebookCell",Json::object()).value("id",std::string())!=cell_id
+                   ||child->value("notebookCell",Json::object()).value("cellType",std::string("code"))!="code"
+                   ||!queryCanAccess(*child,execute_groups,admin))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            }
+            manager_request["action"]="notebook";manager_request["operation"]=operation;manager_request["notebook"]=notebook_id;
+        }else{
+            const auto target=readItem(memory,id,object_id);
+            const bool code_object=target&&(target->value("kind","")=="code"||
+                (target->value("kind","")=="text"&&target->value("renderMode","")=="code"));
+            if(!code_object||!queryCanAccess(*target,execute_groups,admin))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            if(action=="build")manager_request["action"]=action;manager_request["language"]=language;
+            if(event.contains("stdin")){
+                if(!event["stdin"].is_string()||event["stdin"].get_ref<const std::string&>().size()>65536)throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
+                manager_request["stdin"]=event["stdin"];
+            }
+            if(action=="execute"&&on_output)manager_request["stream"]=true;
+        }
+        try {
+            // Kernel execution can be long; keep the canvas available for edits and queries.
+            lock.unlock();
+            const auto result=RuntimeKernelClient(runtime_socket_).request(manager_request,on_output);
+            if(result.contains("error"))return envelope(route,{{"type","runtime_result"},{"ok",false},{"code",result.value("error",std::string("RUNTIME_VM_UNAVAILABLE"))},{"message",result.value("message",std::string("VM 커널에서 실행 결과를 받지 못했습니다."))}});
+            return envelope(route,{{"type","runtime_result"},{"ok",true},{"result",result}});
+        } catch(const std::runtime_error& error) {
+            const std::string code=error.what();
+            return envelope(route,{{"type","runtime_result"},{"ok",false},{"code",code},{"message","C++ 브로커가 VM 커널에 코드를 전달하지 못했습니다."}});
+        }
+    }
     if (type == "canvas_ops" || type == "canvas_sync") {
         const auto client = event.value("client_id", "");
         if (!validQueryItemId(client)) throw std::invalid_argument("CLIENT_ID_INVALID");
@@ -174,7 +268,7 @@ Json CanvasQueryService::query(const Json& input) {
                 if (entry.value().value("kind", "") != "host-tombstone" && queryCanAccess(entry.value(),groups,admin)) {
                     auto item=entry.value();if(agora::canvas::isChatRoomItem(item)){item.erase("data");item.erase("requests");}items[entry.key()]=std::move(item);
                 }
-            return envelope(route, {{"type","canvas_snapshot"},{"sync_protocol",2},{"sync_user_id",identity["user_id"]},{"items",items},{"revision",(*sync)["revision"]},{"client_id",client},{"accepted_count",accepted}});
+            return envelope(route, {{"type","canvas_snapshot"},{"edit_protocol",2},{"sync_protocol",2},{"sync_user_id",identity["user_id"]},{"items",items},{"revision",(*sync)["revision"]},{"client_id",client},{"accepted_count",accepted}});
         }
         if (!event.contains("request_count") || !event["request_count"].is_number_integer()) throw std::invalid_argument("CLIENT_SEQUENCE_INVALID");
         const auto count=event["request_count"].get<long long>();
@@ -221,12 +315,51 @@ Json CanvasQueryService::query(const Json& input) {
                 if(!entry.value().is_null())entry.value()["__broker_revision"]=revision;
             }
             Json commit{{"type","canvas_commit"},{"author_id",identity["user_id"]},{"revision",revision},{"client_id",client},{"request_count",count},{"request_id",route["request_id"]},{"items",mutation.items}};
-            if(mutation.only_translations){commit.erase("items");commit["translations"]=mutation.translations;}
+            Json deltas=Json::object();
+            for(const auto& entry:mutation.items.items()){
+                const auto old=mutation.previous.value(entry.key(),Json());
+                if(old.is_object()&&entry.value().is_object()){
+                    auto delta=Json::diff(old,entry.value());
+                    for(auto& edit:delta)if(edit.value("op",std::string())=="replace"&&edit.contains("value")&&edit["value"].is_string()){
+                        const Json::json_pointer pointer(edit["path"].get<std::string>());
+                        if(old.contains(pointer)&&old[pointer].is_string()){
+                            auto text=agora::textdelta::diff(old[pointer].get<std::string>(),edit["value"].get<std::string>());
+                            if(text.dump().size()<edit["value"].dump().size()){edit["op"]="text";edit["value"]=text;}
+                        }
+                    }
+                    deltas[entry.key()]=delta;
+                }
+            }
+            if(!deltas.empty())commit["deltas"]=deltas;
+            if(mutation.only_translations){commit.erase("deltas");commit.erase("items");commit["translations"]=mutation.translations;}
             broadcasts.push_back({{"all",true},{"event",commit},{"permissions",permissions},{"previous_permissions",previous}});
         }else broadcasts.push_back({{"all",true},{"event",{{"type","canvas_watermark"},{"revision",(*result)["server_revision"]}}}});
         return envelope(route,response,broadcasts);
     }
     if (type == "broker_lease") return envelope(route, {{"type", "lease_result"}, {"ok", true}});
+    if (type == "workspace_ops" || type == "workspace_sync") {
+        const auto workspace_id = event.value("workspace_id", "");
+        if (!validQueryItemId(workspace_id)) throw std::invalid_argument("WORKSPACE_ID_INVALID");
+        if (type == "workspace_ops" && write_groups.empty() && !admin) throw std::invalid_argument("ITEM_WRITE_DENIED");
+        const auto cells = event.value("cells", Json::array());
+        if (!cells.is_array() || cells.size() > 64 || cells.dump().size() > 524288)
+            throw std::invalid_argument("ITEM_NOTEBOOK_INVALID");
+        Json commit = {
+            {"type", "workspace_commit"},
+            {"canvas_id", id},
+            {"workspace_id", workspace_id},
+            {"title", event.value("title", "")},
+            {"author_id", identity["user_id"]},
+            {"client_id", event.value("client_id", "")},
+            {"action", event.value("action", type == "workspace_sync" ? "sync" : "update")},
+            {"cells", cells},
+            {"results", event.value("results", Json::object())}
+        };
+        Json broadcasts = Json::array({
+            {{"all", true}, {"event", commit}, {"permission", Json(groups)}}
+        });
+        return envelope(route, {{"type", "workspace_result"}, {"ok", true}, {"workspace_id", workspace_id}}, broadcasts);
+    }
     if (type.rfind("canvas_settings_", 0) == 0) {
         auto result = CanvasSettingsService::execute(pool_, canvas, id, identity["user_id"], identity["nickname"], identity["tag_number"], event, route["request_id"]);
         Json broadcasts = Json::array();

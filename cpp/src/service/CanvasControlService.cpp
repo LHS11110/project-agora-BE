@@ -55,4 +55,17 @@ void CanvasControlService::registerRoutes(HttpApi& api) {
         res.status = 200;
         res.set_content(body.dump(), "application/json");
     });
+
+    api.post(R"(/api/canvas/(\d+)/workspace-sync)", [this](const HttpApi::Request& req, HttpApi::Response& res) {
+        int canvas_id = 0;
+        if (!HttpApi::positiveId(req.matches[1], canvas_id)) return writeInvalidId(res);
+        const auto canvas = canvas_pool_.getCanvas(canvas_id);
+        const nlohmann::json body = {
+            {"status", "success"},
+            {"canvas_id", canvas_id},
+            {"canvas_active_in_cpp", static_cast<bool>(canvas)}
+        };
+        res.status = 200;
+        res.set_content(body.dump(), "application/json");
+    });
 }

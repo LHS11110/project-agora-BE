@@ -91,7 +91,19 @@ void BrokerQuerySocketService::worker() {
         std::string reply;
         try {
             auto input = nlohmann::json::parse(entry.payload);
-            reply = (executor_ ? executor_(input) : queries_.execute(input)).dump();
+            if (executor_) {
+                reply = executor_(input).dump();
+            } else {
+                const auto route = input.value("route", nlohmann::json::object());
+                const auto request_id = route.value("request_id", std::string());
+                const auto emit = [this, connection = entry.connection, route, request_id](const std::string& output) {
+                    nlohmann::json frame{{"route", route}, {"response", {{"type", "runtime_output"}, {"request_id", request_id}, {"output", output}}}};
+                    const auto serialized = frame.dump();
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    if (loop_) loop_->defer([this, connection, serialized] { enqueueReply(connection, serialized); });
+                };
+                reply = queries_.execute(input, emit).dump();
+            }
         } catch (...) {
             // A malformed envelope cannot be correlated safely.
             reply.clear();

@@ -35,8 +35,9 @@ public class CanvasRuntimeController {
         this.tokens = tokens;
     }
 
-    public record ExecuteRequest(String language, String code, String passwordGrant, String stdin) {
-        public ExecuteRequest(String language, String code, String passwordGrant) { this(language, code, passwordGrant, null); }
+    public record ExecuteRequest(String language, String code, String passwordGrant, String stdin, String objectId) {
+        public ExecuteRequest(String language, String code, String passwordGrant) { this(language, code, passwordGrant, null, null); }
+        public ExecuteRequest(String language, String code, String passwordGrant, String stdin) { this(language, code, passwordGrant, stdin, null); }
     }
 
     public record ResetRequest(String passwordGrant) {}
@@ -98,15 +99,16 @@ public class CanvasRuntimeController {
     @PostMapping("/{canvasId}/runtime/execute")
     public ResponseEntity<Map<String, Object>> execute(@PathVariable Integer canvasId,
             @RequestBody ExecuteRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user, "execute");
+        var document = authorize(canvasId, request.passwordGrant(), user, "execute");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(request.stdin() == null ? runtime.execute(canvasId, request.language(), request.code()) : runtime.execute(canvasId, request.language(), request.code(), request.stdin()));
+                .body(runtime.execute(canvasId, request.language(), request.code(), request.stdin(),
+                        user.getUserId(), revision(document), request.objectId()));
     }
     @PostMapping(value="/{canvasId}/runtime/execute/stream", produces="application/x-ndjson")
     public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> executeStream(
             @PathVariable Integer canvasId, @RequestBody ExecuteRequest request,
             @AuthenticationPrincipal CustomUserDetails user, jakarta.servlet.http.HttpServletResponse servletResponse) {
-        authorize(canvasId, request.passwordGrant(), user, "execute");
+        var document = authorize(canvasId, request.passwordGrant(), user, "execute");
         org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody body = output -> {
             var json = new com.fasterxml.jackson.databind.ObjectMapper();
             java.util.function.Consumer<Map<String,Object>> send = frame -> {
@@ -114,7 +116,8 @@ public class CanvasRuntimeController {
                 catch (java.io.IOException error) { throw new java.io.UncheckedIOException(error); }
             };
             try {
-                var result = runtime.executeStream(canvasId, request.language(), request.code(), request.stdin(), send);
+                var result = runtime.executeStream(canvasId, request.language(), request.code(), request.stdin(),
+                        user.getUserId(), revision(document), request.objectId(), send);
                 send.accept(Map.of("type", "result", "result", result));
             } catch (java.io.UncheckedIOException disconnected) {
                 // The manager drains the guest execution even after this HTTP client leaves.
@@ -131,9 +134,10 @@ public class CanvasRuntimeController {
     @PostMapping("/{canvasId}/runtime/build")
     public ResponseEntity<Map<String, Object>> build(@PathVariable Integer canvasId,
             @RequestBody ExecuteRequest request, @AuthenticationPrincipal CustomUserDetails user) {
-        authorize(canvasId, request.passwordGrant(), user, "execute");
+        var document = authorize(canvasId, request.passwordGrant(), user, "execute");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
-                .body(runtime.build(canvasId, request.language(), request.code()));
+                .body(runtime.build(canvasId, request.language(), request.code(), user.getUserId(),
+                        revision(document), request.objectId()));
     }
 
     public record TerminalRequest(String objectId, String operation, String data, Integer cols, Integer rows, Long offset, String passwordGrant) {}
@@ -151,7 +155,8 @@ public class CanvasRuntimeController {
     public ResponseEntity<Map<String,Object>> notebook(@PathVariable Integer canvasId,@RequestBody NotebookRequest request,@AuthenticationPrincipal CustomUserDetails user) {
         var document=authorizeRuntimeObject(canvasId,request.objectId(),request.passwordGrant(),user,"notebook");
         if("prepare".equals(request.operation())&&!CanvasGroupPermissions.allows(document,user,"write"))throw new CustomException(ErrorCode.ACCESS_DENIED,"실행 환경을 변경할 권한이 없습니다.");
-        var result=runtime.notebook(canvasId,request.objectId(),request.operation(),request.code()==null?"":request.code());
+        var result=runtime.notebook(canvasId,request.objectId(),request.operation(),request.code()==null?"":request.code(),
+                user.getUserId(),revision(document));
         authorizeRuntimeObject(canvasId,request.objectId(),request.passwordGrant(),user,"notebook");
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(result);
     }
@@ -181,6 +186,10 @@ public class CanvasRuntimeController {
 
     private CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
         return authorize(canvasId,passwordGrant,user,capability,null);
+    }
+
+    private static long revision(CanvasDocument document) {
+        return document.getSettingsRevision() == null ? 0L : document.getSettingsRevision();
     }
     public CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability, String itemId) {
         // The authoritative live canvas document checks current membership or public visibility.

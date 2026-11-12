@@ -543,21 +543,28 @@ public class CanvasService {
             }
         }
         
-        String canvasAccessToken = jwtTokenProvider.createCanvasAccessToken(
-                currentUser.getUser().getNickname(),
-                currentUser.getUser().getTagNumber(),
-                canvasId,
-                httpRequest.getRemoteAddr(), 
-                serverHash,
-                settingsRevision
-        );
-
-        if (com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(currentUser.getUser())) canvasAccessToken = jwtTokenProvider.createCanvasAccessToken(currentUser.getNickname(),currentUser.getUser().getTagNumber(),canvasId,httpRequest.getRemoteAddr(),serverHash,settingsRevision,60_000L);
         String canvasPasswordToken = passwordProtected
                 ? validPasswordToken
                     ? suppliedPasswordToken
                     : jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), canvasId, doc.getPasswordRevision())
                 : null;
+        boolean bot = com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(currentUser.getUser());
+        long canvasAccessLifetimeMs = passwordProtected
+                ? jwtTokenProvider.getCanvasPasswordGrantRemainingMs(canvasPasswordToken)
+                : 0L;
+        if (bot) {
+            canvasAccessLifetimeMs = canvasAccessLifetimeMs > 0
+                    ? Math.min(canvasAccessLifetimeMs, 60_000L)
+                    : 60_000L;
+        }
+        String canvasAccessToken = canvasAccessLifetimeMs > 0
+                ? jwtTokenProvider.createCanvasAccessToken(
+                    bot ? currentUser.getNickname() : currentUser.getUser().getNickname(),
+                    currentUser.getUser().getTagNumber(), canvasId, httpRequest.getRemoteAddr(),
+                    serverHash, settingsRevision, canvasAccessLifetimeMs)
+                : jwtTokenProvider.createCanvasAccessToken(
+                    currentUser.getUser().getNickname(), currentUser.getUser().getTagNumber(),
+                    canvasId, httpRequest.getRemoteAddr(), serverHash, settingsRevision);
 
         // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환
         return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken, canvasPasswordToken);

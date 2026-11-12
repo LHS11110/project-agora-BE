@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import jakarta.persistence.LockModeType;
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Repository
@@ -16,6 +17,11 @@ public interface CanvasInfoRepository extends JpaRepository<CanvasInfo, Integer>
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT c FROM CanvasInfo c WHERE c.canvasId = :canvasId")
     Optional<CanvasInfo> findByIdWithPessimisticLock(@Param("canvasId") Integer canvasId);
+
+    @Query("SELECT s.serverId FROM CanvasInfo c JOIN c.cppServer s WHERE c.canvasId = :canvasId " +
+            "AND c.isCached = true AND s.isActivated = true AND s.lastHeartbeatAt > :cutoff")
+    Optional<Integer> findActiveCppServerId(@Param("canvasId") Integer canvasId,
+                                             @Param("cutoff") LocalDateTime cutoff);
 
     @Query("SELECT COALESCE(MAX(c.canvasId), 0) FROM CanvasInfo c")
     Integer findMaxCanvasId();

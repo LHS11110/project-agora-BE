@@ -31,12 +31,12 @@ class CanvasRuntimeControllerTest {
         assertThrows(CustomException.class, () -> controller.execute(12, request, user));
         verifyNoInteractions(runtime);
         when(tokens.validateCanvasPasswordGrant("grant", 7L, 12, 4L)).thenReturn(true);
-        when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1\n"));
+        when(runtime.execute(12, "python", "print(1)", null, 7L, 0L, null)).thenReturn(Map.of("output", "1\n"));
         assertEquals("1\n", controller.execute(12, request, user).getBody().get("output"));
-        when(runtime.execute(12, "python", "input()", "first\nsecond\n")).thenReturn(Map.of("output", "first\n"));
+        when(runtime.execute(12, "python", "input()", "first\nsecond\n", 7L, 0L, null)).thenReturn(Map.of("output", "first\n"));
         var withInput = new CanvasRuntimeController.ExecuteRequest("python", "input()", "grant", "first\nsecond\n");
         assertEquals("first\n", controller.execute(12, withInput, user).getBody().get("output"));
-        verify(runtime).execute(12, "python", "input()", "first\nsecond\n");
+        verify(runtime).execute(12, "python", "input()", "first\nsecond\n", 7L, 0L, null);
     }
 
     @Test void buildRequiresTheSameAccessAndCurrentPasswordGrant() {
@@ -50,9 +50,9 @@ class CanvasRuntimeControllerTest {
         assertThrows(CustomException.class,()->controller.build(12,request,user));
         verifyNoInteractions(runtime);
         when(tokens.validateCanvasPasswordGrant("grant",7L,12,4L)).thenReturn(true);
-        when(runtime.build(12,"cpp","int main(){}")).thenReturn(Map.of("exitCode",0));
+        when(runtime.build(12,"cpp","int main(){}",7L,0L,null)).thenReturn(Map.of("exitCode",0));
         assertEquals(0,controller.build(12,request,user).getBody().get("exitCode"));
-        verify(runtime).build(12,"cpp","int main(){}");
+        verify(runtime).build(12,"cpp","int main(){}",7L,0L,null);
     }
 
     @Test void rejectedMembershipNeverReachesRuntime() {
@@ -143,14 +143,14 @@ class CanvasRuntimeControllerTest {
         assertThrows(CustomException.class,()->controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user));
         assertThrows(CustomException.class,()->controller.configure(12,new CanvasRuntimeController.ConfigureRequest("python",Map.of(),0L,null),user));verifyNoInteractions(runtime);
         doc.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",true)));
-        when(runtime.execute(12,"python","print(1)")).thenReturn(Map.of("output","1"));assertEquals("1",controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user).getBody().get("output"));
+        when(runtime.execute(12,"python","print(1)",null,7L,0L,null)).thenReturn(Map.of("output","1"));assertEquals("1",controller.execute(12,new CanvasRuntimeController.ExecuteRequest("python","print(1)",null),user).getBody().get("output"));
         assertThrows(CustomException.class,()->controller.reset(12,new CanvasRuntimeController.ResetRequest(null),user));
     }
     @Test void privateCanvasLegacyPasswordDoesNotBlockInvitedUserRuntime() {
         var doc = new CanvasDocument("Private", 12, 7L, "legacy-hash", "default");
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
-        when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1"));
+        when(runtime.execute(12, "python", "print(1)", null, 7L, 0L, null)).thenReturn(Map.of("output", "1"));
         assertEquals("1", controller.execute(12, new CanvasRuntimeController.ExecuteRequest("python", "print(1)", null), user).getBody().get("output"));
         verifyNoInteractions(tokens);
     }
@@ -161,7 +161,7 @@ class CanvasRuntimeControllerTest {
         when(user.getUserId()).thenReturn(7L);
         when(canvases.getCanvasDocument(12, user)).thenReturn(doc);
         when(tokens.validateCanvasPasswordGrant("grant", 7L, 12, 4L)).thenReturn(true);
-        when(runtime.execute(12, "python", "print(1)")).thenReturn(Map.of("output", "1"));
+        when(runtime.execute(12, "python", "print(1)", null, 7L, 99L, null)).thenReturn(Map.of("output", "1"));
         var request = new CanvasRuntimeController.ExecuteRequest("python", "print(1)", "grant");
         assertEquals("1", controller.execute(12, request, user).getBody().get("output"));
         doc.setSettingsRevision(100L);
@@ -173,8 +173,8 @@ class CanvasRuntimeControllerTest {
     @Test void outputFramesAreFlushedInOrderAndPermissionCheckedBeforeStreaming() throws Exception {
         var doc = new CanvasDocument("Private",12,7L,null,"default");
         when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasDocument(12,user)).thenReturn(doc);
-        when(runtime.executeStream(eq(12),eq("python"),eq("print(1)"),isNull(),any())).thenAnswer(invocation -> {
-            java.util.function.Consumer<Map<String,Object>> consumer = invocation.getArgument(4);
+        when(runtime.executeStream(eq(12),eq("python"),eq("print(1)"),isNull(),eq(7L),eq(0L),isNull(),any())).thenAnswer(invocation -> {
+            java.util.function.Consumer<Map<String,Object>> consumer = invocation.getArgument(7);
             consumer.accept(Map.of("type","output","output","first\n"));
             consumer.accept(Map.of("type","output","output","last\n"));
             return Map.of("exitCode",0,"output","first\nlast\n");
@@ -222,9 +222,9 @@ class CanvasRuntimeControllerTest {
         doc.setItems(Map.of("nb",Map.of("kind","shape","runtimeRole","notebook","permission",java.util.List.of("readers"))));
         when(user.getUserId()).thenReturn(7L);when(canvases.getCanvasItemDocument(12,user,"nb")).thenReturn(doc);
         var request=new CanvasRuntimeController.NotebookRequest("nb","execute","1+1",null);
-        when(runtime.notebook(12,"nb","execute","1+1")).thenReturn(Map.of("exitCode",0));
+        when(runtime.notebook(12,"nb","execute","1+1",7L,0L)).thenReturn(Map.of("exitCode",0));
         assertEquals(0,controller.notebook(12,request,user).getBody().get("exitCode"));
-        when(runtime.notebook(12,"nb","execute","1+1")).thenAnswer(invocation->{doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",false,"write",false)));return Map.of("exitCode",0);});
+        when(runtime.notebook(12,"nb","execute","1+1",7L,0L)).thenAnswer(invocation->{doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",false,"write",false)));return Map.of("exitCode",0);});
         assertThrows(CustomException.class,()->controller.notebook(12,request,user));
         clearInvocations(runtime);assertThrows(CustomException.class,()->controller.notebook(12,request,user));verifyNoInteractions(runtime);
         doc.setGroupPermissions(Map.of("readers",Map.of("read",true,"execute",true,"write",false)));

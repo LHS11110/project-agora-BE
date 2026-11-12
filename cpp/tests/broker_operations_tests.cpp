@@ -101,6 +101,20 @@ void operations(){
  denied_readonly(Json::array({{{"action","patch"},{"id","output"},{"patch",{{"runtimeResults",output["runtimeResults"]},{"x",3}}}}}));
  bool no_execute_denied=false;try{agora::broker::prepare(Json::array({{{"action","patch"},{"id","output"},{"patch",{{"runtimeResults",output["runtimeResults"]}}}}}),read,readable,false,&readable,&no_writes);}catch(const std::invalid_argument&){no_execute_denied=true;}AGORA_CHECK(no_execute_denied);
  Json notebook{{"kind","shape"},{"shapeType","rectangle"},{"runtimeRole","notebook"},{"permission","writers"},{"locked",true},{"notebookCells",Json::array({{{"id","cell1"},{"cellType","code"},{"source","x=1"}}})},{"notebookResults",Json::object()}};
+ for(const auto& pair:std::vector<std::pair<std::string,std::string>>{{"가나다","가각다"},{"a😀b","a😃b"},{"", "안녕"}}){auto edit=agora::textdelta::diff(pair.first,pair.second);AGORA_CHECK(agora::textdelta::apply(pair.first,edit)==pair.second);}
+ auto fresh_notebook=notebook;fresh_notebook.erase("locked");
+ auto new_notebook=run(Json::array({{{"action","create"},{"id","fresh-notebook"},{"patch",fresh_notebook}}}));
+ AGORA_CHECK(new_notebook.items["fresh-notebook"]["notebookCells"].size()==1);
+ store["fresh-notebook"]=fresh_notebook;
+ auto edit=agora::textdelta::diff("x=1","x=2");
+ Json edit_operation={{"action","patch"},{"id","fresh-notebook"},{"patch",Json::object()}};
+ edit_operation["notebook_edits"]=Json::array();
+ edit_operation["notebook_edits"].push_back(Json{{"id","cell1"},{"patch",Json::object()},{"source_delta",edit}});
+ auto edited=run(Json::array({edit_operation}));
+ AGORA_CHECK(edited.items["fresh-notebook"]["notebookCells"][0]["source"]=="x=2");
+ auto stale=edit;stale["base"]="invalid";bool stale_denied=false;
+ try{agora::textdelta::apply("x=1",stale);}catch(const std::invalid_argument& e){stale_denied=std::string(e.what())=="CANVAS_TEXT_CONFLICT";}AGORA_CHECK(stale_denied);
+
  agora::broker::validate(notebook);store["notebook"]=notebook;
  auto notebook_output=agora::broker::prepare(Json::array({{{"action","patch"},{"id","notebook"},{"patch",{{"notebookResults",{{"cell1",{{"outputs",Json::array({{{"output_type","stream"},{"text","1"}}})},{"executionCount",1},{"exitCode",0}}}}}}}}}),read,no_writes,false,&readable,&executable);
  AGORA_CHECK(notebook_output.items["notebook"]["notebookResults"]["cell1"]["executionCount"]==1);

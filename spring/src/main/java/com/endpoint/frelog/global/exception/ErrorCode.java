@@ -34,6 +34,10 @@ public enum ErrorCode {
     SERVER_NOT_FOUND(HttpStatus.NOT_FOUND, "LB_003", "서버를 찾을 수 없습니다."),
     REDIS_NOT_FOUND(HttpStatus.NOT_FOUND, "LB_004", "Redis 서버를 찾을 수 없습니다."),
 
+    RUNTIME_MANAGER_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "VM_001", "캔버스 실행환경 관리자에 연결할 수 없습니다. VM 서비스 연결 상태를 확인한 뒤 다시 시도해주세요."),
+    RUNTIME_VM_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "VM_002", "이 캔버스의 가상머신을 시작하거나 사용할 수 없습니다. 호스트 리소스와 VM 상태를 확인한 뒤 다시 시도해주세요."),
+    RUNTIME_CPP_SERVER_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "VM_003", "캔버스에 할당된 C++ 브로커를 찾거나 실행 요청을 전달할 수 없습니다. 캔버스 연결 상태를 확인한 뒤 다시 시도해주세요."),
+
     BAD_REQUEST(HttpStatus.BAD_REQUEST, "COMMON_000", "잘못된 요청입니다."),
     FORBIDDEN(HttpStatus.FORBIDDEN, "AUTH_007", "권한이 없습니다."),
     INVALID_INPUT_VALUE(HttpStatus.BAD_REQUEST, "COMMON_001", "입력값이 유효하지 않습니다."),

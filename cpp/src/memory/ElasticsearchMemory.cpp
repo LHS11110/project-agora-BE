@@ -59,7 +59,7 @@ std::optional<nlohmann::json> ElasticsearchMemory::getDocument(
     try {
         const auto body = nlohmann::json::parse(response->body);
         if (!body.contains("_source")) return std::nullopt;
-        return body["_source"];
+        return std::optional<nlohmann::json>(body["_source"]);
     } catch (const nlohmann::json::exception&) {
         return std::nullopt;
     }

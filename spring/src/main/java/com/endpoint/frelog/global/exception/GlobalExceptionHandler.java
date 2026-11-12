@@ -101,6 +101,18 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(errorCode.getHttpStatus()).body(response);
     }
 
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<ErrorResponse> handleResponseStatus(org.springframework.web.server.ResponseStatusException ex) {
+        ErrorCode code = switch(ex.getStatusCode().value()) {
+            case 401 -> ErrorCode.UNAUTHORIZED;
+            case 403 -> ErrorCode.ACCESS_DENIED;
+            case 404 -> ErrorCode.RESOURCE_NOT_FOUND;
+            default -> ErrorCode.INVALID_INPUT_VALUE;
+        };
+        recordFailure(code,ex);
+        return ResponseEntity.status(ex.getStatusCode()).body(new ErrorResponse(code,ex.getReason()));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
         ErrorCode errorCode = ErrorCode.INTERNAL_SERVER_ERROR;
