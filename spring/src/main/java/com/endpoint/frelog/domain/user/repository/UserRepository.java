@@ -19,6 +19,9 @@ public interface UserRepository extends JpaRepository<User, Long> {
     Optional<User> findByEmail(String email);
 
     @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    Optional<User> findByOrcidAndOrcidIssuer(String orcid,String orcidIssuer);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
     Optional<User> findByOauthProviderAndOauthId(String provider, String subject);
 
     java.util.List<User> findByOauthProviderAndOauthIdStartingWith(String provider, String prefix);

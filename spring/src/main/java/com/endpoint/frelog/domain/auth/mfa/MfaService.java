@@ -51,7 +51,7 @@ public class MfaService {
     @Transactional public Map<String,String> begin(Long id,String token){available();recent(token);var s=setupState(id);if(s.enabled)throw new MfaRejected("MFA가 이미 활성화되어 있습니다.");
         // A locked enrollment cannot bypass rate limiting by asking for a new seed.
         checkLock(s);byte[] bytes=new byte[20];random.nextBytes(bytes);String secret=Totp.base32(bytes);s.pendingSecret=crypt(id,secret,true);s.pendingExpires=now().plusMinutes(10);
-        String email=users.findById(id).orElseThrow().getEmail();String label=java.net.URLEncoder.encode("FreLog:"+email,StandardCharsets.UTF_8).replace("+","%20");return Map.of("secret",secret,"uri","otpauth://totp/"+label+"?secret="+secret+"&issuer=FreLog&algorithm=SHA1&digits=6&period=30");}
+        var account=users.findById(id).orElseThrow();String email=account.getEmail()!=null?account.getEmail():account.getOrcid()!=null?account.getOrcid():account.getNickname();String label=java.net.URLEncoder.encode("FreLog:"+email,StandardCharsets.UTF_8).replace("+","%20");return Map.of("secret",secret,"uri","otpauth://totp/"+label+"?secret="+secret+"&issuer=FreLog&algorithm=SHA1&digits=6&period=30");}
     private void checkLock(MfaState s){if(s.lockedUntil!=null&&s.lockedUntil.isAfter(now()))throw new MfaRejected("인증 시도가 너무 많습니다. 5분 후 다시 시도해주세요.");if(s.lockedUntil!=null){s.lockedUntil=null;s.failures=0;}}
     private void reject(MfaState s){s.failures++;if(s.failures>=5)s.lockedUntil=now().plusMinutes(5);throw new MfaRejected("코드가 올바르지 않거나 이미 사용되었습니다. 새 코드를 확인해주세요.");}
     private List<String> recovery(MfaState s){var plain=new ArrayList<String>();var hashes=new ArrayList<String>();for(int i=0;i<10;i++){byte[] b=new byte[10];random.nextBytes(b);String value=Totp.base32(b);plain.add(value.substring(0,4)+"-"+value.substring(4,8)+"-"+value.substring(8,12)+"-"+value.substring(12));hashes.add(hash(s.userId+":"+value));}s.recoveryHashes=String.join(",",hashes);return plain;}
@@ -88,6 +88,6 @@ public class MfaService {
         if(state!=null&&state.enabled&&(state.version==null||!Objects.equals(state.version,approvedVersion)))throw new MfaRejected("MFA 설정이 변경되었습니다. QR 로그인을 다시 시작해주세요.");
         return issue(user,state!=null&&state.enabled?state.version:null,request);
     }
-    private LoginResponse issue(User u,String version,HttpServletRequest request){var session=sessions.findByIdWithPessimisticLock(u.getUserId()).orElseGet(()->new UserSession(u));session.updateLastLogin(now());sessions.save(session);return LoginResponse.of(tokens.createMfaToken(u.getEmail(),u.getTagNumber(),u.getNickname(),u.getRole().name(),request.getRemoteAddr(),version),UserResponse.from(u));}
+    private LoginResponse issue(User u,String version,HttpServletRequest request){var session=sessions.findByIdWithPessimisticLock(u.getUserId()).orElseGet(()->new UserSession(u));session.updateLastLogin(now());sessions.save(session);return LoginResponse.of(u.getEmail()==null&&u.getOrcid()!=null?tokens.createOrcidToken(u,request.getRemoteAddr(),version):tokens.createMfaToken(u.getEmail(),u.getTagNumber(),u.getNickname(),u.getRole().name(),request.getRemoteAddr(),version),UserResponse.from(u));}
     @Scheduled(fixedDelay=3600000) @Transactional public void cleanup(){challenges.deleteExpired(now().minusDays(1));}
 }

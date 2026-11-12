@@ -60,6 +60,20 @@ public class JwtTokenProvider {
                 .compact();
     }
 
+    /** Application identity after a server-verified ORCID exchange, including accounts without public email. */
+    public String createOrcidToken(com.endpoint.frelog.domain.user.entity.User user,String ip,String mfaVersion) {
+        if(user.getUserId()==null||user.getOrcid()==null||user.getOrcidIssuer()==null)throw new IllegalArgumentException("ORCID account required");
+        Date now=new Date();
+        return Jwts.builder().subject("irade-user:"+user.getUserId()).claim("userId",user.getUserId()).claim("authType","orcid")
+            .claim("orcid",user.getOrcid()).claim("orcidIssuer",user.getOrcidIssuer()).claim("tagNumber",user.getTagNumber()).claim("nickname",user.getNickname())
+            .claim("role",user.getRole().name()).claim("clientIp",ip).claim("mfa_version",mfaVersion).issuedAt(now).expiration(new Date(now.getTime()+expirationMs)).signWith(key,Jwts.SIG.HS256).compact();
+    }
+    public boolean isOrcidToken(String token){return "orcid".equals(getClaims(token).get("authType",String.class));}
+    public boolean matchesOrcidIdentity(String token,com.endpoint.frelog.domain.user.entity.User user){
+        var claims=getClaims(token);return user.getOrcid()!=null&&user.getOrcidIssuer()!=null&&("irade-user:"+user.getUserId()).equals(claims.getSubject())
+            &&user.getOrcid().equals(claims.get("orcid",String.class))&&user.getOrcidIssuer().equals(claims.get("orcidIssuer",String.class));
+    }
+
     public String createMfaToken(String email,Integer tag,String name,String role,String ip,String version) {
         Date now=new Date();return Jwts.builder().subject(email).claim("userId",accountId(email)).claim("tagNumber",tag).claim("nickname",name).claim("role",role).claim("clientIp",ip).claim("mfa_version",version).issuedAt(now).expiration(new Date(now.getTime()+expirationMs)).signWith(key,Jwts.SIG.HS256).compact();
     }

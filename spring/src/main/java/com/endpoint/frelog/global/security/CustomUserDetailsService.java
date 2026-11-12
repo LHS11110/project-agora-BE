@@ -17,6 +17,12 @@ public class CustomUserDetailsService implements UserDetailsService {
         this.userRepository = userRepository;
     }
 
+    @Transactional(readOnly=true)
+    public UserDetails loadUserById(Long id) {
+        if(id==null)throw new UsernameNotFoundException("Invalid account ID");
+        return new CustomUserDetails(userRepository.findById(id).orElseThrow(()->new UsernameNotFoundException("Account not found")));
+    }
+
     @Override
     @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {

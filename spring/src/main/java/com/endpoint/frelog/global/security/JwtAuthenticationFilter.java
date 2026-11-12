@@ -72,7 +72,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             UserDetails userDetails;
             try {
-                userDetails = userDetailsService.loadUserByUsername(email);
+                if(tokenProvider.isOrcidToken(token)) {
+                    userDetails=userDetailsService.loadUserById(tokenProvider.getUserIdFromToken(token));
+                    if(!(userDetails instanceof CustomUserDetails current)||!tokenProvider.matchesOrcidIdentity(token,current.getUser()))throw new UsernameNotFoundException("ORCID identity no longer matches");
+                }else{userDetails = userDetailsService.loadUserByUsername(email);}
             } catch (UsernameNotFoundException ex) {
                 // A signed token can outlive the account it refers to, for example
                 // after a database reset. Treat it as stale authentication instead

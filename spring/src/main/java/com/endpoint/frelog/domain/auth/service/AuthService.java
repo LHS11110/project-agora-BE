@@ -87,6 +87,15 @@ public class AuthService {
         return mfa.completeVerifiedPasskey(user, request);
     }
 
+    @Transactional
+    public LoginResponse completeOrcidLogin(User user,HttpServletRequest request) {
+        if(!user.isActive()||user.getOrcid()==null)throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        if(mfa.enabled(user.getUserId()))return mfa.challenge(user,request);
+        UserSession session=userSessionRepository.findByIdWithPessimisticLock(user.getUserId()).orElseGet(()->new UserSession(user));
+        session.updateLastLogin(LocalDateTime.now());userSessionRepository.save(session);
+        return LoginResponse.of(jwtTokenProvider.createOrcidToken(user,request.getRemoteAddr(),null),UserResponse.from(user));
+    }
+
     private LoginResponse completeLogin(User user, HttpServletRequest httpRequest) {
         if (mfa.enabled(user.getUserId())) return mfa.challenge(user, httpRequest);
         UserSession session = userSessionRepository.findByIdWithPessimisticLock(user.getUserId())
@@ -177,8 +186,9 @@ public class AuthService {
 
     @Transactional(readOnly = true)
     public UserResponse getMe(String email) {
-        User user = userRepository.findByEmail(email)
+        User user = (email!=null&&email.matches("irade-user:[0-9]+")?userRepository.findById(Long.parseLong(email.substring(11))):userRepository.findByEmail(email))
                 .orElseThrow(() -> new CustomException(ErrorCode.USER_NOT_FOUND));
+        if(!user.isActive()||(email!=null&&email.startsWith("irade-user:")&&user.getOrcid()==null))throw new CustomException(ErrorCode.INVALID_TOKEN);
 
         return UserResponse.from(user);
     }

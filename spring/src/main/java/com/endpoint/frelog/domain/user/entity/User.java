@@ -59,6 +59,13 @@ public class User {
     @Column(name = "oauth_id", length = 255)
     private String oauthId;
 
+    @Column(name="orcid",length=19) private String orcid;
+    @Column(name="orcid_issuer",length=64) private String orcidIssuer;
+    public String getOrcid(){return orcid;}
+    public void setOrcid(String value){orcid=value;}
+    public String getOrcidIssuer(){return orcidIssuer;}
+    public void setOrcidIssuer(String value){orcidIssuer=value;}
+
     @Column(name="profile_image_url",length=512)
     private String profileImageUrl;
     public String getProfileImageUrl(){return profileImageUrl;}
@@ -121,7 +128,7 @@ public class User {
 
     public void erasePersonalData() {
         if(status!=UserStatus.WITHDRAWN||userId==null)throw new IllegalStateException("Only persisted withdrawn accounts can be erased");
-        email=null;passwordHash=null;oauthProvider=null;oauthId=null;profileImageUrl=null;emailVerifiedAt=null;passwordChangedAt=null;
+        orcid=null;orcidIssuer=null;email=null;passwordHash=null;oauthProvider=null;oauthId=null;profileImageUrl=null;emailVerifiedAt=null;passwordChangedAt=null;
         nickname="삭제된 계정";tagNumber=Math.toIntExact(userId);role=Role.ROLE_USER;
     }
 

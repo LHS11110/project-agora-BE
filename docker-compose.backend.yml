@@ -37,6 +37,10 @@ services:
       context: .
       dockerfile: docker/spring.Dockerfile
     container_name: agora-spring
+    env_file:
+      - path: ${ORCID_ENV_FILE:-./.secrets/orcid.env}
+        required: false
+        format: raw
     init: true
     restart: unless-stopped
     stop_grace_period: 30s

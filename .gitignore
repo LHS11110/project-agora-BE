@@ -245,3 +245,6 @@ playwright-report/
 *.sql.gz
 *.rdb
 appendonlydir/
+
+# Private optional provider configuration
+.secrets/
