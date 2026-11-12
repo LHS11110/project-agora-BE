@@ -29,7 +29,7 @@ public class OrcidController {
     private void sameOrigin(HttpServletRequest request){if(!config.origin().equals(request.getHeader("Origin")))throw new CustomException(ErrorCode.ACCESS_DENIED);}
     private static void cookie(HttpServletResponse response,String name,String value,int seconds){response.addHeader(HttpHeaders.SET_COOKIE,ResponseCookie.from(name,value).httpOnly(true).secure(true).sameSite("Lax").path("/api/irade/auth").maxAge(seconds).build().toString());}
     private String authorize(OrcidService.Start start){return UriComponentsBuilder.fromUriString(config.issuer()+"/oauth/authorize").queryParam("client_id",config.clientId()).queryParam("response_type","code").queryParam("scope","/authenticate").queryParam("redirect_uri",config.redirectUri()).queryParam("state",start.state()).build().encode().toUriString();}
-    @GetMapping("/orcid/start") public ResponseEntity<Void> start(@RequestParam(required=false) Integer workspace,HttpServletResponse response){available();var start=service.begin(null,workspace);cookie(response,FLOW,start.browser(),600);return ResponseEntity.status(302).location(URI.create(authorize(start))).build();}
+    @GetMapping("/orcid/start") public ResponseEntity<Void> start(@RequestParam(required=false) Integer workspace,@RequestParam(defaultValue="irade") String app,HttpServletResponse response){available();var start=service.begin(null,workspace,app);cookie(response,FLOW,start.browser(),600);return ResponseEntity.status(302).location(URI.create(authorize(start))).build();}
     public record Link(Integer workspace){}
     @PostMapping("/orcid/link") public Map<String,String> link(@RequestBody Link body,@AuthenticationPrincipal CustomUserDetails current,HttpServletRequest request,HttpServletResponse response){
         available();sameOrigin(request);if(current==null)throw new CustomException(ErrorCode.UNAUTHORIZED);
@@ -41,7 +41,7 @@ public class OrcidController {
     }
     @GetMapping("/orcid/callback") public ResponseEntity<Void> callback(@RequestParam(required=false) String state,@RequestParam(required=false) String code,@RequestParam(required=false) String error,@CookieValue(name=FLOW,required=false) String browser,HttpServletRequest request,HttpServletResponse response){
         available();cookie(response,FLOW,"",0);cookie(response,HANDOFF,"",0);
-        Integer workspace=null;String outcome="failed";
+        Integer workspace=null;String outcome="failed";boolean agora=state!=null&&state.startsWith("agora.");
         try{
             var attempt=service.consume(state,browser);workspace=attempt.workspaceId;
             if(error!=null){outcome="cancelled";}else{
@@ -51,7 +51,7 @@ public class OrcidController {
                 String raw=OrcidService.random();handoffs.put(OrcidService.hash(raw),new Handoff(completed,clock.instant().plusSeconds(60),request.getRemoteAddr()));cookie(response,HANDOFF,raw,60);outcome="success";
             }
         }catch(RuntimeException rejected){/* Do not log codes, secrets, provider response bodies or tokens. */}
-        String location=config.origin()+"/irade/login?orcid="+outcome+(workspace==null?"":"&workspace="+workspace);
+        String location=config.origin()+(agora?"/login":"/irade/login")+"?orcid="+outcome+(agora||workspace==null?"":"&workspace="+workspace);
         return ResponseEntity.status(303).location(URI.create(location)).build();
     }
     @PostMapping("/session") public OrcidService.Completed session(@CookieValue(name=HANDOFF,required=false) String raw,HttpServletRequest request,HttpServletResponse response){

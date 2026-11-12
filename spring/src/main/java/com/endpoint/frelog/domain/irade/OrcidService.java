@@ -26,13 +26,15 @@ public class OrcidService {
     public static String hash(String value){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}catch(NoSuchAlgorithmException e){throw new IllegalStateException(e);}}
     private LocalDateTime now(){return LocalDateTime.ofInstant(clock.instant(),ZoneOffset.UTC);}
     public record Start(String state,String browser){}
-    @Transactional public Start begin(Long userId,Integer workspace){
+    @Transactional public Start begin(Long userId,Integer workspace){return begin(userId,workspace,"irade");}
+    @Transactional public Start begin(Long userId,Integer workspace,String app){
+        if(!Set.of("irade","agora").contains(app))throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"로그인할 서비스를 확인하세요.");
         if(workspace!=null&&workspace<1)throw new CustomException(ErrorCode.INVALID_INPUT_VALUE);
-        String state=random(),browser=random();var attempt=new OrcidAttempt();attempt.id=hash(state);attempt.browserHash=hash(browser);attempt.targetUserId=userId;attempt.workspaceId=workspace;attempt.expiresAt=now().plusMinutes(10);attempts.save(attempt);return new Start(state,browser);
+        String state=(app.equals("agora")?"agora.":"")+random(),browser=random();var attempt=new OrcidAttempt();attempt.id=hash(state);attempt.browserHash=hash(browser);attempt.targetUserId=userId;attempt.workspaceId=workspace;attempt.expiresAt=now().plusMinutes(10);attempts.save(attempt);return new Start(state,browser);
     }
     /** Commit consumption before the remote token exchange; a callback cannot be replayed even after a provider failure. */
     @Transactional public OrcidAttempt consume(String state,String browser){
-        if(state==null||browser==null||!state.matches("[A-Za-z0-9_-]{43}")||!browser.matches("[A-Za-z0-9_-]{43}"))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
+        if(state==null||browser==null||!state.matches("(?:agora\\.)?[A-Za-z0-9_-]{43}")||!browser.matches("[A-Za-z0-9_-]{43}"))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         var attempt=attempts.lock(hash(state)).orElseThrow(()->new CustomException(ErrorCode.INVALID_CREDENTIALS));
         if(attempt.consumed||!attempt.expiresAt.isAfter(now())||!MessageDigest.isEqual(attempt.browserHash.getBytes(StandardCharsets.US_ASCII),hash(browser).getBytes(StandardCharsets.US_ASCII)))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         attempt.consumed=true;return attempt;

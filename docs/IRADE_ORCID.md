@@ -44,7 +44,7 @@ ORCID authentication uses the official server's authorization-code flow and `/au
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /api/irade/auth/orcid/status` | Whether the provider is configured; never returns credentials |
-| `GET /api/irade/auth/orcid/start?workspace=42` | Begin login/automatic registration; bind state to HttpOnly browser cookie |
+| `GET /api/irade/auth/orcid/start?workspace=42&app=irade` | Begin login/automatic registration; bind state to HttpOnly browser cookie |
 | `POST /api/irade/auth/orcid/link` | Authenticated explicit link to an existing account; JSON `{ "workspace": 42 }` optional |
 | `GET /api/irade/auth/orcid/callback` | Consume expiring DB state once, verify ORCID and create a one-use login handoff |
 | `POST /api/irade/auth/session` | Same-origin, cookie-bound one-use handoff; return login/MFA challenge and ORCID identity |
@@ -72,3 +72,9 @@ C++ continues to resolve the verified nickname/tag to the active SQL user ID and
 ORCID client/identity/integration tests cover code exchange serialization, missing scope, ID check digits, private-email registration, repeat login, explicit linking, state/browser mismatch, expired state, replay, handoff origin/one-use checks, suspended/erased identities, private creation, search/access delegation and existing JWT/MFA/erasure regressions. UI tests use a test-only provider fixture and two real editor replicas with the isolated guest CRDT worker; they do not claim an actual ORCID user consent flow. Production user authentication must be checked with a real ORCID account after configuring credentials.
 
 References: [ORCID authentication](https://info.orcid.org/documentation/integration-and-api-faq/), [Public API client registration](https://info.orcid.org/ufaqs/how-do-i-register-a-public-api-client/), [sign-in guidelines](https://info.orcid.org/documentation/integration-guide/orcid-oauth-sign-in-guidelines/).
+
+## Project Agora login
+
+The Agora `/login` page also offers ORCID when `/api/auth/providers` reports `orcid:true`. It starts the same authorization flow with `app=agora` and uses the existing registered ORCID callback. The callback returns to `/login?orcid=success`, `/login?orcid=cancelled` or `/login?orcid=failed` on the configured public origin. Default `app=irade` retains IRADE's existing callback behavior.
+
+The return application is encoded in the random OAuth state before the complete state is hashed into the attempt record. Changing or removing the application prefix invalidates that record lookup and cannot issue a login handoff. Only the fixed Agora and IRADE paths are used; arbitrary return URLs are rejected. No schema change or new OAuth credentials are needed. Both frontends consume the same one-use session response, including MFA challenges, and share the same SQL identity and canvas permissions.

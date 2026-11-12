@@ -69,8 +69,9 @@ public class AuthController {
     @GetMapping("/providers")
     public Map<String, Boolean> providers(@org.springframework.beans.factory.annotation.Value("${app.oauth.google.enabled:false}") boolean google,
             @org.springframework.beans.factory.annotation.Value("${app.oauth.naver.enabled:false}") boolean naver,
-            @org.springframework.beans.factory.annotation.Value("${app.oauth.kakao.enabled:false}") boolean kakao) {
-        return Map.of("google", google, "naver", naver, "kakao", kakao);
+            @org.springframework.beans.factory.annotation.Value("${app.oauth.kakao.enabled:false}") boolean kakao,
+            @org.springframework.beans.factory.annotation.Value("${app.irade.orcid.enabled:false}") boolean orcid) {
+        return Map.of("google", google, "naver", naver, "kakao", kakao, "orcid", orcid);
     }
 
     @GetMapping("/health")

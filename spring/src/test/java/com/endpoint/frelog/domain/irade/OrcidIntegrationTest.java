@@ -128,4 +128,29 @@ class OrcidIntegrationTest {
         String fresh=login();assertThat(tokens.getUserIdFromToken(fresh)).isNotEqualTo(id);
     }
 
+    @Test void agoraReturnIsBoundToTheOriginalStateAndUsesTheSameIdentity() throws Exception {
+        mvc.perform(get("/api/auth/providers")).andExpect(jsonPath("$.orcid").value(true));
+        mvc.perform(get("/api/irade/auth/orcid/start").param("app","https://attacker.invalid")).andExpect(status().isBadRequest());
+        var start=mvc.perform(get("/api/irade/auth/orcid/start").param("app","agora").secure(true)).andExpect(status().isFound()).andReturn();
+        String state=org.springframework.web.util.UriComponentsBuilder.fromUriString(start.getResponse().getHeader("Location")).build().getQueryParams().getFirst("state");
+        assertThat(state).startsWith("agora.");
+        var browser=start.getResponse().getCookie("__Secure-IRADE_ORCID_FLOW");
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state",state.substring(6)).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed"));
+        verifyNoInteractions(provider);
+        var result=mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state",state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=success")).andReturn();
+        Cookie handoff=Arrays.stream(result.getResponse().getCookies()).filter(c->c.getName().equals("__Secure-IRADE_ORCID_LOGIN")&&c.getMaxAge()>0).findFirst().orElseThrow();
+        var session=mvc.perform(post("/api/irade/auth/session").cookie(handoff).header("Origin",ORIGIN)).andExpect(status().isOk()).andReturn();
+        String token=json.readTree(session.getResponse().getContentAsString()).path("login").path("accessToken").asString();
+        mvc.perform(get("/api/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isOk()).andExpect(jsonPath("$.email").isEmpty());
+        Long id=tokens.getUserIdFromToken(token);assertThat(tokens.getUserIdFromToken(login())).isEqualTo(id);
+    }
+    @Test void agoraCancellationAndExpiredStateReturnToAgoraWithoutIssuingTokens() throws Exception {
+        var start=mvc.perform(get("/api/irade/auth/orcid/start").param("app","agora")).andReturn();
+        String state=org.springframework.web.util.UriComponentsBuilder.fromUriString(start.getResponse().getHeader("Location")).build().getQueryParams().getFirst("state");
+        var browser=start.getResponse().getCookie("__Secure-IRADE_ORCID_FLOW");
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state",state).param("error","access_denied")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=cancelled"));
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state",state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed"));
+        verifyNoInteractions(provider);assertThat(users.findAll()).isEmpty();
+    }
+
 }
