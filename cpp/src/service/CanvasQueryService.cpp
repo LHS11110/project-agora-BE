@@ -15,6 +15,7 @@
 #include "service/CanvasBrokerOperations.hpp"
 #include "service/CanvasMentions.hpp"
 #include "service/RuntimeKernelClient.hpp"
+#include "service/CanvasWorkspaceFiles.hpp"
 
 namespace {
 using Json = nlohmann::json;
@@ -177,6 +178,29 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     const auto member_groups=identity.value("member_groups",identity["groups"]).get<std::unordered_set<std::string>>();
     CanvasAclScope access(identity.value("group_bits",Json::object()),{&groups,&write_groups,&execute_groups,&member_groups});
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    if (type == "workspace_files") {
+        agora::workspace::validate(event);
+        const auto operation = event["operation"].get<std::string>();
+        if (groups.empty() && !admin) throw std::invalid_argument("CANVAS_READ_DENIED");
+        if (!agora::workspace::readOnly(operation) && write_groups.empty() && !admin)
+            throw std::invalid_argument("ITEM_WRITE_DENIED");
+        Json request = event;
+        request.erase("type");
+        request.erase("request_id");
+        // Receipt identity is server-owned and survives token rotation/reconnection.
+        request["requestId"] = std::to_string(identity["user_id"].get<int>()) + ":" + event["request_id"].get<std::string>();
+        const auto result = RuntimeKernelClient(runtime_socket_).request({{"canvasId", id}, {"action", "workspace"}, {"request", request}});
+        if (result.contains("error")) return envelope(route, {{"type", "workspace_files_result"}, {"ok", false}, {"code", result["error"]}});
+        Json broadcasts = Json::array();
+        if (!agora::workspace::readOnly(operation)) {
+            Json change{{"type", "workspace_files_changed"}, {"path", event["path"]}, {"operation", operation}, {"request_id", event["request_id"]}};
+            change["created"] = operation == "mkdir" || result.value("created", false);
+            if (event.contains("target")) change["target"] = event["target"];
+            // Only invalidations are broadcast. Every content read rechecks current access.
+            broadcasts.push_back({{"all", true}, {"event", change}});
+        }
+        return envelope(route, {{"type", "workspace_files_result"}, {"ok", true}, {"result", result}}, broadcasts);
+    }
     if (type == "runtime_execute") {
         if (!event.contains("action") || !event["action"].is_string()) throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
         const auto action=event["action"].get<std::string>();

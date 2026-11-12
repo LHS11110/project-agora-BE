@@ -78,6 +78,8 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets/uSockets/LICEN
 # fake Redis Sentinel/primary pair on loopback and needs no external services.
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(agora_cpp_workspace_files_tests tests/workspace_files_tests.cpp)
+    add_test(NAME agora_cpp_workspace_files_tests COMMAND agora_cpp_workspace_files_tests)
     add_executable(agora_cpp_presentation_tests tests/presentation_tests.cpp)
     add_test(NAME agora_cpp_presentation_tests COMMAND agora_cpp_presentation_tests)
     add_executable(agora_cpp_media_tests tests/media_tests.cpp)

@@ -1,5 +1,21 @@
 # Project Agora API·WebSocket 명세
 
+## VS Code VM workspace files
+
+The authenticated canvas WebSocket accepts `workspace_files` requests. Paths are canonical absolute paths relative to the assigned VM's `/workspace`; no host path or caller-selected VM ID is accepted. C++ derives the canvas and receipt owner from the verified connection identity and checks the current settings revision. Canvas read access grants access to the entire workspace directory; mutations require canvas write access. Canvas object ACLs are not file ACLs.
+
+```json
+{"type":"workspace_files","request_id":"stable-mutation-uuid","operation":"read","path":"/src/main.lean"}
+```
+
+Operations: `stat`, `list` (optional integer `cursor`), `read`, `write`, `mkdir`, `rename` (`target`), `delete` (`recursive`). A successful response is `{type:"workspace_files_result", request_id, ok:true, result:{...}}`; failure has `ok:false, code`. Reads return file metadata, `fileId`, `etag`, base64 `content` and an Automerge `document` (null for binary files). Text writes send `fileId` and `document`. Binary writes send `fileId`, `etag` and `content`. New files send `create:true`, `overwrite:false` and `content`. Rename/delete send the current stat `resourceId`; rename refuses existing destinations.
+
+The guest merges text documents before atomically replacing the actual file. Mutations carry durable receipts scoped by server-owned user ID and request ID. Retrying uses the exact same ID and payload. Wall broadcasts `{type:"workspace_files_changed", operation, path, target?, created?, request_id}` only after success; broadcasts carry no file contents. Clients read again on reconnect and invalidation, merge pending local edits, and periodically refresh opened files to observe external programs.
+
+File contents and serialized Automerge documents are each limited to 128 KiB; requests are at most 700,000 bytes, responses below 400,000 bytes. Lists return 256 entries per page and reject directories exceeding 10,000 supported entries. Symlinks, special files and traversal paths are rejected. Binary stale writes return `FILE_CONFLICT`, old file generations return `FILE_REPLACED`, and old active VM agents return `WORKSPACE_AGENT_UPGRADE_REQUIRED` without restarting the VM.
+
+The matching web extension is `IRADE/agora-workspace`. Web worker origins may be explicitly allowed using `CORS_ALLOWED_ORIGIN_PATTERNS`, for example `https://*.ide.example.com:8080`. Existing exact `CORS_ALLOWED_ORIGINS` are preserved; origin patterns default to empty.
+
 이 문서는 현재 소스 코드의 Spring Boot API, C++ 제어 API, DB 기반 테스트 페이지 상태 조회와 캔버스 WebSocket 프로토콜을 기준으로 작성되었습니다.
 
 ## 공통 규칙

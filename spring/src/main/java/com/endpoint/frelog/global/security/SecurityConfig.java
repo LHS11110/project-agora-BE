@@ -31,16 +31,20 @@ public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final List<String> allowedCorsOrigins;
+    private final List<String> allowedCorsOriginPatterns;
 
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
-            @Value("${app.security.cors.allowed-origins:}") String allowedCorsOrigins
+            @Value("${app.security.cors.allowed-origins:}") String allowedCorsOrigins,
+            @Value("${app.security.cors.allowed-origin-patterns:}") String allowedCorsOriginPatterns
     ) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.allowedCorsOrigins = Arrays.stream(allowedCorsOrigins.split(","))
                 .map(String::trim)
                 .filter(origin -> !origin.isEmpty())
                 .toList();
+        this.allowedCorsOriginPatterns = Arrays.stream(allowedCorsOriginPatterns.split(","))
+                .map(String::trim).filter(origin -> !origin.isEmpty()).toList();
     }
 
     @Bean
@@ -123,6 +127,9 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(allowedCorsOrigins);
+        // VS Code isolates its extension host on a generated subdomain of the IDE host.
+        // Patterns are explicitly configured; existing exact-origin defaults stay in place.
+        configuration.setAllowedOriginPatterns(allowedCorsOriginPatterns);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setExposedHeaders(List.of("X-Request-ID"));
