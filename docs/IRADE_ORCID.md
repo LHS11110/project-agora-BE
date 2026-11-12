@@ -33,7 +33,7 @@ The helper validates without executing the file, atomically enables OAuth while 
 
 ## Database and identity
 
-Apply `project-agora-DB/mssql/migrations/2026-11-13-irade-orcid.sql` with the administrator migration procedure before deploying this Spring version. The same additive migration is included in initial database setup. Back up and verify the database first.
+Apply `project-agora-DB/mssql/migrations/2026-11-13-irade-orcid.sql` followed by `2026-11-13-orcid-account-constraints.sql` with the administrator migration procedure before deploying this Spring version. The second migration updates the legacy authentication and email CHECK constraints to accept verified ORCID-only accounts; adding columns alone is insufficient. The same additive migration is included in initial database setup. Back up and verify the database first.
 
 `users.orcid` and `users.orcid_issuer` have a filtered composite unique index. New researchers have no invented email or local password. Their ORCID identity maps to a normal Agora `user_id`, nickname/tag, role and active status. Existing Agora accounts must authenticate and explicitly start an ORCID linking flow within 10 minutes of that authentication. Matching names/emails never link accounts, and an ORCID already belonging to another account cannot be reassigned. Account erasure removes both identity fields and invalidates old tokens.
 
@@ -78,3 +78,7 @@ References: [ORCID authentication](https://info.orcid.org/documentation/integrat
 The Agora `/login` page also offers ORCID when `/api/auth/providers` reports `orcid:true`. It starts the same authorization flow with `app=agora` and uses the existing registered ORCID callback. The callback returns to `/login?orcid=success`, `/login?orcid=cancelled` or `/login?orcid=failed` on the configured public origin. Default `app=irade` retains IRADE's existing callback behavior.
 
 The return application is encoded in the random OAuth state before the complete state is hashed into the attempt record. Changing or removing the application prefix invalidates that record lookup and cannot issue a login handoff. Only the fixed Agora and IRADE paths are used; arbitrary return URLs are rejected. No schema change or new OAuth credentials are needed. Both frontends consume the same one-use session response, including MFA challenges, and share the same SQL identity and canvas permissions.
+
+## Registration constraint regression
+
+The first ORCID rollout added identity columns but did not update `CK_users_Auth` and `CK_users_EmailRequired`. ORCID authentication could succeed while the subsequent user INSERT failed; the rolled-back transaction left no account and the callback displayed the common failure message. Apply the account-constraints migration to fix both rules. The correction is validated against real SQL Server CHECK constraints, not only Hibernate-generated H2 tables. Start a fresh login after a failed attempt because OAuth state and authorization codes are one-use.
