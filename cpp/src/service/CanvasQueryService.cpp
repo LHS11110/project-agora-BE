@@ -254,10 +254,13 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             }
             manager_request["action"]="notebook";manager_request["operation"]=operation;manager_request["notebook"]=notebook_id;
         }else{
-            const auto target=readItem(memory,id,object_id);
-            const bool code_object=target&&(target->value("kind","")=="code"||
-                (target->value("kind","")=="text"&&target->value("renderMode","")=="code"));
-            if(!code_object||!queryCanAccess(*target,execute_groups,admin))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            const bool irade_workspace = object_id == "irade-workspace";
+            if (!irade_workspace) {
+                const auto target=readItem(memory,id,object_id);
+                const bool code_object=target&&(target->value("kind","")=="code"||
+                    (target->value("kind","")=="text"&&target->value("renderMode","")=="code"));
+                if(!code_object||!queryCanAccess(*target,execute_groups,admin))throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
+            }
             if(action=="build")manager_request["action"]=action;manager_request["language"]=language;
             if(event.contains("stdin")){
                 if(!event["stdin"].is_string()||event["stdin"].get_ref<const std::string&>().size()>65536)throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
