@@ -5,3 +5,9 @@ CREATE TABLE IF NOT EXISTS dbo.canvas_runtime_cleanup (
  attempt_count INT NOT NULL DEFAULT 0,
  next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS dbo.workspace_runtime_cleanup (
+ workspace_id INT PRIMARY KEY,
+ created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ attempt_count INT NOT NULL DEFAULT 0,
+ next_attempt_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

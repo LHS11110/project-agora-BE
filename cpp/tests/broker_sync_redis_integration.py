@@ -18,5 +18,11 @@ try:
  mismatch=args.copy();mismatch[7]='mismatched-digest';r=json.loads(call(*mismatch));assert r['error']=='CLIENT_REQUEST_MISMATCH',r
  conflict=args.copy();conflict[5]='2';conflict[6]='request-two';conflict[7]='digest-two';r=json.loads(call(*conflict));assert r['error']=='CANVAS_WRITE_CONFLICT',r
  assert json.loads(call('JSON.GET',key,'$["__broker_sync"]["revision"]'))==[1]
+ # Activity counters share the item commit; duplicate receipts never increment them.
+ args[5]='2';args[6]='activity-2';args[7]='digest-2';args[9]=json.dumps({'sync-json-preservation':1});args.append(json.dumps({'day':'2026-11-14','created':0,'updated':1,'deleted':0}))
+ r=json.loads(call(*args));assert not r['duplicate'],r
+ r=json.loads(call(*args));assert r['duplicate'],r
+ receipt=json.loads(call('JSON.GET',key,'$["__broker_sync"]["clients"]["json-preservation"]'))[0]
+ assert receipt['activity']['2026-11-14']['updated']==1,receipt
  print('Redis Lua: empty arrays and precision preserved, duplicate applied once, mismatched retries and stale writes refused atomically.')
 finally:call('DEL',key)

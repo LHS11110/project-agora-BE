@@ -21,27 +21,35 @@ public:
     ~CanvasLifecycleMemory();
 
     std::shared_ptr<Canvas> getCanvas(int canvas_id);
+    std::shared_ptr<Canvas> getCanvas(SpaceScope scope, int space_id);
 
     // Check participant and settings-revision access before any cache allocation
     // or user-session update.
     bool isCanvasAccessAuthorized(int canvas_id, int user_id, long long settings_revision);
+    bool isCanvasAccessAuthorized(SpaceScope scope, int space_id, int user_id, long long settings_revision);
     std::optional<nlohmann::json> getAuthorizedCanvasDocument(
         int canvas_id, int user_id, long long settings_revision);
+    std::optional<nlohmann::json> getAuthorizedCanvasDocument(
+        SpaceScope scope, int space_id, int user_id, long long settings_revision);
 
     // Load/touch query state only. Broker owns every user connection.
     std::shared_ptr<Canvas> loadForQuery(int canvas_id);
+    std::shared_ptr<Canvas> loadForQuery(SpaceScope scope, int space_id);
 
-    // Remove canvas from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
+    // Remove canvas or workspace from pool, close sockets, clean up Redis, reflect to ES, update MSSQL
     bool removeCanvas(int canvas_id);
+    bool removeCanvas(SpaceScope scope, int space_id);
 
     // Freeze and persist every loaded canvas before notifying clients of a server restart.
     bool saveCanvasesForShutdown();
 
     int getActiveCanvasCount();
     std::vector<int> getActiveCanvasIds();
+    std::vector<SpaceKey> getActiveSpaceKeys();
 
     // Check DB every 30 mins and unload if no users
     void cleanupInactiveCanvases();
+    void flushCanvasActivity();
 
     std::string getJavaHost() const { return java_host_; }
     int getJavaPort() const { return java_port_; }
@@ -54,17 +62,17 @@ public:
     int getCppServerPort() const { return cpp_server_port_; }
 
 private:
-    std::shared_ptr<std::mutex> lifecycleMutexForCanvas(int canvas_id);
-    std::shared_ptr<Canvas> getOrCreateCanvasWithLifecycleLock(int canvas_id);
-    bool removeCanvasImpl(int canvas_id);
+    std::shared_ptr<std::mutex> lifecycleMutexForSpace(SpaceKey key);
+    std::shared_ptr<Canvas> getOrCreateCanvasWithLifecycleLock(SpaceKey key);
+    bool removeCanvasImpl(SpaceKey key);
     bool saveCanvasSnapshotToElasticsearch(
-        int canvas_id, const std::shared_ptr<Canvas>& canvas,
+        SpaceKey key, const std::shared_ptr<Canvas>& canvas,
         std::unique_lock<std::mutex>& settings_lock, std::string& cache_generation);
-    bool unloadCanvas(int canvas_id, std::shared_ptr<Canvas> canvas);
+    bool unloadCanvas(SpaceKey key, std::shared_ptr<Canvas> canvas);
 
-    std::unordered_map<int, std::shared_ptr<Canvas>> canvases_;
-    // Serializes initialization and unload for each canvas ID.
-    std::unordered_map<int, std::shared_ptr<std::mutex>> lifecycle_mutexes_;
+    std::unordered_map<SpaceKey, std::shared_ptr<Canvas>> canvases_;
+    // Serializes initialization and unload for each (scope, id) key.
+    std::unordered_map<SpaceKey, std::shared_ptr<std::mutex>> lifecycle_mutexes_;
     std::mutex pool_mutex_;
     std::string db_host_;
     int db_port_;

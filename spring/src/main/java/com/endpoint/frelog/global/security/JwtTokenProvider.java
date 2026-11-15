@@ -1,5 +1,6 @@
 package com.endpoint.frelog.global.security;
 
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
@@ -87,15 +88,21 @@ public class JwtTokenProvider {
         return createCanvasAccessToken(nickname,tagNumber,canvasId,clientIp,serverHash,settingsRevision,expirationMs);
     }
     public String createCanvasAccessToken(String nickname,Integer tagNumber,Integer canvasId,String clientIp,String serverHash,long settingsRevision,long lifetimeMs) {
+        return createAccessToken(DocumentScope.CANVAS,nickname,tagNumber,canvasId,clientIp,serverHash,settingsRevision,lifetimeMs);
+    }
+    public String createWorkspaceAccessToken(String nickname, Integer tagNumber, Integer workspaceId,
+                                             String clientIp, String serverHash, long settingsRevision) {
+        return createAccessToken(DocumentScope.WORKSPACE,nickname,tagNumber,workspaceId,clientIp,serverHash,settingsRevision,expirationMs);
+    }
+    public String createAccessToken(DocumentScope scope,String nickname,Integer tagNumber,Integer targetId,String clientIp,String serverHash,long settingsRevision,long lifetimeMs) {
         Date now = new Date();
-        // 캔버스 접속 토큰은 비교적 짧은 유효시간(예: 5분)을 가질 수 있지만 여기서는 편의상 동일하게 부여
         Date validity = new Date(now.getTime() + lifetimeMs);
 
         var builder = Jwts.builder()
-                .subject("canvas-access")
+                .subject(scope.jwtSubject())
                 .claim("nickname", nickname)
                 .claim("tagNumber", tagNumber)
-                .claim("canvasId", canvasId)
+                .claim(scope.jwtIdClaim(), targetId)
                 .claim("clientIp", clientIp)
                 .claim("serverHash", serverHash)
                 .claim("settingsRevision", settingsRevision)
@@ -109,13 +116,17 @@ public class JwtTokenProvider {
     }
 
     public String createCanvasPasswordGrant(Long userId, Integer canvasId, long settingsRevision) {
+        return createPasswordGrant(DocumentScope.CANVAS, userId, canvasId, settingsRevision);
+    }
+
+    public String createPasswordGrant(DocumentScope scope, Long userId, Integer targetId, long settingsRevision) {
         Date now = new Date();
         Date validity = new Date(now.getTime() + CANVAS_PASSWORD_GRANT_EXPIRATION_MS);
 
         return Jwts.builder()
-                .subject("canvas-password-grant")
+                .subject(passwordGrantSubject(scope))
                 .claim("userId", userId)
-                .claim("canvasId", canvasId)
+                .claim(scope.jwtIdClaim(), targetId)
                 .claim("settingsRevision", settingsRevision)
                 .claim("grantVersion", CANVAS_PASSWORD_GRANT_VERSION)
                 .issuedAt(now)
@@ -135,6 +146,10 @@ public class JwtTokenProvider {
     }
 
     public boolean validateCanvasPasswordGrant(String token, Long userId, Integer canvasId, long settingsRevision) {
+        return validatePasswordGrant(DocumentScope.CANVAS, token, userId, canvasId, settingsRevision);
+    }
+
+    public boolean validatePasswordGrant(DocumentScope scope, String token, Long userId, Integer targetId, long settingsRevision) {
         if (token == null || token.isBlank()) return false;
 
         try {
@@ -144,12 +159,12 @@ public class JwtTokenProvider {
                     .parseSignedClaims(token)
                     .getPayload();
             Object tokenUserId = claims.get("userId");
-            Object tokenCanvasId = claims.get("canvasId");
+            Object tokenTargetId = claims.get(scope.jwtIdClaim());
             Object tokenSettingsRevision = claims.get("settingsRevision");
             Object tokenGrantVersion = claims.get("grantVersion");
-            return "canvas-password-grant".equals(claims.getSubject())
+            return passwordGrantSubject(scope).equals(claims.getSubject())
                     && tokenUserId instanceof Number userIdNumber && userIdNumber.longValue() == userId
-                    && tokenCanvasId instanceof Number canvasIdNumber && canvasIdNumber.intValue() == canvasId
+                    && tokenTargetId instanceof Number targetIdNumber && targetIdNumber.intValue() == targetId
                     && tokenSettingsRevision instanceof Number revisionNumber
                     && revisionNumber.longValue() == settingsRevision
                     && tokenGrantVersion instanceof Number grantVersionNumber
@@ -160,16 +175,24 @@ public class JwtTokenProvider {
     }
 
     public long getCanvasPasswordGrantRemainingMs(String token) {
+        return getPasswordGrantRemainingMs(DocumentScope.CANVAS, token);
+    }
+
+    public long getPasswordGrantRemainingMs(DocumentScope scope, String token) {
         Claims claims = getClaims(token);
         Object version = claims.get("grantVersion");
-        if (!"canvas-password-grant".equals(claims.getSubject())
+        if (!passwordGrantSubject(scope).equals(claims.getSubject())
                 || !(version instanceof Number number)
                 || number.longValue() != CANVAS_PASSWORD_GRANT_VERSION) {
-            throw new IllegalArgumentException("Invalid canvas password grant");
+            throw new IllegalArgumentException("Invalid " + scope.wireName() + " password grant");
         }
         long remaining = claims.getExpiration().getTime() - System.currentTimeMillis();
-        if (remaining <= 0) throw new IllegalArgumentException("Expired canvas password grant");
+        if (remaining <= 0) throw new IllegalArgumentException("Expired " + scope.wireName() + " password grant");
         return remaining;
+    }
+
+    private static String passwordGrantSubject(DocumentScope scope) {
+        return scope == DocumentScope.WORKSPACE ? "workspace-password-grant" : "canvas-password-grant";
     }
 
     public String getEmailFromToken(String token) {

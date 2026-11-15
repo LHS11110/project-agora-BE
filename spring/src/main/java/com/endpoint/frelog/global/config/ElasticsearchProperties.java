@@ -30,6 +30,7 @@ public class ElasticsearchProperties {
     private String scheme = "https";
     private String caCertificate = "";
     private String index = "canvas";
+    private String workspaceIndex = "workspace";
     private String username = "agora_user";
     private String password;
     private String logIndex = "agora-logs";
@@ -76,6 +77,14 @@ public class ElasticsearchProperties {
 
     public void setIndex(String index) {
         this.index = index;
+    }
+
+    public String getWorkspaceIndex() {
+        return workspaceIndex;
+    }
+
+    public void setWorkspaceIndex(String workspaceIndex) {
+        this.workspaceIndex = workspaceIndex;
     }
 
     public String getUsername() {

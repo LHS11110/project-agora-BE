@@ -61,9 +61,18 @@ bool validateRequest(const Json& input, bool stream, std::string& reason) {
         || !input["code"].is_string() || input["code"].get_ref<const std::string&>().size() > 65536) {
         reason = "실행 요청의 사용자, 캔버스 또는 코드 형식이 올바르지 않습니다."; return false;
     }
+    if (input.contains("scope")) {
+        if (!input["scope"].is_string()) { reason = "실행 공간 범위 형식이 올바르지 않습니다."; return false; }
+        try {
+            (void)parseSpaceScope(input["scope"].get<std::string>());
+        } catch (const std::invalid_argument&) {
+            reason = "지원하지 않는 실행 공간 범위입니다.";
+            return false;
+        }
+    }
     const auto action = input.value("action", std::string("execute"));
     if (action == "execute") {
-        if (!hasOnlyKeys(input, {"canvasId", "userId", "settingsRevision", "objectId", "language", "code", "stdin", "stream"})
+        if (!hasOnlyKeys(input, {"canvasId", "scope", "userId", "settingsRevision", "objectId", "language", "code", "stdin", "stream"})
             || !input.contains("language") || !input["language"].is_string()) { reason = "코드 실행 요청 형식이 올바르지 않습니다."; return false; }
         const auto language = input["language"].get<std::string>();
         if (language != "python" && language != "javascript" && language != "c" && language != "cpp" && language != "bash" && language != "java") {
@@ -77,7 +86,7 @@ bool validateRequest(const Json& input, bool stream, std::string& reason) {
         return true;
     }
     if (action == "build") {
-        if (stream || !hasOnlyKeys(input, {"canvasId", "userId", "settingsRevision", "objectId", "action", "language", "code"})
+        if (stream || !hasOnlyKeys(input, {"canvasId", "scope", "userId", "settingsRevision", "objectId", "action", "language", "code"})
             || !input.contains("language") || !input["language"].is_string()
             || (input.contains("objectId") && !validIdentifier(input["objectId"]))) {
             reason = "사전 빌드 요청 형식이 올바르지 않습니다."; return false;
@@ -89,7 +98,7 @@ bool validateRequest(const Json& input, bool stream, std::string& reason) {
         return true;
     }
     if (action == "notebook") {
-        if (stream || !hasOnlyKeys(input, {"canvasId", "userId", "settingsRevision", "objectId", "action", "operation", "notebook", "code"})
+        if (stream || !hasOnlyKeys(input, {"canvasId", "scope", "userId", "settingsRevision", "objectId", "action", "operation", "notebook", "code"})
             || !input.contains("operation") || !input["operation"].is_string() || input["operation"] != "execute"
             || !input.contains("objectId") || !validIdentifier(input["objectId"])
             || !input.contains("notebook") || !validIdentifier(input["notebook"])) {
@@ -102,10 +111,11 @@ bool validateRequest(const Json& input, bool stream, std::string& reason) {
 }
 
 bool authorizeWithBroker(CanvasLifecycleMemory& canvases, const Json& request, std::string& reason) {
+    const SpaceScope scope = parseSpaceScope(request.value("scope", std::string("canvas")));
     const int canvas_id = request["canvasId"].get<int>();
     const int user_id = request["userId"].get<int>();
     const long long revision = request["settingsRevision"].get<long long>();
-    auto document = canvases.getAuthorizedCanvasDocument(canvas_id, user_id, revision);
+    auto document = canvases.getAuthorizedCanvasDocument(scope, canvas_id, user_id, revision);
     if (!document) { reason = "캔버스 참여 권한이 취소되었거나 설정이 변경되었습니다."; return false; }
 
     auto [execute_groups, admin] = groupsForUser(*document, user_id, "execute");
@@ -193,6 +203,9 @@ private:
 
 Json managerRequest(const Json& request) {
     Json result = request;
+    const SpaceScope scope = parseSpaceScope(result.value("scope", std::string("canvas")));
+    result["canvasId"] = runtimeTargetId(scope, result["canvasId"].get<int>());
+    result.erase("scope");
     result.erase("userId");
     result.erase("settingsRevision");
     result.erase("objectId");

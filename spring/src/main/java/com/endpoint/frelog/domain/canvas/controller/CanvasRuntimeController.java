@@ -1,6 +1,7 @@
 package com.endpoint.frelog.domain.canvas.controller;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import com.endpoint.frelog.domain.canvas.service.CanvasService;
 import com.endpoint.frelog.domain.canvas.service.CanvasRuntimeService;
 import com.endpoint.frelog.domain.canvas.service.CanvasGroupPermissions;
@@ -162,12 +163,20 @@ public class CanvasRuntimeController {
     }
 
     public void authorizeTerminal(Integer canvasId, String objectId, String passwordGrant, CustomUserDetails user) {
-        authorizeRuntimeObject(canvasId,objectId,passwordGrant,user,"terminal");
+        authorizeTerminal(DocumentScope.CANVAS,canvasId,objectId,passwordGrant,user);
+    }
+
+    public void authorizeTerminal(DocumentScope scope, Integer spaceId, String objectId, String passwordGrant, CustomUserDetails user) {
+        authorizeRuntimeObject(scope,spaceId,objectId,passwordGrant,user,"terminal");
     }
 
     private CanvasDocument authorizeRuntimeObject(Integer canvasId, String objectId, String passwordGrant, CustomUserDetails user,String role) {
+        return authorizeRuntimeObject(DocumentScope.CANVAS,canvasId,objectId,passwordGrant,user,role);
+    }
+
+    private CanvasDocument authorizeRuntimeObject(DocumentScope scope, Integer spaceId, String objectId, String passwordGrant, CustomUserDetails user,String role) {
         if(objectId==null||!objectId.matches("[a-zA-Z0-9_-]{1,128}"))throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"실행 객체를 확인하세요.");
-        CanvasDocument doc = authorize(canvasId,passwordGrant,user,"execute",objectId);
+        CanvasDocument doc = authorize(scope,spaceId,passwordGrant,user,"execute",objectId);
         Object raw = doc.getItems().get(objectId);
         if (!(raw instanceof Map<?,?> item) || !"shape".equals(item.get("kind")) || !role.equals(item.get("runtimeRole")))
             throw new CustomException(ErrorCode.ACCESS_DENIED,"실행 객체가 없거나 접근할 수 없습니다.");
@@ -185,24 +194,34 @@ public class CanvasRuntimeController {
     }
 
     private CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability) {
-        return authorize(canvasId,passwordGrant,user,capability,null);
+        return authorize(DocumentScope.CANVAS,canvasId,passwordGrant,user,capability,null);
     }
 
     private static long revision(CanvasDocument document) {
         return document.getSettingsRevision() == null ? 0L : document.getSettingsRevision();
     }
     public CanvasDocument authorize(Integer canvasId, String passwordGrant, CustomUserDetails user, String capability, String itemId) {
-        // The authoritative live canvas document checks current membership or public visibility.
-        CanvasDocument doc = itemId == null ? canvases.getCanvasDocument(canvasId, user) : canvases.getCanvasItemDocument(canvasId,user,itemId);
+        return authorize(DocumentScope.CANVAS,canvasId,passwordGrant,user,capability,itemId);
+    }
+
+    public CanvasDocument authorize(DocumentScope scope, Integer spaceId, String passwordGrant, CustomUserDetails user, String capability, String itemId) {
+        // The authoritative live canvas/workspace document checks current membership or public visibility.
+        CanvasDocument doc = scope == DocumentScope.CANVAS
+                ? (itemId == null ? canvases.getCanvasDocument(spaceId, user) : canvases.getCanvasItemDocument(spaceId, user, itemId))
+                : canvases.getItemDocument(scope, spaceId, user, itemId);
         boolean allowed="manage_runtime".equals(capability)
                 ? CanvasGroupPermissions.allows(doc,user,"write")&&CanvasGroupPermissions.allows(doc,user,"execute")
                 : CanvasGroupPermissions.allows(doc,user,capability);
         if(!allowed)throw new CustomException(ErrorCode.ACCESS_DENIED,"이 그룹에는 해당 작업의 권한이 없습니다.");
         String hash = doc.getCanvasPasswordHash();
         long revision = doc.getPasswordRevision();
-        if ("public".equals(doc.getVisibility()) && hash != null && !hash.isBlank() && !tokens.validateCanvasPasswordGrant(
-                passwordGrant, user.getUserId(), canvasId, revision)) {
-            throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
+        if ("public".equals(doc.getVisibility()) && hash != null && !hash.isBlank()) {
+            boolean validGrant = scope == DocumentScope.CANVAS
+                    ? tokens.validateCanvasPasswordGrant(passwordGrant, user.getUserId(), spaceId, revision)
+                    : tokens.validatePasswordGrant(scope, passwordGrant, user.getUserId(), spaceId, revision);
+            if (!validGrant) {
+                throw new CustomException(scope.passwordRequiredError());
+            }
         }
         return doc;
     }

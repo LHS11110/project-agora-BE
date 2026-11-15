@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 #include <nlohmann/json.hpp>
+#include "SpaceScope.hpp"
 
 class RedisCommandExecutor;
 class MemoryClass;
@@ -25,6 +26,8 @@ public:
     ~CanvasServiceMemory();
     std::optional<nlohmann::json> initializeCanvas(int id, CanvasSnapshotMemory& snapshots,
         bool already_cached, const std::string& generation);
+    std::optional<nlohmann::json> initializeCanvas(SpaceScope scope, int id, CanvasSnapshotMemory& snapshots,
+        bool already_cached, const std::string& generation);
     CanvasServiceMemory(const CanvasServiceMemory&) = delete;
     CanvasServiceMemory& operator=(const CanvasServiceMemory&) = delete;
     bool connect();
@@ -32,35 +35,68 @@ public:
     bool ping();
 
     std::optional<std::string> loadCanvas(int canvas_id);
+    std::optional<std::string> loadCanvas(SpaceScope scope, int canvas_id);
     bool storeCanvas(int canvas_id, const nlohmann::json& document);
+    bool storeCanvas(SpaceScope scope, int canvas_id, const nlohmann::json& document);
     bool flushCanvas(int canvas_id);
+    bool flushCanvas(SpaceScope scope, int canvas_id);
     bool clearCanvas(int canvas_id);
+    bool clearCanvas(SpaceScope scope, int canvas_id);
     CompareSetResult removeCanvasGeneration(int canvas_id, const std::string& generation);
+    CompareSetResult removeCanvasGeneration(SpaceScope scope, int canvas_id, const std::string& generation);
     std::optional<std::string> readItem(int canvas_id, const std::string& item_id,
                                       const std::string& field = {});
+    std::optional<std::string> readItem(SpaceScope scope, int canvas_id, const std::string& item_id,
+                                      const std::string& field = {});
     bool storeItem(int canvas_id, const std::string& item_id, const nlohmann::json& item);
+    bool storeItem(SpaceScope scope, int canvas_id, const std::string& item_id, const nlohmann::json& item);
     bool removeItem(int canvas_id, const std::string& item_id);
+    bool removeItem(SpaceScope scope, int canvas_id, const std::string& item_id);
     bool replaceItems(int canvas_id, const nlohmann::json& items);
+    bool replaceItems(SpaceScope scope, int canvas_id, const nlohmann::json& items);
     bool appendMessage(int canvas_id, const std::string& room_id,
+                       std::uint64_t sequence, const nlohmann::json& message);
+    bool appendMessage(SpaceScope scope, int canvas_id, const std::string& room_id,
                        std::uint64_t sequence, const nlohmann::json& message);
     std::optional<std::string> readChatPage(int canvas_id, const std::string& room_id,
         const std::optional<std::uint64_t>& from, const std::optional<std::uint64_t>& to,
         std::uint64_t limit);
+    std::optional<std::string> readChatPage(SpaceScope scope, int canvas_id, const std::string& room_id,
+        const std::optional<std::uint64_t>& from, const std::optional<std::uint64_t>& to,
+        std::uint64_t limit);
     CompareSetResult compareAndSetFields(int canvas_id, long long revision,
+        const std::vector<std::pair<std::string, nlohmann::json>>& fields);
+    CompareSetResult compareAndSetFields(SpaceScope scope, int canvas_id, long long revision,
         const std::vector<std::pair<std::string, nlohmann::json>>& fields);
 
     std::optional<nlohmann::json> readBrokerItems(int canvas_id, const std::vector<std::string>& ids);
+    std::optional<nlohmann::json> readBrokerItems(SpaceScope scope, int canvas_id, const std::vector<std::string>& ids);
     std::optional<nlohmann::json> brokerSyncState(int canvas_id, const std::string& client_key = {});
+    std::optional<nlohmann::json> brokerSyncState(SpaceScope scope, int canvas_id, const std::string& client_key = {});
     std::optional<nlohmann::json> applyBrokerBatch(int canvas_id, const std::string& client_key,
         long long count, const std::string& request_id, const std::string& digest,
         const nlohmann::json& items, const nlohmann::json& expected);
+    std::optional<nlohmann::json> applyBrokerBatch(SpaceScope scope, int canvas_id, const std::string& client_key,
+        long long count, const std::string& request_id, const std::string& digest,
+        const nlohmann::json& items, const nlohmann::json& expected, const nlohmann::json& activity = nlohmann::json::object());
+    std::optional<nlohmann::json> agentSessions(int canvas_id, const std::string& action, const nlohmann::json& arguments);
+    std::optional<nlohmann::json> agentItemIds(int canvas_id,int offset,int limit);
+    std::optional<nlohmann::json> brokerActivityClients(int canvas_id);
     bool patchItemField(int canvas_id, const std::string& item_id, const std::string& field,
                         const nlohmann::json& value);
+    bool patchItemField(SpaceScope scope, int canvas_id, const std::string& item_id, const std::string& field,
+                        const nlohmann::json& value);
     bool clearItems(int canvas_id);
+    bool clearItems(SpaceScope scope, int canvas_id);
     bool storeMentionState(int canvas_id, long long user_id, const std::string& mention_id,
                            const nlohmann::json& notification, bool unread);
+    bool storeMentionState(SpaceScope scope, int canvas_id, long long user_id, const std::string& mention_id,
+                           const nlohmann::json& notification, bool unread);
     std::optional<nlohmann::json> readMentionStates(int canvas_id, long long user_id);
+    std::optional<nlohmann::json> readMentionStates(SpaceScope scope, int canvas_id, long long user_id);
     std::optional<nlohmann::json> commitChatMessage(int canvas_id, const std::string& room_id,
+        const nlohmann::json& permission, const nlohmann::json& message);
+    std::optional<nlohmann::json> commitChatMessage(SpaceScope scope, int canvas_id, const std::string& room_id,
         const nlohmann::json& permission, const nlohmann::json& message);
 
 private:

@@ -1,5 +1,7 @@
 package com.endpoint.frelog.domain.canvas.service;
 
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
+import com.endpoint.frelog.domain.canvas.repository.WorkspaceInfoRepository;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.domain.canvas.client.CppRuntimeClient;
@@ -36,13 +38,22 @@ public class CanvasRuntimeService {
     private final String socketPath;
     private final CppRuntimeClient cppRuntime;
     private final CanvasInfoRepository canvasInfoRepository;
+    private final WorkspaceInfoRepository workspaceInfoRepository;
+
+    public CanvasRuntimeService(@Value("${AGORA_RUNTIME_SOCKET:/run/agora-runtime/manager.sock}") String socketPath,
+                                CppRuntimeClient cppRuntime, CanvasInfoRepository canvasInfoRepository) {
+        this(socketPath, cppRuntime, canvasInfoRepository, null);
+    }
 
     @Autowired
     public CanvasRuntimeService(@Value("${AGORA_RUNTIME_SOCKET:/run/agora-runtime/manager.sock}") String socketPath,
-                                CppRuntimeClient cppRuntime, CanvasInfoRepository canvasInfoRepository) {
+                                CppRuntimeClient cppRuntime,
+                                CanvasInfoRepository canvasInfoRepository,
+                                WorkspaceInfoRepository workspaceInfoRepository) {
         this.socketPath = socketPath;
         this.cppRuntime = cppRuntime;
         this.canvasInfoRepository = canvasInfoRepository;
+        this.workspaceInfoRepository = workspaceInfoRepository;
     }
 
     // The local constructor remains useful for isolated manager protocol fixtures.
@@ -50,6 +61,7 @@ public class CanvasRuntimeService {
         this.socketPath = socketPath;
         this.cppRuntime = null;
         this.canvasInfoRepository = null;
+        this.workspaceInfoRepository = null;
     }
 
     public Map<String, Object> execute(Integer canvasId, String language, String code) {
@@ -228,26 +240,39 @@ public class CanvasRuntimeService {
     private Map<String, Object> exchange(Map<String, Object> payload) { return exchange(payload, null); }
 
     private Map<String, Object> exchange(Map<String, Object> payload, java.util.function.Consumer<Map<String,Object>> onOutput) {
+        DocumentScope scope = payload.get("scope") instanceof String raw
+                ? DocumentScope.fromWire(raw)
+                : DocumentScope.CANVAS;
         if (cppRuntime != null && canvasInfoRepository != null && requiresCppBroker(payload)) {
-            int canvasId = ((Number) payload.get("canvasId")).intValue();
-            Integer serverId = canvasInfoRepository.findActiveCppServerId(canvasId,
-                    LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15)).orElseThrow(
-                    () -> new CustomException(ErrorCode.RUNTIME_CPP_SERVER_UNAVAILABLE,
-                            "캔버스에 활성 C++ 브로커가 할당되지 않았습니다. 캔버스 연결을 다시 확인해주세요."));
+            int spaceId = ((Number) payload.get("canvasId")).intValue();
+            LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusSeconds(15);
+            Integer serverId = (scope == DocumentScope.WORKSPACE
+                    ? (workspaceInfoRepository == null ? java.util.Optional.<Integer>empty() : workspaceInfoRepository.findActiveCppServerId(spaceId, cutoff))
+                    : canvasInfoRepository.findActiveCppServerId(spaceId, cutoff))
+                    .orElseThrow(() -> new CustomException(ErrorCode.RUNTIME_CPP_SERVER_UNAVAILABLE,
+                            scope == DocumentScope.WORKSPACE
+                                    ? "워크스페이스에 활성 C++ 브로커가 할당되지 않았습니다. 워크스페이스 연결을 다시 확인해주세요."
+                                    : "캔버스에 활성 C++ 브로커가 할당되지 않았습니다. 캔버스 연결을 다시 확인해주세요."));
             if (!(payload.get("userId") instanceof Number) || !(payload.get("settingsRevision") instanceof Number))
                 throw new CustomException(ErrorCode.ACCESS_DENIED,"브로커 권한 확인에 필요한 사용자 정보가 없습니다.");
             return cppRuntime.forward(serverId,payload,onOutput);
+        }
+        Map<String, Object> outbound = payload;
+        if (scope == DocumentScope.WORKSPACE && payload.get("canvasId") instanceof Number spaceId) {
+            var copy = new java.util.HashMap<String, Object>(payload);
+            copy.put("canvasId", DocumentScope.WORKSPACE.runtimeTargetId(spaceId.intValue()));
+            outbound = copy;
         }
         boolean managerConnected = false;
         try (SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
              Selector selector = Selector.open()) {
             channel.configureBlocking(false);
             channel.connect(UnixDomainSocketAddress.of(socketPath));
-            long deadline = System.nanoTime() + (("java_dependencies".equals(payload.get("action"))||("notebook".equals(payload.get("action"))&&"prepare".equals(payload.get("operation")))) ? 220_000_000_000L : "build".equals(payload.get("action")) ? 100_000_000_000L : 55_000_000_000L);
+            long deadline = System.nanoTime() + (("java_dependencies".equals(outbound.get("action"))||("notebook".equals(outbound.get("action"))&&"prepare".equals(outbound.get("operation")))) ? 220_000_000_000L : "build".equals(outbound.get("action")) ? 100_000_000_000L : 55_000_000_000L);
             channel.register(selector, SelectionKey.OP_CONNECT);
             while (!channel.finishConnect()) waitFor(selector, deadline);
             managerConnected = true;
-            byte[] request = (json.writeValueAsString(payload) + "\n")
+            byte[] request = (json.writeValueAsString(outbound) + "\n")
                     .getBytes(StandardCharsets.UTF_8);
             ByteBuffer output = ByteBuffer.wrap(request);
             channel.keyFor(selector).interestOps(SelectionKey.OP_WRITE);

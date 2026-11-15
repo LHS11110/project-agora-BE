@@ -59,16 +59,17 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
         return result;
     };
     if (!canvas) return reject("CANVAS_NOT_READY");
+    const SpaceScope scope = canvas->getScope();
 
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
-    auto raw = memory.loadCanvas(canvas_id);
+    auto raw = memory.loadCanvas(scope, canvas_id);
     if (!raw) return reject("SETTINGS_STORAGE_ERROR");
     nlohmann::json doc;
     try { doc = nlohmann::json::parse(*raw); } catch (...) { return reject("SETTINGS_STORAGE_ERROR"); }
     if (!doc.is_object()) return reject("SETTINGS_STORAGE_ERROR");
 
     RegistryServiceMemory db(pool.getDbHost(), pool.getDbPort());
-    if (!db.isCanvasAssignedToServer(canvas_id, pool.getCppServerIp(), pool.getCppServerPort())) {
+    if (!db.isCanvasAssignedToServer(scope, canvas_id, pool.getCppServerIp(), pool.getCppServerPort())) {
         return reject("CANVAS_NOT_READY");
     }
     if (db.getActiveUserId(nickname, tag_number) != user_id
@@ -242,9 +243,9 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     addChange("group-bits",doc["group-bits"]);addChange("group-permissions",doc["group-permissions"]);
     addChange("password-revision", doc["password-revision"]);
     addChange("settings-revision", revision + 1);
-    const auto stored = memory.compareAndSetFields(canvas_id, revision, changes);
+    const auto stored = memory.compareAndSetFields(scope, canvas_id, revision, changes);
     if (stored == CanvasServiceMemory::CompareSetResult::Conflict) {
-        auto latest_raw = memory.loadCanvas(canvas_id);
+        auto latest_raw = memory.loadCanvas(scope, canvas_id);
         nlohmann::json latest = doc;
         if (latest_raw) {
             try { latest = nlohmann::json::parse(*latest_raw); } catch (...) {}
@@ -256,7 +257,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     }
     if (stored != CanvasServiceMemory::CompareSetResult::Applied) return reject("SETTINGS_STORAGE_ERROR");
 
-    CanvasSnapshotMemory es(pool.getEsHost(), pool.getEsPort());
+    CanvasSnapshotMemory es(pool.getEsHost(), pool.getEsPort(), "", "", "", scope);
     if (!es.patchCanvasFields(canvas_id, es_changes)) {
         std::vector<std::pair<std::string, nlohmann::json>> rollback;
         std::map<std::string, nlohmann::json> restore_in_es;
@@ -269,13 +270,13 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             rollback.emplace_back(document_field, original_value);
             restore_in_es[document_field] = original_value;
         }
-        if (memory.compareAndSetFields(canvas_id, revision + 1, rollback) != CanvasServiceMemory::CompareSetResult::Applied) {
-            std::cerr << "[uWebSockets] Could not roll back Redis canvas settings after Elasticsearch failure for Canvas #"
-                      << canvas_id << "\n";
+        if (memory.compareAndSetFields(scope, canvas_id, revision + 1, rollback) != CanvasServiceMemory::CompareSetResult::Applied) {
+            std::cerr << "[uWebSockets] Could not roll back Redis settings after Elasticsearch failure for "
+                      << spaceScopeWire(scope) << " #" << canvas_id << "\n";
         }
         if (!es.patchCanvasFields(canvas_id, restore_in_es)) {
-            std::cerr << "[uWebSockets] Could not compensate Elasticsearch settings after a failed canvas update for Canvas #"
-                      << canvas_id << "\n";
+            std::cerr << "[uWebSockets] Could not compensate Elasticsearch settings after a failed update for "
+                      << spaceScopeWire(scope) << " #" << canvas_id << "\n";
         }
         return reject("SETTINGS_STORAGE_ERROR");
     }

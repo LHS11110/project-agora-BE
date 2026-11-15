@@ -1,8 +1,10 @@
 package com.endpoint.frelog.domain.canvas.service;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocumentJson;
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
+import com.endpoint.frelog.domain.canvas.entity.SpaceInfo;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import com.endpoint.frelog.global.logging.ElasticsearchBulkLogService;
@@ -75,11 +77,15 @@ public class CanvasRedisDocumentReader {
         this.logService = logService;
     }
 
-    public CanvasDocument read(CanvasInfo info) { return read(info, null); }
+    public CanvasDocument read(CanvasInfo info) { return read(DocumentScope.CANVAS, info, null); }
 
-    public CanvasDocument read(CanvasInfo info, String itemId) {
+    public CanvasDocument read(CanvasInfo info, String itemId) { return read(DocumentScope.CANVAS, info, itemId); }
+
+    public CanvasDocument read(DocumentScope scope, SpaceInfo info) { return read(scope, info, null); }
+
+    public CanvasDocument read(DocumentScope scope, SpaceInfo info, String itemId) {
         if (info == null || password.isBlank()) throw unavailable();
-        String key = "canvas:" + info.getCanvasId();
+        String key = scope.redisKey(info.getSpaceId());
 
         if (sentinelAddresses.isBlank()) {
             if (info.getRedisInfo() == null) throw unavailable();

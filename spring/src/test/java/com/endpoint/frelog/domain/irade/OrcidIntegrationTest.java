@@ -73,11 +73,11 @@ class OrcidIntegrationTest {
         assertThat(account.getEmail()).isNull();assertThat(account.getPasswordHash()).isNull();assertThat(account.getRole()).isEqualTo(Role.ROLE_USER);assertThat(account.getOrcid()).isEqualTo(ID);
         assertThat(tokens.isOrcidToken(token)).isTrue();assertThat(tokens.getUserIdFromToken(token)).isEqualTo(account.getUserId());
         mvc.perform(get("/api/irade/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isOk()).andExpect(jsonPath("$.orcid").value(ID));
-        when(canvases.searchCanvases(eq("proof"),any())).thenReturn(List.of(new CanvasSummaryResponse(42,null,"notes","Proof workspace",1,"private")));
+        when(canvases.searchSpaces(eq(com.endpoint.frelog.domain.canvas.dto.DocumentScope.WORKSPACE),eq("proof"),any())).thenReturn(List.of(new CanvasSummaryResponse(42,null,"notes","Proof workspace",1,"private")));
         mvc.perform(get("/api/irade/workspaces").param("q","proof").header("Authorization","Bearer "+token)).andExpect(status().isOk()).andExpect(jsonPath("$[0].workspaceId").value(42)).andExpect(jsonPath("$[0].name").value("Proof workspace"));
-        verify(canvases).searchCanvases(eq("proof"),argThat(user->user.getUserId().equals(account.getUserId())));
+        verify(canvases).searchSpaces(eq(com.endpoint.frelog.domain.canvas.dto.DocumentScope.WORKSPACE),eq("proof"),argThat(user->user.getUserId().equals(account.getUserId())));
         mvc.perform(post("/api/irade/workspaces/42/access").header("Authorization","Bearer "+token).contentType("application/json").content("{}" )).andExpect(status().isOk());
-        verify(canvases).accessCanvas(eq(42),any(),argThat(user->user.getUserId().equals(account.getUserId())),isNull(),isNull());
+        verify(canvases).access(eq(com.endpoint.frelog.domain.canvas.dto.DocumentScope.WORKSPACE),eq(42),any(),argThat(user->user.getUserId().equals(account.getUserId())),isNull(),isNull());
     }
     @Test void repeatedLoginReusesAccountAndHandoffCannotBeConsumedTwice() throws Exception {
         var cookie=callback(begin());
@@ -115,7 +115,7 @@ class OrcidIntegrationTest {
         mvc.perform(get("/api/irade/workspaces")).andExpect(status().isUnauthorized());
         var user=users.saveAndFlush(new User("unlinked@example.invalid",null,"Unlinked",1,Role.ROLE_USER));String ordinary=tokens.createToken(user.getEmail(),1,user.getNickname(),"ROLE_USER","127.0.0.1");
         mvc.perform(get("/api/irade/workspaces").header("Authorization","Bearer "+ordinary)).andExpect(status().isForbidden());verifyNoInteractions(canvases);
-        String token=login();when(canvases.createCanvas(eq("Research"),isNull(),isNull(),isNull(),any(),eq("private"))).thenReturn(new CanvasSummaryResponse(43,null,null,"Research",1,"private"));
+        String token=login();when(canvases.createSpace(eq(com.endpoint.frelog.domain.canvas.dto.DocumentScope.WORKSPACE),eq("Research"),isNull(),isNull(),isNull(),any(),eq("private"))).thenReturn(new CanvasSummaryResponse(43,null,null,"Research",1,"private"));
         mvc.perform(post("/api/irade/workspaces").header("Authorization","Bearer "+token).contentType("application/json").content("{\"name\":\"Research\"}")).andExpect(status().isCreated()).andExpect(jsonPath("$.workspaceId").value(43));
     }
     @Test void withdrawnResearcherLosesIdentityAndRejoinsAsANewAccount() throws Exception {

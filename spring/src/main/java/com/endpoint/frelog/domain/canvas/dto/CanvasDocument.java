@@ -1,6 +1,8 @@
 package com.endpoint.frelog.domain.canvas.dto;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -16,13 +18,23 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.ALWAYS)
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class CanvasDocument {
+    // Internal shared agent history is preserved for storage, never serialized to REST clients.
+    @JsonIgnore private JsonNode agentSessions;
+    @JsonIgnore private JsonNode encodedAgentSessions;
+    @JsonProperty(value="agent-sessions", access=JsonProperty.Access.WRITE_ONLY)
+    public void readAgentSessions(JsonNode value) { agentSessions=value; }
+    @JsonProperty(value="agent-sessions-b64", access=JsonProperty.Access.WRITE_ONLY)
+    public void readEncodedAgentSessions(JsonNode value) { encodedAgentSessions=value; }
+    @JsonIgnore public JsonNode agentSessionsForStorage() { return agentSessions; }
+    @JsonIgnore public JsonNode encodedAgentSessionsForStorage() { return encodedAgentSessions; }
+
 
     @JsonProperty("canvas-name")
-    @JsonAlias({"canvasName", "canvas_name"})
+    @JsonAlias({"canvasName", "canvas_name", "workspace-name", "workspaceName", "workspace_name"})
     private String canvasName;
 
     @JsonProperty("canvas-id")
-    @JsonAlias({"canvasId", "canvas_id"})
+    @JsonAlias({"canvasId", "canvas_id", "workspace-id", "workspaceId", "workspace_id"})
     private Integer canvasId;
 
     @JsonProperty("admin-user-id")

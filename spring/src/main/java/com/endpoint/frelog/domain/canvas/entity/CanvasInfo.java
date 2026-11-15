@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "canvas_info")
-public class CanvasInfo {
+public class CanvasInfo implements SpaceInfo {
 
     @Id
     @jakarta.persistence.GeneratedValue(strategy = jakarta.persistence.GenerationType.IDENTITY)
@@ -83,6 +83,16 @@ public class CanvasInfo {
 
     public void setCanvasId(Integer canvasId) {
         this.canvasId = canvasId;
+    }
+
+    @Override
+    public Integer getSpaceId() {
+        return canvasId;
+    }
+
+    @Override
+    public void setSpaceId(Integer id) {
+        this.canvasId = id;
     }
 
     public RedisInfo getRedisInfo() {

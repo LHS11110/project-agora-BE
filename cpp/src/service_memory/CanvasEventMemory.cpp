@@ -35,6 +35,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
     if (type == "ping" || type == "pong" || type == "item_crdt_change") return true;
 
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    const SpaceScope scope = canvas->getScope();
     const int canvas_id = canvas->getCanvasId();
     if (type == "chat") {
         if (!event.contains("room_id") || !event["room_id"].is_string()
@@ -49,11 +50,11 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
                 {"data", nlohmann::json::array({stored_message})},
                 {"next_sequence", event["sequence"].get<std::uint64_t>() + 1}
             };
-            if (!memory.storeItem(canvas_id, room_id, room)) {
+            if (!memory.storeItem(scope, canvas_id, room_id, room)) {
                 std::cerr << "[uWebSockets] Failed to create chat room item '" << room_id << "'\n";
                 return false;
             }
-        } else if (!memory.appendMessage(canvas_id, room_id, event["sequence"].get<std::uint64_t>(), stored_message)) {
+        } else if (!memory.appendMessage(scope, canvas_id, room_id, event["sequence"].get<std::uint64_t>(), stored_message)) {
             std::cerr << "[uWebSockets] Failed to append chat message to room '" << room_id << "'\n";
             return false;
         }
@@ -63,7 +64,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
         nlohmann::json items = event["items"];
         for (auto& [item_id, item] : items.items()) {
             if (!isChatRoomItem(item) || item.contains("data")) continue;
-            auto old_data = memory.readItem(canvas_id, item_id, "data");
+            auto old_data = memory.readItem(scope, canvas_id, item_id, "data");
             if (old_data) {
                 try {
                     const auto result = nlohmann::json::parse(*old_data);
@@ -72,7 +73,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
             }
             if (!item.contains("data")) item["data"] = nlohmann::json::array();
             std::uint64_t next_sequence = chatRoomNextSequence(item);
-            auto old_next = memory.readItem(canvas_id, item_id, "next_sequence");
+            auto old_next = memory.readItem(scope, canvas_id, item_id, "next_sequence");
             if (old_next) {
                 try {
                     const auto result = nlohmann::json::parse(*old_next);
@@ -83,7 +84,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
             }
             item["next_sequence"] = next_sequence;
         }
-        return memory.replaceItems(canvas_id, items);
+        return memory.replaceItems(scope, canvas_id, items);
     }
 
     const nlohmann::json* id = nullptr;
@@ -94,7 +95,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
     const std::string item_key = canvasItemId(*id);
     if (item_key.empty()) return false;
     if (type == "item_delete" || type == "delete_item") {
-        return memory.removeItem(canvas_id, item_key);
+        return memory.removeItem(scope, canvas_id, item_key);
     }
 
     const nlohmann::json* item_payload = nullptr;
@@ -104,7 +105,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
         nlohmann::json item = *item_payload;
         const std::string item_kind = item.value("kind", "");
         if (item_kind == "text" || item_kind == "note" || item_kind == "code") {
-            const auto stored_item = memory.readItem(canvas_id, item_key);
+            const auto stored_item = memory.readItem(scope, canvas_id, item_key);
             if (stored_item) {
                 try {
                     const auto matches = nlohmann::json::parse(*stored_item);
@@ -142,7 +143,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
             }
         }
         if (event.value("_preserve_chat_history", false) && isChatRoomItem(item)) {
-            auto old_data = memory.readItem(canvas_id, item_key, "data");
+            auto old_data = memory.readItem(scope, canvas_id, item_key, "data");
             if (old_data) {
                 try {
                     const auto result = nlohmann::json::parse(*old_data);
@@ -151,7 +152,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
             }
             if (item.contains("data") && item["data"].is_array()) {
                 std::uint64_t next_sequence = chatRoomNextSequence(item);
-                auto old_next = memory.readItem(canvas_id, item_key, "next_sequence");
+                auto old_next = memory.readItem(scope, canvas_id, item_key, "next_sequence");
                 if (old_next) {
                     try {
                         const auto result = nlohmann::json::parse(*old_next);
@@ -163,7 +164,7 @@ bool CanvasEventMemory::apply(const std::shared_ptr<Canvas>& canvas, const nlohm
                 item["next_sequence"] = next_sequence;
             }
         }
-        return memory.storeItem(canvas_id, item_key, item);
+        return memory.storeItem(scope, canvas_id, item_key, item);
     }
     return false;
 }

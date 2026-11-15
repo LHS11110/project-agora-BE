@@ -1,5 +1,6 @@
 package com.endpoint.frelog.domain.canvas.service;
 
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import com.endpoint.frelog.global.exception.CustomException;
 import com.endpoint.frelog.global.exception.ErrorCode;
 import org.slf4j.Logger;
@@ -52,31 +53,48 @@ public class CanvasResourceService {
     }
 
     public Path getCanvasDirectory(Integer canvasId) {
-        return baseResourceDir.resolve(String.valueOf(canvasId));
+        return getDirectory(DocumentScope.CANVAS, canvasId);
+    }
+
+    public Path getDirectory(DocumentScope scope, Integer id) {
+        if (id == null || id <= 0) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE);
+        }
+        return scope == DocumentScope.WORKSPACE
+                ? baseResourceDir.resolve("workspaces").resolve(String.valueOf(id)).normalize()
+                : baseResourceDir.resolve(String.valueOf(id)).normalize();
     }
 
     /** Accept PNG/JPEG only, verify the actual bytes, and store a normalized PNG. */
     public String saveRepresentativeImage(Integer canvasId, MultipartFile file) {
-        if (file == null || file.isEmpty()) return saveDefaultImage(canvasId);
+        return saveRepresentativeImage(DocumentScope.CANVAS, canvasId, file);
+    }
+
+    public String saveRepresentativeImage(DocumentScope scope, Integer id, MultipartFile file) {
+        if (file == null || file.isEmpty()) return saveDefaultImage(scope, id);
         if (file.getSize() > MAX_UPLOAD_BYTES) throw payloadTooLarge();
 
         try {
-            return storePng(canvasId, normalizePng(file.getBytes()));
+            return storePng(scope, id, normalizePng(file.getBytes()));
         } catch (IOException e) {
-            log.error("캔버스 #{} 대표 이미지 저장 실패", canvasId, e);
+            log.error("{} #{} 대표 이미지 저장 실패", scope.wireName(), id, e);
             throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
         }
     }
 
     /** Compatibility entry point; the supplied filename extension is never trusted. */
     public String saveRepresentativeImageBytes(Integer canvasId, byte[] imageBytes, String ignoredExtension) {
-        return storePng(canvasId, normalizePng(imageBytes));
+        return storePng(DocumentScope.CANVAS, canvasId, normalizePng(imageBytes));
     }
 
     public String saveDefaultImage(Integer canvasId) {
-        Path target = getCanvasDirectory(canvasId).resolve("representative.png");
-        if (Files.isRegularFile(target)) return imageUrl(canvasId);
-        return storePng(canvasId, DEFAULT_PNG);
+        return saveDefaultImage(DocumentScope.CANVAS, canvasId);
+    }
+
+    public String saveDefaultImage(DocumentScope scope, Integer id) {
+        Path target = getDirectory(scope, id).resolve("representative.png");
+        if (Files.isRegularFile(target)) return scope.representativeImagePath(id);
+        return storePng(scope, id, DEFAULT_PNG);
     }
 
     public byte[] normalizePng(byte[] source) {
@@ -124,8 +142,8 @@ public class CanvasResourceService {
         }
     }
 
-    private String storePng(Integer canvasId, byte[] png) {
-        Path canvasDir = getCanvasDirectory(canvasId);
+    private String storePng(DocumentScope scope, Integer id, byte[] png) {
+        Path canvasDir = getDirectory(scope, id);
         Path target = canvasDir.resolve("representative.png");
         Path temporary = null;
         try {
@@ -138,17 +156,17 @@ public class CanvasResourceService {
                 Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
             }
             removeLegacyRepresentativeFiles(canvasDir, target);
-            log.info("캔버스 #{} 대표 이미지 저장 완료", canvasId);
-            return imageUrl(canvasId);
+            log.info("{} #{} 대표 이미지 저장 완료", scope.wireName(), id);
+            return scope.representativeImagePath(id);
         } catch (IOException e) {
-            log.error("캔버스 #{} 대표 이미지 저장 실패", canvasId, e);
+            log.error("{} #{} 대표 이미지 저장 실패", scope.wireName(), id, e);
             throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR);
         } finally {
             if (temporary != null) {
                 try {
                     Files.deleteIfExists(temporary);
                 } catch (IOException e) {
-                    log.warn("캔버스 #{} 임시 대표 이미지 파일 정리 실패", canvasId, e);
+                    log.warn("{} #{} 임시 대표 이미지 파일 정리 실패", scope.wireName(), id, e);
                 }
             }
         }
@@ -183,39 +201,47 @@ public class CanvasResourceService {
     }
 
     public Path getRepresentativeImageFile(Integer canvasId) {
-        Path imagePath = getCanvasDirectory(canvasId).resolve("representative.png");
+        return getRepresentativeImageFile(DocumentScope.CANVAS, canvasId);
+    }
+
+    public Path getRepresentativeImageFile(DocumentScope scope, Integer id) {
+        Path imagePath = getDirectory(scope, id).resolve("representative.png");
         if (Files.isRegularFile(imagePath)) return imagePath;
 
         // Upgrade images created by the previous implementation, which kept
         // the client-provided extension. Validate and re-encode before serving.
-        Path canvasDir = getCanvasDirectory(canvasId);
+        Path canvasDir = getDirectory(scope, id);
         for (String extension : List.of("jpg", "jpeg", "JPG", "JPEG")) {
             Path legacyPath = canvasDir.resolve("representative." + extension);
             if (!Files.isRegularFile(legacyPath)) continue;
             try {
                 long size = Files.size(legacyPath);
                 if (size < 1 || size > MAX_UPLOAD_BYTES) continue;
-                storePng(canvasId, normalizePng(Files.readAllBytes(legacyPath)));
+                storePng(scope, id, normalizePng(Files.readAllBytes(legacyPath)));
                 return imagePath;
             } catch (IOException | CustomException e) {
-                log.warn("캔버스 #{} 레거시 대표 이미지 검증 실패", canvasId);
+                log.warn("{} #{} 레거시 대표 이미지 검증 실패", scope.wireName(), id);
             }
         }
         return null;
     }
 
-    /** Delete all files under ~/project-agora/canvas-resource/{canvas-id}. */
+    /** Delete all files under the resource directory for the specified canvas or workspace. */
     public void deleteCanvasResourceDirectory(Integer canvasId) {
-        Path canvasDir = getCanvasDirectory(canvasId);
+        deleteResourceDirectory(DocumentScope.CANVAS, canvasId);
+    }
+
+    public void deleteResourceDirectory(DocumentScope scope, Integer id) {
+        Path canvasDir = getDirectory(scope, id);
         if (!Files.exists(canvasDir)) return;
 
         try (var stream = Files.walk(canvasDir)) {
             for (Path path : stream.sorted(java.util.Comparator.reverseOrder()).toList()) {
                 Files.deleteIfExists(path);
             }
-            log.info("캔버스 #{} 비정형 리소스 디렉터리 삭제 완료", canvasId);
+            log.info("{} #{} 비정형 리소스 디렉터리 삭제 완료", scope.wireName(), id);
         } catch (IOException e) {
-            log.warn("캔버스 #{} 리소스 디렉터리 삭제 실패", canvasId, e);
+            log.warn("{} #{} 리소스 디렉터리 삭제 실패", scope.wireName(), id, e);
         }
     }
 }

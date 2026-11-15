@@ -35,8 +35,11 @@ inline void validate(const Json& item){
  if(!item.contains("projectHistory")||!item["projectHistory"].is_array()||item["projectHistory"].size()>200)invalid();
  for(const auto& h:item["projectHistory"])if(!str(h,"sprint",128)||!h.contains("points")||!h["points"].is_number_integer()||h["points"].get<double>()<0||h["points"].get<double>()>1000||!h.contains("done")||!h["done"].is_boolean())invalid();
 }
-inline void authority(const Json& old,const Json& item,bool admin){
+inline void authority(const Json& old,const Json& item,bool admin,bool manager=false){
  if(item.value("kind","")!="project"||admin)return;
+ if(item.value("projectType","")=="board"&&old.is_null())invalid("PROJECT_MANAGE_DENIED");
+ if(!old.is_null()&&old.value("projectType","")!=item.value("projectType",""))invalid();
+ if(manager)return;
  if(item.value("projectType","")=="board"){
   if(!old.is_null()&&old.value("projectConfig",Json())!=item["projectConfig"])invalid("PROJECT_MANAGE_DENIED");
   if(old.is_null()&&(!item["projectConfig"]["sprints"].empty()||!item["projectConfig"]["milestones"].empty()||item["projectConfig"]["statuses"]!=Json::array({{{"id","todo"},{"label","To Do"},{"approval",false}},{{"id","progress"},{"label","In Progress"},{"approval",false}},{{"id","done"},{"label","Done"},{"approval",false}}})))invalid("PROJECT_MANAGE_DENIED");

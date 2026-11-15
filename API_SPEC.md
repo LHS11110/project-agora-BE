@@ -399,3 +399,56 @@ GitHub 인증/커밋/병합은 브라우저에서 수행한다. 아래 API는 Fr
 `runtime_execute.action=manage`의 management 필드와 권한은 Wall의
 BROKER_PROTOCOL.md를 참조하세요. C++은 연결된 캔버스와 인증된 사용자로
 요청을 검증한 후 Unix 소켓으로 VM 관리자에 전달합니다.
+
+### Canvas activity profile
+
+`GET /api/users/me/activity` requires an active authenticated user and returns only
+that user's persisted canvas-edit counters. The endpoint is read-only; the former
+visit POST and GitHub snapshot PUT/DELETE endpoints have been removed.
+
+```json
+{"collector":"cpp","aggregation":"committed_object_changes","flushIntervalSeconds":1800,"lastPersistedAt":"2026-11-14T09:00:00Z","days":{"2026-11-14":{"count":15,"created":10,"updated":4,"deleted":1,"canvases":["2132"]}}}
+```
+
+The C++ server counts committed object creations, modifications (including moves),
+and deletions. Incomplete drawing frames, pointer/presence messages, visits, automatic
+runtime results/state, and presentation/media playback state are excluded. Counts
+are per changed object, not per WebSocket packet. Completed drawing strokes count
+once as creations. Authentication supplies the user ID; the client supplies no
+activity counters. The activity day uses Korea time.
+
+Redis atomically stores per-client, per-day cumulative counters alongside each
+accepted canvas operation receipt. Duplicate retries return before counters change.
+Every 30 minutes C++ merges cumulative values into `dbo.user_canvas_activity`;
+unchanged values do not update rows or timestamps. Shutdown and canvas unload perform
+a final flush. SQL failures retain the Redis/Elasticsearch counters for retry and
+prevent eviction of an unflushed canvas. Replaying a flush is idempotent. GitHub REST
+requests in the frontend now remain only in canvas repository/version control.
+
+### 캔버스 AI 에이전트 (WebSocket)
+
+인증된 캔버스 WebSocket에서 `runtime_execute`의 `action: "agent"`를 사용한다. Spring REST를 거치지 않고 브로커/C++가 권한을 검증한다.
+
+```json
+{"type":"runtime_execute","request_id":"uuid","action":"agent","operation":"run","message":"선택한 코드에 예외 처리를 추가해줘","selected_ids":["object-id"],"anchor":{"x":0.2,"y":0.3},"history":[],"allow_delete":false}
+```
+
+`operation: "status"`는 `result: {ready, configured, model}`을 반환한다. `run`은 `runtime_output`으로 진행 상황, `runtime_result`로 `{answer, model}` 또는 오류를 반환한다. 실제 변경은 저장 성공 후 기존 `canvas_commit`으로 별도 전파한다. MCP 내부의 `agent_tool`은 브라우저 이벤트로 제출할 수 없다. 키 미설정은 `AGENT_NOT_CONFIGURED`, 서비스 연결 실패는 `AGENT_UNAVAILABLE`, 에이전트 자체 과부하는 `AGENT_BUSY`, 모델 제공 서비스의 요청 제한은 `AGENT_PROVIDER_BUSY`, 인증 거부는 `AGENT_PROVIDER_AUTH_FAILED`, 제한 시간은 `AGENT_TIMEOUT`이다. 모델 API의 일시적 5xx는 해당 HTTP 호출만 최대 2회 재시도하고 이미 수행한 MCP 변경 도구는 반복하지 않는다. 전체 변경 취소를 의미하지 않으므로 오류가 나도 이미 반영된 변경을 확인해야 한다. 자세한 설정과 도구 범위는 [agent/README.md](agent/README.md)를 참고한다.
+
+모델 API가 429를 반환하면 자동 재시도하지 않고 `AGENT_PROVIDER_BUSY`와 “요청이 너무 많습니다. 잠시 후 다시 시도해주세요.”를 즉시 반환한다.
+
+에이전트 요청의 `options`는 `reasoning_effort: low|high|max`, `max_tokens: 512..32768`, `max_steps: 1..12`, `temperature: 0..2`, `top_p: 0.05..1`을 선택적으로 받는다. 알 수 없는 옵션과 범위 밖 값은 거부한다. 인증·캔버스·그룹 권한은 옵션으로 변경할 수 없다. 성공 결과와 오류 결과, `operation: status`에 `telemetry`를 포함한다. `telemetry.limits`는 `second/minute/day`별 `{limit, remaining}`, `limits_observed_at`는 헤더 수신 Unix 초, `retry_at`는 제공된 재시도 시각이다. 관측 전에는 `telemetry`가 빈 객체일 수 있다. 상태 조회는 모델 API를 호출하지 않는다.
+
+에이전트 작업(`run`)은 캔버스당 동시 1건이며 초과 시 `AGENT_REQUEST_BUSY`를 반환한다. 모델을 호출하지 않는 상태/한도 조회(`status`)는 별도 슬롯(동시 4건)으로 처리하며 작업을 막지 않는다. 조회 슬롯 초과는 `AGENT_STATUS_BUSY`다. 두 오류는 외부 모델 서비스의 HTTP 429인 `AGENT_PROVIDER_BUSY`와 구별한다.
+
+에이전트 `run`/`status`는 선택 필드 `api_key`를 지원한다. 생략/빈 문자열은 서버 기본 키, 그 외에는 현재 요청의 개인 키를 사용한다(4096자 이하, 공백·제어문자 없는 ASCII). 키는 모델 프롬프트·도구·응답·브로드캐스트에 포함하지 않는다. `status`는 `credential_source: personal|server`, `default_configured`를 반환하고 해당 키의 한도만 조회한다. 개인 키의 한도는 메모리에서 키별로 격리하며 개인 키와 메타데이터를 DB/파일에 저장하지 않는다.
+
+### AI 대화 세션
+
+같은 `runtime_execute` / `action: agent` 소켓에서 다음을 사용한다.
+
+- `operation: sessions`, `offset?`, `limit?` → 권한 있는 세션 요약, 본인의 `draft`, `next_offset`.
+- `operation: session_get`, `session_id`, `before?`, `limit?` → 세션 요약(`can_continue` 포함), 메시지, `has_more`, 다음 과거 페이지의 `before`.
+- `operation: run`, `session_id?`, `turn_id?`, `include_history?` → 사용자 메시지와 다음 빈 세션을 저장한 후 모델 실행. 생략한 세션은 본인의 빈 대화를 사용한다. 턴 ID는 재전송 중복 실행을 막으며 같은 ID로 다른 프롬프트를 보내면 거부한다.
+
+조회는 모델 API를 호출하지 않으며 작업 슬롯과 별도다. 첫 요청 이후 `next_draft_id`가 준비되지만 현재 대화는 유지한다. 성공/실패 메시지 모두 캔버스 JSON의 `agent-sessions`에 보존한다. API 키와 개인 한도는 대화에 저장하지 않는다. 사용자가 전달한 `history` 대신 서버의 해당 세션에서 최근 성공 대화를 구성한다. 공유 변경 알림은 `{type: agent_sessions_changed, session_revision}`이며 캔버스 객체 동기화 revision과 독립적이다. 알림에는 프롬프트·응답·세션 ID를 포함하지 않고 조회 시 ACL을 검사한다. 다른 작성자의 세션은 조회만 가능하다.

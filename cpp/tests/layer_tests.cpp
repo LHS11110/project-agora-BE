@@ -77,14 +77,28 @@ void allocationPreservesTransactionAndCandidateMapping() {
     stub->response = std::nullopt;
     AGORA_CHECK(registry.getOrAllocateRedisAndSetCached(7, "node", 8000).redis_ip == "ERROR");
 }
+void canvasActivityUsesValidBoundParametersAndSkipsEmptyCounters() {
+    auto storage=std::make_unique<SqlMemoryStub>();auto* stub=storage.get();RegistryServiceMemory registry(std::move(storage));
+    const auto clients=R"({"7:tab":{"activity":{"2026-11-15":{"created":1,"updated":2,"deleted":0}}}})";
+    AGORA_CHECK(registry.storeCanvasActivity(2132,clients));
+    AGORA_CHECK(stub->command&&stub->command->isValid());
+    AGORA_CHECK(stub->command->parameters()[0].name=="@canvas");
+    AGORA_CHECK(stub->command->parameters()[1].name=="@rows");
+    const auto rows=nlohmann::json::parse(stub->command->parameters()[1].text_value);
+    AGORA_CHECK(rows.size()==1&&rows[0]["created"]==1&&rows[0]["updated"]==2);
+    stub->command.reset();AGORA_CHECK(registry.storeCanvasActivity(2132,"{}"));AGORA_CHECK(!stub->command);
+    stub->execute_result=false;AGORA_CHECK(!registry.storeCanvasActivity(2132,clients));
+}
 void snapshotsOwnEncodingAndStorageSeesOnlyDocuments() {
     auto storage = std::make_unique<DocumentMemoryStub>(); auto* stub = storage.get();
     CanvasSnapshotMemory snapshots(std::move(storage), "canvas-index");
     nlohmann::json doc = {{"canvas-id", 7}, {"items", {{"large", {{"text", std::string(20000, 'x')}}}}}};
     doc["__broker_sync"]={{"revision",17},{"clients",{{"user:tab",{{"count",3},{"revision",17},{"digest","digest"},{"request_id","request"}}}}}};
+    doc["agent-sessions"]={{"version",1},{"messages",{{"session",nlohmann::json::array({{{"role","user"},{"content","retained prompt"}}})}}}};
     doc["mention-states"]={{"7",{{"general:1",{{"unread",false},{"text","private notification"},{"sequence",1}}}}}};
     AGORA_CHECK(snapshots.saveCanvasDocument(7, doc));
     AGORA_CHECK(!stub->document.contains("__broker_sync") && stub->document["broker-sync-b64"].is_array());
+    AGORA_CHECK(!stub->document.contains("agent-sessions") && stub->document["agent-sessions-b64"].is_array());
     AGORA_CHECK(!stub->document.contains("mention-states") && stub->document["mention-states-b64"].is_array());
     AGORA_CHECK(stub->index == "canvas-index" && stub->id == "7");
     AGORA_CHECK(!stub->document.contains("items") && stub->document["items-b64"].size() > 1);
@@ -103,5 +117,6 @@ int main() {
     return runTest("opaque LRU lifetime and eviction", opaqueLruEvictsByAccessAndKeepsReturnedValuesAlive)
         + runTest("registry mapping and fail-safe reads", registryMapsRowsAndFailsClosedWithoutDriverTypes)
         + runTest("allocation transaction and candidate mapping", allocationPreservesTransactionAndCandidateMapping)
+        + runTest("activity uses valid bound SQL and skips unchanged counters", canvasActivityUsesValidBoundParametersAndSkipsEmptyCounters)
         + runTest("snapshot encoding independent of document storage", snapshotsOwnEncodingAndStorageSeesOnlyDocuments);
 }

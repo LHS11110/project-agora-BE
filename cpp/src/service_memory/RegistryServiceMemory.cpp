@@ -2,6 +2,7 @@
 #include "memory/MssqlMemory.hpp"
 #include "ElasticsearchBulkLogBuffer.hpp"
 #include <charconv>
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -87,16 +88,23 @@ bool RegistryServiceMemory::setServerInactive(const std::string& ip, int rest_po
 }
 
 CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
+    return getOrAllocateRedisAndSetCached(SpaceScope::Canvas, canvasId, cppServerIp, cppServerPort);
+}
+
+CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(SpaceScope scope, int canvasId, const std::string& cppServerIp, int cppServerPort) {
+    const std::string table = scope == SpaceScope::Workspace ? "workspace_info" : "canvas_info";
+    const std::string id_col = scope == SpaceScope::Workspace ? "workspace_id" : "canvas_id";
+    const std::string scope_wire = std::string(spaceScopeWire(scope));
     const auto failedAllocation = [] {
         CanvasRedisAllocation allocation;
         allocation.redis_ip = "ERROR";
         return allocation;
     };
-    const auto recordFailure = [canvasId](const std::string& message, const std::string& errorCode) {
+    const auto recordFailure = [canvasId, &scope_wire](const std::string& message, const std::string& errorCode) {
         ElasticsearchBulkLogBuffer::instance().record(
             "redis-load-balancer", "canvas_redis_allocation", "ERROR", message,
-            {{"canvas_id", canvasId}}, "failure", errorCode);
-        std::cerr << "[MssqlClient][RedisLB] Canvas #" << canvasId << " allocation failed: "
+            {{"scope", scope_wire}, {"canvas_id", canvasId}}, "failure", errorCode);
+        std::cerr << "[MssqlClient][RedisLB] " << scope_wire << " #" << canvasId << " allocation failed: "
                   << message << " (" << errorCode << ")\n";
     };
 
@@ -108,9 +116,9 @@ CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(int 
         "  DECLARE @candidate1_ip NVARCHAR(50), @candidate1_port NVARCHAR(10), @candidate1_count BIGINT; "
         "  DECLARE @candidate2_ip NVARCHAR(50), @candidate2_port NVARCHAR(10), @candidate2_count BIGINT; "
         "  SELECT @is_cached = is_cached, @was_cached = is_cached, @redis_ip = r.redis_ip, @redis_port = CONVERT(NVARCHAR(10), r.redis_port), @assigned_cpp_id = c.cpp_server_id "
-        "    FROM canvas_info c WITH (UPDLOCK, ROWLOCK) "
+        "    FROM " + table + " c WITH (UPDLOCK, ROWLOCK) "
         "    LEFT JOIN redis_server r ON c.redis_id = r.redis_id AND r.is_activated = 1 "
-        "    WHERE c.canvas_id = @canvas_id; "
+        "    WHERE c." + id_col + " = @canvas_id; "
         "  DECLARE @my_cpp_id INT; "
         "  SELECT @my_cpp_id = server_id FROM cpp_server WHERE server_ip = @cpp_ip AND server_port = @cpp_port AND is_activated = 1; "
         "  IF @my_cpp_id IS NULL THROW 50001, 'C++ server is not registered or active', 1; "
@@ -128,9 +136,9 @@ CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(int 
         "      DECLARE @redis_candidates TABLE (candidate_order INT IDENTITY(1,1) NOT NULL PRIMARY KEY, redis_id INT NOT NULL, redis_ip NVARCHAR(50) NOT NULL, redis_port NVARCHAR(10) NOT NULL, cached_canvas_count BIGINT NOT NULL); "
         "      INSERT INTO @redis_candidates (redis_id, redis_ip, redis_port, cached_canvas_count) "
         "      SELECT candidate.redis_id, candidate.redis_ip, CONVERT(NVARCHAR(10), candidate.redis_port), "
-        // The load count is a balancing estimate, so avoid shared locks on other
-        // canvases while this transaction already holds the target row for update.
-        "             (SELECT COUNT_BIG(*) FROM canvas_info ci WITH (NOLOCK) WHERE ci.redis_id = candidate.redis_id AND ci.is_cached = 1) "
+        // The load count is a balancing estimate across both canvases and workspaces, so avoid shared locks.
+        "             ((SELECT COUNT_BIG(*) FROM canvas_info ci WITH (NOLOCK) WHERE ci.redis_id = candidate.redis_id AND ci.is_cached = 1) + "
+        "              (SELECT COUNT_BIG(*) FROM workspace_info wi WITH (NOLOCK) WHERE wi.redis_id = candidate.redis_id AND wi.is_cached = 1)) "
         "      FROM (SELECT TOP (2) redis_id, redis_ip, redis_port FROM redis_server WHERE is_activated = 1 ORDER BY NEWID()) AS candidate; "
         "      SELECT @candidate_count = COUNT(*) FROM @redis_candidates; "
         "      IF @candidate_count = 0 THROW 50002, 'No active Redis server is available', 1; "
@@ -144,10 +152,10 @@ CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(int 
         "             @candidate2_count = MAX(CASE WHEN candidate_order = 2 THEN cached_canvas_count END) "
         "      FROM @redis_candidates; "
         "      SET @allocation_strategy = CASE WHEN @candidate_count = 1 THEN N'SINGLE' ELSE N'P2C' END; "
-        "      UPDATE canvas_info SET redis_id = @new_redis_id WHERE canvas_id = @canvas_id; "
+        "      UPDATE " + table + " SET redis_id = @new_redis_id WHERE " + id_col + " = @canvas_id; "
         "    END "
         "    ELSE SET @allocation_strategy = N'EXISTING'; "
-        "    UPDATE canvas_info SET is_cached = 1, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE canvas_id = @canvas_id; "
+        "    UPDATE " + table + " SET is_cached = 1, cpp_server_id = @my_cpp_id, updated_at = SYSUTCDATETIME() WHERE " + id_col + " = @canvas_id; "
         "  END "
         "  COMMIT TRAN; "
         "  SELECT COALESCE(@redis_ip, N'') AS redis_ip, COALESCE(@redis_port, N'') AS redis_port, "
@@ -270,17 +278,23 @@ CanvasRedisAllocation RegistryServiceMemory::getOrAllocateRedisAndSetCached(int 
 }
 
 bool RegistryServiceMemory::updateCanvasUncached(int canvasId, const std::string& cppServerIp, int cppServerPort) {
+    return updateCanvasUncached(SpaceScope::Canvas, canvasId, cppServerIp, cppServerPort);
+}
+
+bool RegistryServiceMemory::updateCanvasUncached(SpaceScope scope, int canvasId, const std::string& cppServerIp, int cppServerPort) {
+    const std::string table = scope == SpaceScope::Workspace ? "workspace_info" : "canvas_info";
+    const std::string id_col = scope == SpaceScope::Workspace ? "workspace_id" : "canvas_id";
     SqlCommand sql(
         "BEGIN TRAN; "
         "BEGIN TRY "
         "DECLARE @server_id INT, @affected INT = 0, @is_cached BIT, @assigned_server_id INT; "
         "SELECT @server_id = server_id FROM cpp_server WHERE server_ip = @cpp_ip AND server_port = @cpp_port; "
         "SELECT @is_cached = is_cached, @assigned_server_id = cpp_server_id "
-        "FROM canvas_info WITH (UPDLOCK, HOLDLOCK, ROWLOCK) WHERE canvas_id = @canvas_id; "
+        "FROM " + table + " WITH (UPDLOCK, HOLDLOCK, ROWLOCK) WHERE " + id_col + " = @canvas_id; "
         "IF @is_cached = 1 AND @assigned_server_id = @server_id "
         "BEGIN "
-        "    UPDATE canvas_info SET is_cached = 0, redis_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() "
-        "    WHERE canvas_id = @canvas_id AND is_cached = 1 AND cpp_server_id = @server_id; "
+        "    UPDATE " + table + " SET is_cached = 0, redis_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME() "
+        "    WHERE " + id_col + " = @canvas_id AND is_cached = 1 AND cpp_server_id = @server_id; "
         "    SET @affected = @@ROWCOUNT; "
         "END "
         "COMMIT TRAN; "
@@ -321,24 +335,36 @@ std::optional<std::pair<std::string, int>> RegistryServiceMemory::getUserHandle(
 }
 
 bool RegistryServiceMemory::isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort) {
+    return isCanvasAssignedToServer(SpaceScope::Canvas, canvasId, serverIp, serverPort);
+}
+
+bool RegistryServiceMemory::isCanvasAssignedToServer(SpaceScope scope, int canvasId, const std::string& serverIp, int serverPort) {
     if (canvasId <= 0 || serverPort <= 0) return false;
-    SqlCommand sql("SELECT COUNT(*) FROM canvas_info c JOIN cpp_server s ON s.server_id = c.cpp_server_id "
-                   "WHERE c.canvas_id = @canvas_id AND c.is_cached = 1 AND s.server_ip = @server_ip AND s.server_port = @server_port;");
+    const std::string table = scope == SpaceScope::Workspace ? "workspace_info" : "canvas_info";
+    const std::string id_col = scope == SpaceScope::Workspace ? "workspace_id" : "canvas_id";
+    SqlCommand sql("SELECT COUNT(*) FROM " + table + " c JOIN cpp_server s ON s.server_id = c.cpp_server_id "
+                   "WHERE c." + id_col + " = @canvas_id AND c.is_cached = 1 AND s.server_ip = @server_ip AND s.server_port = @server_port;");
     sql.addInt("@canvas_id", canvasId).addVarchar("@server_ip", serverIp)
        .addVarchar("@server_port", std::to_string(serverPort));
     return scalar(storage_->query(sql)) == 1;
 }
 
 std::optional<CanvasStorageAssignment> RegistryServiceMemory::getCanvasStorageAssignment(int canvasId) {
+    return getCanvasStorageAssignment(SpaceScope::Canvas, canvasId);
+}
+
+std::optional<CanvasStorageAssignment> RegistryServiceMemory::getCanvasStorageAssignment(SpaceScope scope, int canvasId) {
     if (canvasId <= 0) return std::nullopt;
+    const std::string table = scope == SpaceScope::Workspace ? "workspace_info" : "canvas_info";
+    const std::string id_col = scope == SpaceScope::Workspace ? "workspace_id" : "canvas_id";
     SqlCommand sql(
         "SELECT CONVERT(VARCHAR(5), c.is_cached), "
         "COALESCE(s.server_ip, ''), COALESCE(CONVERT(VARCHAR(16), s.server_port), ''), "
         "COALESCE(r.redis_ip, ''), COALESCE(CONVERT(VARCHAR(16), r.redis_port), '') "
-        "FROM canvas_info c "
+        "FROM " + table + " c "
         "LEFT JOIN cpp_server s ON s.server_id = c.cpp_server_id "
         "LEFT JOIN redis_server r ON r.redis_id = c.redis_id AND r.is_activated = 1 "
-        "WHERE c.canvas_id = @canvas_id;");
+        "WHERE c." + id_col + " = @canvas_id;");
     sql.addInt("@canvas_id", canvasId);
     const auto result = storage_->query(sql);
     const auto* row = result ? lastRow(*result) : nullptr;
@@ -356,3 +382,25 @@ std::optional<CanvasStorageAssignment> RegistryServiceMemory::getCanvasStorageAs
     return assignment;
 }
 
+
+bool RegistryServiceMemory::storeCanvasActivity(int canvasId,const std::string& clientsJson){
+ const auto clients=nlohmann::json::parse(clientsJson);nlohmann::json rows=nlohmann::json::array();
+ for(const auto& entry:clients.items()){
+  const auto colon=entry.key().find(':');if(colon==std::string::npos)continue;
+  const auto user=number<int>(std::optional<std::string>(entry.key().substr(0,colon)));if(!user||*user<=0)continue;
+  const auto activity=entry.value().value("activity",nlohmann::json::object());
+  for(const auto& day:activity.items()){const auto& value=day.value();if(value.value("created",0LL)+value.value("updated",0LL)+value.value("deleted",0LL)==0)continue;
+   rows.push_back({{"user_id",*user},{"client_key",entry.key()},{"day",day.key()},{"created",value.value("created",0LL)},{"updated",value.value("updated",0LL)},{"deleted",value.value("deleted",0LL)}});
+  }
+ }
+ if(rows.empty())return true;
+ SqlCommand sql(R"SQL(SET XACT_ABORT ON; BEGIN TRANSACTION;
+ MERGE dbo.user_canvas_activity WITH(HOLDLOCK) AS target
+ USING (SELECT s.* FROM OPENJSON(@rows) WITH(user_id int '$.user_id',client_key varchar(160) '$.client_key',activity_date date '$.day',created_count bigint '$.created',updated_count bigint '$.updated',deleted_count bigint '$.deleted') s JOIN dbo.users u WITH(UPDLOCK,HOLDLOCK) ON u.user_id=s.user_id AND u.status='ACTIVE' AND (u.password_hash IS NULL OR u.password_hash NOT LIKE 'bot-sha256:%')) AS source
+ ON target.user_id=source.user_id AND target.canvas_id=@canvas AND target.client_key=source.client_key AND target.activity_date=source.activity_date
+ WHEN MATCHED AND (source.created_count>target.created_count OR source.updated_count>target.updated_count OR source.deleted_count>target.deleted_count)
+ THEN UPDATE SET created_count=source.created_count,updated_count=source.updated_count,deleted_count=source.deleted_count,updated_at=SYSUTCDATETIME()
+ WHEN NOT MATCHED THEN INSERT(user_id,canvas_id,client_key,activity_date,created_count,updated_count,deleted_count) VALUES(source.user_id,@canvas,source.client_key,source.activity_date,source.created_count,source.updated_count,source.deleted_count);
+ COMMIT TRANSACTION;)SQL");
+ sql.addInt("@canvas",canvasId).addMaxText("@rows",rows.dump());return storage_->execute(sql);
+}

@@ -130,11 +130,47 @@ void brokerStoragePreservesJsonAndReadsObjectsTogether(){
     AGORA_CHECK(wire->last.size()==4&&wire->last[2]=="$[\"items\"][\"escaped\\\"id\"]");
     const auto single=memory.readBrokerItems(9997,{"one"});AGORA_CHECK(single&&(*single)["one"]["kind"]=="shape");
 }
+void workspaceAndCanvasIsolation() {
+    auto transport = std::make_unique<ScriptedTransport>();
+    auto* script = transport.get();
+    CanvasServiceMemory memory(std::move(transport));
+
+    const nlohmann::json doc{{"items", {{"cell-1", {{"kind", "code"}, {"code", "x=1"}}}}}};
+    script->exchanges.push_back({{"JSON.SET", "canvas:42", "$", doc.dump()}, "OK"});
+    AGORA_CHECK(memory.storeCanvas(SpaceScope::Canvas, 42, doc));
+    script->exchanges.push_back({{"JSON.SET", "workspace:42", "$", doc.dump()}, "OK"});
+    AGORA_CHECK(memory.storeCanvas(SpaceScope::Workspace, 42, doc));
+
+    const nlohmann::json ws_item{{"kind", "code"}, {"code", "ws"}};
+    script->exchanges.push_back({{"JSON.SET", "workspace:42", "$[\"items\"][\"cell-1\"]", ws_item.dump()}, "OK"});
+    AGORA_CHECK(memory.storeItem(SpaceScope::Workspace, 42, "cell-1", ws_item));
+    script->exchanges.push_back({{"JSON.GET", "canvas:42", "$[\"items\"][\"cell-1\"][\"code\"]"}, "[\"cv\"]"});
+    AGORA_CHECK(memory.readItem(SpaceScope::Canvas, 42, "cell-1", "code") == "[\"cv\"]");
+    script->exchanges.push_back({{"JSON.GET", "workspace:42", "$[\"items\"][\"cell-1\"][\"code\"]"}, "[\"ws\"]"});
+    AGORA_CHECK(memory.readItem(SpaceScope::Workspace, 42, "cell-1", "code") == "[\"ws\"]");
+
+    script->exchanges.push_back({{"JSON.DEL", "workspace:42", "$[\"items\"][\"cell-1\"]"}, "1"});
+    AGORA_CHECK(memory.removeItem(SpaceScope::Workspace, 42, "cell-1"));
+    AGORA_CHECK(script->exchanges.empty());
+
+    auto backend = std::make_unique<DocumentMemoryStub>();
+    auto* durable = backend.get();
+    CanvasSnapshotMemory ws_snapshots(std::move(backend), "workspace", SpaceScope::Workspace);
+    AGORA_CHECK(ws_snapshots.scope() == SpaceScope::Workspace && ws_snapshots.indexName() == "workspace");
+    AGORA_CHECK(ws_snapshots.saveCanvasDocument(7, {{"canvas-id", 7}, {"canvas-name", "Proofs"}, {"items", nlohmann::json::object()}}));
+    AGORA_CHECK(durable->index == "workspace" && durable->id == "7");
+    AGORA_CHECK(!durable->document.contains("canvas-id") && !durable->document.contains("canvas-name"));
+    AGORA_CHECK(durable->document["workspace-id"] == 7 && durable->document["workspace-name"] == "Proofs");
+    auto restored = ws_snapshots.getCanvasDocument(7);
+    AGORA_CHECK(restored && (*restored)["canvas-id"] == 7 && (*restored)["canvas-name"] == "Proofs");
+}
+
 int main() {
     setenv("CPP_CANVAS_LRU_CAPACITY", "2", 1);
     setenv("CPP_CANVAS_LRU_ITEMS_PER_CANVAS", "1", 1);
     return runTest("broker JSON encoding and grouped reads",brokerStoragePreservesJsonAndReadsObjectsTogether)
         + runTest("dirty cache survives failed flush and transport replacement", dirtyCacheSurvivesTransportFailureAndReplacement)
         + runTest("domain IDs are escaped at the memory boundary", domainIdsAreEscapedBeforeStorage)
-        + runTest("canvas memory restores durable documents and protects active data", durableDocumentRestorationBelongsToCanvasMemory);
+        + runTest("canvas memory restores durable documents and protects active data", durableDocumentRestorationBelongsToCanvasMemory)
+        + runTest("workspace and canvas storage keys and snapshots are isolated", workspaceAndCanvasIsolation);
 }

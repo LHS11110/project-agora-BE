@@ -5,6 +5,7 @@
 #include <optional>
 #include <cstdint>
 #include <vector>
+#include "SpaceScope.hpp"
 #include "memory/SqlExecutor.hpp"
 #include <memory>
 
@@ -49,17 +50,22 @@ public:
 
     // Returns pair of <redis_ip, redis_port>. Allocates if not cached.
     CanvasRedisAllocation getOrAllocateRedisAndSetCached(int canvasId, const std::string& cppServerIp, int cppServerPort);
+    CanvasRedisAllocation getOrAllocateRedisAndSetCached(SpaceScope scope, int spaceId, const std::string& cppServerIp, int cppServerPort);
 
-    // Updates canvas_info: is_cached=0, redis_ip=NULL, redis_port=NULL, server_ip=NULL, server_port=NULL
+    // Updates canvas_info / workspace_info: is_cached=0, redis_id=NULL, cpp_server_id=NULL
     bool updateCanvasUncached(int canvasId, const std::string& cppServerIp, int cppServerPort);
+    bool updateCanvasUncached(SpaceScope scope, int spaceId, const std::string& cppServerIp, int cppServerPort);
 
     // Resolve an active user from the nickname and tag in the canvas token.
     int getActiveUserId(const std::string& nickname, int tagNumber);
     std::optional<int> getActiveUserIdChecked(const std::string& nickname, int tagNumber);
     std::optional<std::pair<std::string, int>> getUserHandle(int userId);
     bool isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort);
+    bool isCanvasAssignedToServer(SpaceScope scope, int spaceId, const std::string& serverIp, int serverPort);
     std::optional<CanvasStorageAssignment> getCanvasStorageAssignment(int canvasId);
+    std::optional<CanvasStorageAssignment> getCanvasStorageAssignment(SpaceScope scope, int spaceId);
 
+    bool storeCanvasActivity(int canvasId,const std::string& clientsJson);
 private:
     std::unique_ptr<SqlExecutor> storage_;
 };

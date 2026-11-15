@@ -4,7 +4,11 @@
 #include <limits>
 
 Canvas::Canvas(int canvas_id, const std::string& redis_ip, int redis_port)
-    : canvas_id(canvas_id), redis_ip(redis_ip), redis_port(redis_port) {
+    : Canvas(SpaceScope::Canvas, canvas_id, redis_ip, redis_port) {
+}
+
+Canvas::Canvas(SpaceScope scope, int canvas_id, const std::string& redis_ip, int redis_port)
+    : canvas_id(canvas_id), scope(scope), redis_ip(redis_ip), redis_port(redis_port) {
 }
 
 Canvas::~Canvas() = default;

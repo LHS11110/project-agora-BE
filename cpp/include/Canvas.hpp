@@ -1,5 +1,6 @@
 #pragma once
 
+#include "SpaceScope.hpp"
 #include <string>
 #include <chrono>
 #include <map>
@@ -18,8 +19,11 @@ class Canvas {
 public:
 
     Canvas(int canvas_id, const std::string& redis_ip = "127.0.0.1", int redis_port = 6379);
+    Canvas(SpaceScope scope, int canvas_id, const std::string& redis_ip = "127.0.0.1", int redis_port = 6379);
     ~Canvas();
 
+    SpaceScope getScope() const { return scope; }
+    SpaceKey getSpaceKey() const { return {scope, canvas_id}; }
     int getCanvasId() const { return canvas_id; }
     std::string getCanvasName() const {
         std::lock_guard<std::mutex> lock(metadata_mutex_);
@@ -66,6 +70,7 @@ public:
         return elapsed < std::chrono::duration_cast<std::chrono::steady_clock::duration>(ttl).count();
     }
     int canvas_id;
+    SpaceScope scope{SpaceScope::Canvas};
     std::string canvas_name;
     int admin_user_id{0};
     std::string redis_ip;

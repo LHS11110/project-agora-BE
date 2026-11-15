@@ -1,5 +1,7 @@
 #include "service/CanvasQueryRules.hpp"
 #include "service/CanvasAccessRules.hpp"
+#include "service/CanvasQueryService.hpp"
+#include "SpaceScope.hpp"
 #include "TestSupport.hpp"
 void aclAndPatchRulesRejectEscalation() {
     const std::unordered_set<std::string> groups{"writers"};
@@ -72,4 +74,70 @@ void commentsFollowCurrentObjectPermission() {
     AGORA_CHECK(broadcasts.size() == 2 && broadcasts[0].is_object() && broadcasts[0]["event"]["type"] == "item_update");
     AGORA_CHECK(broadcasts[0]["permission"] == "readers" && broadcasts[0]["event"]["item"]["next_sequence"] == 2);
 }
-int main() { int a=runTest("query ACL, collaborative payload and ID validation", aclAndPatchRulesRejectEscalation); if(a)return a; a=runTest("canvas visibility and public group rules", canvasVisibilityRules); return a ? a : runTest("comment object permission", commentsFollowCurrentObjectPermission); }
+void spaceScopeIsolationAndQueryAuth() {
+    AGORA_CHECK(spaceScopeWire(SpaceScope::Canvas) == "canvas");
+    AGORA_CHECK(spaceScopeWire(SpaceScope::Workspace) == "workspace");
+    AGORA_CHECK(spaceScopeIdField(SpaceScope::Workspace) == "workspace-id");
+    AGORA_CHECK(spaceScopeNameField(SpaceScope::Workspace) == "workspace-name");
+    AGORA_CHECK(spaceScopeJwtSubject(SpaceScope::Canvas) == "canvas-access");
+    AGORA_CHECK(spaceScopeJwtSubject(SpaceScope::Workspace) == "workspace-access");
+    AGORA_CHECK(spaceScopeJwtIdClaim(SpaceScope::Workspace) == "workspaceId");
+    AGORA_CHECK(parseSpaceScope("") == SpaceScope::Canvas && parseSpaceScope("workspace") == SpaceScope::Workspace);
+    AGORA_CHECK(runtimeTargetId(SpaceScope::Canvas, 12) == 12);
+    AGORA_CHECK(runtimeTargetId(SpaceScope::Workspace, 12) == 1000000012);
+
+    std::unordered_set<SpaceKey> keys;
+    keys.insert({SpaceScope::Canvas, 5});
+    keys.insert({SpaceScope::Workspace, 5});
+    AGORA_CHECK(keys.size() == 2);
+
+    CanvasLifecycleMemory pool;
+    CanvasQueryService queries(pool, 8002);
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    nlohmann::json valid_identity{
+        {"canvas_id", 5},
+        {"scope", "canvas"},
+        {"connection_id", "conn-1"},
+        {"expires_at", now + 60},
+        {"user_id", 9},
+        {"groups", nlohmann::json::array({"default"})},
+        {"is_admin", false}
+    };
+    auto cross_scope = queries.execute({
+        {"command", "query"},
+        {"route", {{"canvas_id", 5}, {"connection_id", "conn-1"}, {"request_id", "req-1"}, {"scope", "workspace"}}},
+        {"identity", valid_identity},
+        {"event", {{"type", "canvas_sync"}, {"client_id", "c1"}}}
+    });
+    AGORA_CHECK(cross_scope["route"]["scope"] == "workspace");
+    AGORA_CHECK(!cross_scope["response"]["ok"].get<bool>() && cross_scope["response"]["code"] == "QUERY_UNAUTHORIZED");
+
+    auto invalid_scope = queries.execute({
+        {"command", "query"},
+        {"route", {{"canvas_id", 5}, {"connection_id", "conn-1"}, {"request_id", "req-2"}, {"scope", "other"}}}
+    });
+    AGORA_CHECK(!invalid_scope["response"]["ok"].get<bool>() && invalid_scope["response"]["code"] == "ROUTE_INVALID");
+
+    auto mismatched_connect = queries.execute({
+        {"command", "connect"},
+        {"ws_port", 8002},
+        {"route", {{"canvas_id", 5}, {"connection_id", "conn-2"}, {"request_id", "req-3"}, {"scope", "workspace"}}},
+        {"principal", {{"canvas_id", 5}, {"scope", "canvas"}, {"nickname", "tester"}, {"tag_number", 1}, {"settings_revision", 0}}}
+    });
+    AGORA_CHECK(!mismatched_connect["response"]["ok"].get<bool>() && mismatched_connect["response"]["code"] == "CANVAS_ACCESS_UNAUTHORIZED");
+
+    valid_identity["scope"] = "workspace";
+    auto ws_query = queries.execute({
+        {"command", "query"},
+        {"route", {{"canvas_id", 5}, {"connection_id", "conn-1"}, {"request_id", "req-4"}, {"scope", "workspace"}}},
+        {"identity", valid_identity},
+        {"event", {{"type", "canvas_sync"}, {"client_id", "c1"}}}
+    });
+    AGORA_CHECK(!ws_query["response"]["ok"].get<bool>() && ws_query["response"]["code"] == "CANVAS_NOT_READY");
+}
+int main() {
+    int a = runTest("query ACL, collaborative payload and ID validation", aclAndPatchRulesRejectEscalation);
+    if (!a) a = runTest("canvas visibility and public group rules", canvasVisibilityRules);
+    if (!a) a = runTest("comment object permission", commentsFollowCurrentObjectPermission);
+    return a ? a : runTest("space scope isolation and query auth", spaceScopeIsolationAndQueryAuth);
+}

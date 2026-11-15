@@ -1,4 +1,5 @@
 #include <iostream>
+#include "service/CanvasActivity.hpp"
 #include <memory>
 #include <string>
 #include <utility>
@@ -391,9 +392,13 @@ int main(int argc, char* argv[]) {
 
     std::thread cleanup_thread([&]() {
         pthread_setname_np(pthread_self(), "agora-cleanup");
+        auto next_activity_flush=agora::activity::nextFlushTime(std::chrono::system_clock::now());
         while (g_cleanup_running) {
             if (!g_graceful_shutdown && !mssql.heartbeatServer(g_advertise_ip, g_port)) {
                 std::cerr << "[Agora C++ Server] Server heartbeat update failed\n";
+            }
+            if (!g_graceful_shutdown && std::chrono::system_clock::now()>=next_activity_flush){
+                canvas_pool.flushCanvasActivity();next_activity_flush=agora::activity::nextFlushTime(std::chrono::system_clock::now());
             }
             if (!g_graceful_shutdown) canvas_pool.cleanupInactiveCanvases();
 

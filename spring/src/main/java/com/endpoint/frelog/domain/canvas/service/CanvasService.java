@@ -3,8 +3,12 @@ package com.endpoint.frelog.domain.canvas.service;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
 import com.endpoint.frelog.domain.canvas.dto.CanvasSummaryResponse;
 import com.endpoint.frelog.domain.canvas.dto.CanvasUpdateDtos;
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import com.endpoint.frelog.domain.canvas.entity.CanvasInfo;
+import com.endpoint.frelog.domain.canvas.entity.SpaceInfo;
+import com.endpoint.frelog.domain.canvas.entity.WorkspaceInfo;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
+import com.endpoint.frelog.domain.canvas.repository.WorkspaceInfoRepository;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
 import com.endpoint.frelog.domain.loadbalancer.entity.ServerInfo;
 import com.endpoint.frelog.domain.loadbalancer.repository.RedisInfoRepository;
@@ -29,6 +33,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.Optional;
 import java.util.Map;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -40,6 +45,7 @@ public class CanvasService {
     private static final Logger log = LoggerFactory.getLogger(CanvasService.class);
 
     private final CanvasInfoRepository canvasInfoRepository;
+    private final WorkspaceInfoRepository workspaceInfoRepository;
     private final UserRepository userRepository;
     private final CanvasElasticsearchService canvasElasticsearchService;
     private final CanvasResourceService canvasResourceService;
@@ -51,6 +57,36 @@ public class CanvasService {
     private final CanvasRedisDocumentReader redisDocumentReader;
     private final com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue;
     private final org.springframework.context.ApplicationEventPublisher events;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CanvasService(
+            CanvasInfoRepository canvasInfoRepository,
+            WorkspaceInfoRepository workspaceInfoRepository,
+            UserRepository userRepository,
+            CanvasElasticsearchService canvasElasticsearchService,
+            CanvasResourceService canvasResourceService,
+            LoadBalancerService loadBalancerService,
+            RedisInfoRepository redisInfoRepository,
+            ServerInfoRepository serverInfoRepository,
+            UserSessionRepository userSessionRepository,
+            JwtTokenProvider jwtTokenProvider,
+            CanvasRedisDocumentReader redisDocumentReader,
+            com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue,
+            org.springframework.context.ApplicationEventPublisher events) {
+        this.canvasInfoRepository = canvasInfoRepository;
+        this.workspaceInfoRepository = workspaceInfoRepository;
+        this.userRepository = userRepository;
+        this.canvasElasticsearchService = canvasElasticsearchService;
+        this.canvasResourceService = canvasResourceService;
+        this.loadBalancerService = loadBalancerService;
+        this.redisInfoRepository = redisInfoRepository;
+        this.serverInfoRepository = serverInfoRepository;
+        this.userSessionRepository = userSessionRepository;
+        this.jwtTokenProvider = jwtTokenProvider;
+        this.redisDocumentReader = redisDocumentReader;
+        this.runtimeCleanupQueue = runtimeCleanupQueue;
+        this.events = events;
+    }
 
     public CanvasService(
             CanvasInfoRepository canvasInfoRepository,
@@ -65,18 +101,9 @@ public class CanvasService {
             CanvasRedisDocumentReader redisDocumentReader,
             com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupQueue runtimeCleanupQueue,
             org.springframework.context.ApplicationEventPublisher events) {
-        this.canvasInfoRepository = canvasInfoRepository;
-        this.userRepository = userRepository;
-        this.canvasElasticsearchService = canvasElasticsearchService;
-        this.canvasResourceService = canvasResourceService;
-        this.loadBalancerService = loadBalancerService;
-        this.redisInfoRepository = redisInfoRepository;
-        this.serverInfoRepository = serverInfoRepository;
-        this.userSessionRepository = userSessionRepository;
-        this.jwtTokenProvider = jwtTokenProvider;
-        this.redisDocumentReader = redisDocumentReader;
-        this.runtimeCleanupQueue = runtimeCleanupQueue;
-        this.events = events;
+        this(canvasInfoRepository, null, userRepository, canvasElasticsearchService, canvasResourceService,
+                loadBalancerService, redisInfoRepository, serverInfoRepository, userSessionRepository,
+                jwtTokenProvider, redisDocumentReader, runtimeCleanupQueue, events);
     }
 
     /**
@@ -100,53 +127,68 @@ public class CanvasService {
     public CanvasSummaryResponse createCanvas(
             String canvasName, String description, String canvasPassword, MultipartFile imageFile,
             CustomUserDetails currentUser, String visibility) {
+        return createSpace(DocumentScope.CANVAS, canvasName, description, canvasPassword, imageFile, currentUser, visibility);
+    }
+
+    @Transactional
+    public CanvasSummaryResponse createSpace(
+            DocumentScope scope, String name, String description, String password, MultipartFile imageFile,
+            CustomUserDetails currentUser, String visibility) {
         if (currentUser == null || currentUser.getUserId() == null) {
-            throw new CustomException(ErrorCode.UNAUTHORIZED, "캔버스 생성은 로그인한 사용자만 가능합니다.");
+            throw new CustomException(ErrorCode.UNAUTHORIZED, "생성은 로그인한 사용자만 가능합니다.");
         }
-        if (canvasName == null || canvasName.isBlank() || canvasName.length() > 255) {
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 이름은 1자 이상 255자 이하여야 합니다.");
+        if (name == null || name.isBlank() || name.length() > 255) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이름은 1자 이상 255자 이하여야 합니다.");
         }
         if (description != null && description.length() > 4000) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "설명은 최대 4000자까지 가능합니다.");
         }
-        if (canvasPassword != null && canvasPassword.getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
+        if (password != null && password.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
         if (visibility != null && !visibility.equals("public") && !visibility.equals("private"))
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "공개 설정을 확인하세요.");
-        if (!"public".equals(visibility) && canvasPassword != null && !canvasPassword.isBlank())
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
+        if (!"public".equals(visibility) && password != null && !password.isBlank())
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 공간에는 비밀번호를 설정할 수 없습니다.");
 
         Long userId = currentUser.getUserId();
 
-        // 1. MS SQL canvas_id 채번 (IDENTITY 자동 증가)
-        CanvasInfo canvasInfo = new CanvasInfo();
-        canvasInfo = canvasInfoRepository.save(canvasInfo);
-        Integer targetId = canvasInfo.getCanvasId();
+        // 1. MS SQL ID 채번 (canvas_info / workspace_info 분리)
+        SpaceInfo info = createSpaceInfo(scope);
+        Integer targetId = info.getSpaceId();
 
         // 2. 비정형 대표 이미지 저장
-        String imagePath = canvasResourceService.saveRepresentativeImage(targetId, imageFile);
+        String imagePath = scope == DocumentScope.CANVAS
+                ? canvasResourceService.saveRepresentativeImage(targetId, imageFile)
+                : canvasResourceService.saveRepresentativeImage(scope, targetId, imageFile);
 
-        // 3. Elasticsearch 초기 문서 생성
+        // 3. Elasticsearch 초기 문서 생성 (canvas / workspace 인덱스 분리)
         CanvasDocument document = new CanvasDocument(
-                canvasName,
+                name,
                 targetId,
                 userId,
-                CanvasPasswords.hashForStorage(canvasPassword),
+                CanvasPasswords.hashForStorage(password),
                 "default"
         );
         document.setDescription(description != null ? description : "");
         document.setVisibility(visibility);
         try {
-            if (!canvasElasticsearchService.saveCanvas(document)) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "캔버스 저장에 실패했습니다.");
+            boolean saved = scope == DocumentScope.CANVAS
+                    ? canvasElasticsearchService.saveCanvas(document)
+                    : canvasElasticsearchService.saveDocument(scope, document);
+            if (!saved) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "저장에 실패했습니다.");
             }
         } catch (RuntimeException e) {
-            canvasResourceService.deleteCanvasResourceDirectory(targetId);
+            if (scope == DocumentScope.CANVAS) {
+                canvasResourceService.deleteCanvasResourceDirectory(targetId);
+            } else {
+                canvasResourceService.deleteResourceDirectory(scope, targetId);
+            }
             throw e;
         }
 
-        log.info("신규 캔버스 #{} 생성 완료: name='{}', admin_user_id={}", targetId, canvasName, userId);
+        log.info("신규 {} #{} 생성 완료: name='{}', admin_user_id={}", scope.wireName(), targetId, name, userId);
         return CanvasSummaryResponse.of(document, imagePath);
     }
 
@@ -205,74 +247,87 @@ public class CanvasService {
      * - MS SQL의 캔버스 정보 테이블은 그 어떤 정보도 제공하지 않음
      */
     public List<CanvasSummaryResponse> searchCanvases(String canvasName, CustomUserDetails currentUser) {
+        return searchSpaces(DocumentScope.CANVAS, canvasName, currentUser);
+    }
+
+    public List<CanvasSummaryResponse> searchSpaces(DocumentScope scope, String queryName, CustomUserDetails currentUser) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        List<CanvasDocument> docs = canvasElasticsearchService.searchCanvasesByName(canvasName);
+        List<CanvasDocument> docs = scope == DocumentScope.CANVAS
+                ? canvasElasticsearchService.searchCanvasesByName(queryName)
+                : canvasElasticsearchService.searchDocumentsByName(scope, queryName);
         return docs.stream()
                 .filter(doc -> CanvasVisibility.allows(doc, currentUser))
                 .filter(doc -> {
                     try {
-                        var info = canvasInfoRepository.findById(doc.getCanvasId());
+                        var info = findSpaceById(scope, doc.getCanvasId());
                         return info.isPresent() && (!Boolean.TRUE.equals(info.get().getIsCached())
-                                || CanvasVisibility.allows(redisDocumentReader.read(info.get()), currentUser));
+                                || CanvasVisibility.allows(readCachedDocument(scope, info.get(), null), currentUser));
                     } catch (RuntimeException unavailable) { return false; }
                 })
-                .map(doc -> CanvasSummaryResponse.of(doc, "/api/canvases/" + doc.getCanvasId() + "/image"))
+                .map(doc -> CanvasSummaryResponse.of(doc, scope.representativeImagePath(doc.getCanvasId())))
                 .toList();
     }
 
-    /**
-     * 3. 캔버스 조회:
-     * - 로그인한 사용자만 허용
-     * - 캔버스 아이디를 기반으로 조회를 수행하며 제공하는 데이터는 캔버스 검색과 동일
-     */
     @Transactional(readOnly = true)
     public CanvasSummaryResponse getCanvasSummary(Integer canvasId, CustomUserDetails currentUser) {
+        return getSummary(DocumentScope.CANVAS, canvasId, currentUser);
+    }
+
+    @Transactional(readOnly = true)
+    public CanvasSummaryResponse getSummary(DocumentScope scope, Integer id, CustomUserDetails currentUser) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
-        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(scope, id);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? readCachedDocument(scope, info, null) : getDocumentOrThrow(scope, id);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(scope.notFoundError());
 
-        return CanvasSummaryResponse.of(doc, "/api/canvases/" + canvasId + "/image");
+        return CanvasSummaryResponse.of(doc, scope.representativeImagePath(id));
     }
 
-    /**
-     * 캔버스 문서 원본 단건 조회 (내부 및 도큐먼트 검증용)
-     */
     @Transactional(readOnly = true)
     public CanvasDocument getCanvasDocument(Integer canvasId, CustomUserDetails currentUser) {
-        return getCanvasItemDocument(canvasId,currentUser,null);
+        return getCanvasItemDocument(canvasId, currentUser, null);
     }
 
     @Transactional(readOnly = true)
     public CanvasDocument getCanvasItemDocument(Integer canvasId, CustomUserDetails currentUser, String itemId) {
+        return getItemDocument(DocumentScope.CANVAS, canvasId, currentUser, itemId);
+    }
+
+    @Transactional(readOnly = true)
+    public CanvasDocument getItemDocument(DocumentScope scope, Integer id, CustomUserDetails currentUser, String itemId) {
         if (currentUser == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? (itemId == null ? redisDocumentReader.read(info) : redisDocumentReader.read(info, itemId)) : getCanvasDocumentOrThrow(canvasId);
-        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(scope, id);
+        CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached()) ? readCachedDocument(scope, info, itemId) : getDocumentOrThrow(scope, id);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(scope.notFoundError());
         return doc;
     }
 
     @Transactional
     public CanvasUpdateDtos.SettingsResponse getCanvasSettings(Integer canvasId, CustomUserDetails currentUser) {
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-        boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
-        CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
+        return getSettings(DocumentScope.CANVAS, canvasId, currentUser);
+    }
+
+    @Transactional
+    public CanvasUpdateDtos.SettingsResponse getSettings(DocumentScope scope, Integer id, CustomUserDetails currentUser) {
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(scope, id);
+        boolean cached = Boolean.TRUE.equals(info.getIsCached());
+        CanvasDocument doc = cached ? readCachedDocument(scope, info, null) : getDocumentOrThrow(scope, id);
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED);
         }
         if (!CanvasVisibility.allows(doc, currentUser)) {
             throw new CustomException(ErrorCode.ACCESS_DENIED);
         }
-        if (!cachedCanvas) doc = migrateLegacyCanvasPassword(doc);
+        if (!cached) doc = migrateLegacyPassword(scope, doc);
         List<Long> people = doc.getPeople() == null ? List.of() : doc.getPeople();
         Map<Long, CanvasUpdateDtos.ParticipantResponse> users = new LinkedHashMap<>();
         userRepository.findAllById(people).forEach(user -> users.put(user.getUserId(),
@@ -281,54 +336,81 @@ public class CanvasService {
                 .map(users::get).filter(java.util.Objects::nonNull).toList();
         Map<String,List<CanvasUpdateDtos.ParticipantResponse>> groups = new LinkedHashMap<>();
         if(doc.getInnerGroup()!=null)doc.getInnerGroup().forEach((key,members)->groups.put(key,members.stream().map(users::get).filter(java.util.Objects::nonNull).toList()));
-        return new CanvasUpdateDtos.SettingsResponse(canvasId, doc.getCanvasName(), doc.getDescription(),
+        return new CanvasUpdateDtos.SettingsResponse(id, doc.getCanvasName(), doc.getDescription(),
                 "public".equals(doc.getVisibility()) && doc.getCanvasPasswordHash() != null && !doc.getCanvasPasswordHash().isBlank(),
                 doc.getSettingsRevision(), participants, doc.getVisibility(),CanvasGroupPermissions.policies(doc),CanvasGroupPermissions.admin(doc,currentUser.getUserId()),groups,doc.getInitGroup(),users.get(doc.getAdminUserId()));
     }
 
     @Transactional
     public String updateRepresentativeImage(Integer canvasId, MultipartFile image, CustomUserDetails currentUser) {
-        CanvasInfo info = getCanvasInfoWithLockOrThrow(canvasId);
+        return updateRepresentativeImage(DocumentScope.CANVAS, canvasId, image, currentUser);
+    }
+
+    @Transactional
+    public String updateRepresentativeImage(DocumentScope scope, Integer id, MultipartFile image, CustomUserDetails currentUser) {
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(scope, id);
         CanvasDocument doc = Boolean.TRUE.equals(info.getIsCached())
-                ? redisDocumentReader.read(info) : getCanvasDocumentOrThrow(canvasId);
+                ? readCachedDocument(scope, info, null) : getDocumentOrThrow(scope, id);
         validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
         if (image == null || image.isEmpty()) {
             throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이미지 파일을 선택하세요.");
         }
-        return canvasResourceService.saveRepresentativeImage(canvasId, image);
+        return scope == DocumentScope.CANVAS
+                ? canvasResourceService.saveRepresentativeImage(id, image)
+                : canvasResourceService.saveRepresentativeImage(scope, id, image);
     }
 
     @Transactional
     public void updateCanvasName(Integer canvasId, String name, CustomUserDetails currentUser) {
-        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
-        if (name == null || name.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 이름을 입력하세요.");
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, Map.of("canvas-name", name.trim())));
+        updateName(DocumentScope.CANVAS, canvasId, name, currentUser);
+    }
+
+    @Transactional
+    public void updateName(DocumentScope scope, Integer id, String name, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveSpace(scope, id, currentUser);
+        if (name == null || name.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "이름을 입력하세요.");
+        patchFields(scope, id, withNextRevision(doc, Map.of("canvas-name", name.trim())));
     }
 
     @Transactional
     public void updateCanvasDescription(Integer canvasId, String description, CustomUserDetails currentUser) {
-        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        updateDescription(DocumentScope.CANVAS, canvasId, description, currentUser);
+    }
+
+    @Transactional
+    public void updateDescription(DocumentScope scope, Integer id, String description, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveSpace(scope, id, currentUser);
         if (description == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "설명을 입력하세요.");
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, Map.of("description", description)));
+        patchFields(scope, id, withNextRevision(doc, Map.of("description", description)));
     }
 
     @Transactional
     public void updateCanvasPassword(Integer canvasId, String password, CustomUserDetails currentUser) {
-        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        updatePassword(DocumentScope.CANVAS, canvasId, password, currentUser);
+    }
+
+    @Transactional
+    public void updatePassword(DocumentScope scope, Integer id, String password, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveSpace(scope, id, currentUser);
         if (password == null) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호를 입력하세요.");
-        if (!"public".equals(doc.getVisibility()) && !password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 캔버스에는 비밀번호를 설정할 수 없습니다.");
+        if (!"public".equals(doc.getVisibility()) && !password.isBlank()) throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비공개 공간에는 비밀번호를 설정할 수 없습니다.");
         if (password.getBytes(StandardCharsets.UTF_8).length > 72) {
-            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "캔버스 비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
+            throw new CustomException(ErrorCode.INVALID_INPUT_VALUE, "비밀번호는 UTF-8 기준 72바이트 이하여야 합니다.");
         }
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("canvas-password-hash", password.isBlank() ? null : CanvasPasswords.hashForStorage(password));
         fields.put("password-revision", doc.getPasswordRevision() + 1L);
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc, fields));
+        patchFields(scope, id, withNextRevision(doc, fields));
     }
 
     @Transactional
     public void addCanvasParticipant(Integer canvasId, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
-        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        addParticipant(DocumentScope.CANVAS, canvasId, nickname, tagNumber, currentUser);
+    }
+
+    @Transactional
+    public void addParticipant(DocumentScope scope, Integer id, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveSpace(scope, id, currentUser);
         User target = findParticipant(nickname, tagNumber, true);
         if (doc.getPeople().contains(target.getUserId())) {
             throw new CustomException(ErrorCode.BAD_REQUEST, "이미 참여 중인 사용자입니다.");
@@ -338,16 +420,20 @@ public class CanvasService {
         Map<String, List<Long>> groups = copyGroups(doc.getInnerGroup());
         String initialGroup = doc.getInitGroup() == null || doc.getInitGroup().isBlank() ? "default" : doc.getInitGroup();
         groups.computeIfAbsent(initialGroup, unused -> new ArrayList<>()).add(target.getUserId());
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
-                Map.of("people", people, "inner-group", groups)));
+        patchFields(scope, id, withNextRevision(doc, Map.of("people", people, "inner-group", groups)));
     }
 
     @Transactional
     public void removeCanvasParticipant(Integer canvasId, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
-        CanvasDocument doc = editableInactiveCanvas(canvasId, currentUser);
+        removeParticipant(DocumentScope.CANVAS, canvasId, nickname, tagNumber, currentUser);
+    }
+
+    @Transactional
+    public void removeParticipant(DocumentScope scope, Integer id, String nickname, Integer tagNumber, CustomUserDetails currentUser) {
+        CanvasDocument doc = editableInactiveSpace(scope, id, currentUser);
         User target = findParticipant(nickname, tagNumber, false);
         if (target.getUserId().equals(doc.getAdminUserId())) {
-            throw new CustomException(ErrorCode.BAD_REQUEST, "캔버스 소유자는 제외할 수 없습니다.");
+            throw new CustomException(ErrorCode.BAD_REQUEST, "소유자는 제외할 수 없습니다.");
         }
         if (!doc.getPeople().contains(target.getUserId())) {
             throw new CustomException(ErrorCode.BAD_REQUEST, "참여하지 않은 사용자입니다.");
@@ -356,17 +442,16 @@ public class CanvasService {
         people.remove(target.getUserId());
         Map<String, List<Long>> groups = copyGroups(doc.getInnerGroup());
         groups.values().forEach(members -> members.remove(target.getUserId()));
-        canvasElasticsearchService.patchCanvasFields(canvasId, withNextRevision(doc,
-                Map.of("people", people, "inner-group", groups)));
+        patchFields(scope, id, withNextRevision(doc, Map.of("people", people, "inner-group", groups)));
     }
 
-    private CanvasDocument editableInactiveCanvas(Integer canvasId, CustomUserDetails currentUser) {
-        if (Boolean.TRUE.equals(getCanvasInfoWithLockOrThrow(canvasId).getIsCached())) {
-            throw new CustomException(ErrorCode.CANVAS_ACTIVE);
+    private CanvasDocument editableInactiveSpace(DocumentScope scope, Integer id, CustomUserDetails currentUser) {
+        if (Boolean.TRUE.equals(getSpaceInfoWithLockOrThrow(scope, id).getIsCached())) {
+            throw new CustomException(scope.activeError());
         }
-        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+        CanvasDocument doc = getDocumentOrThrow(scope, id);
         validateCanvasAdminGroupOrSystemAdmin(doc, currentUser);
-        return migrateLegacyCanvasPassword(doc);
+        return migrateLegacyPassword(scope, doc);
     }
 
     private User findParticipant(String nickname, Integer tagNumber, boolean requireActive) {
@@ -407,49 +492,46 @@ public class CanvasService {
      */
     @Transactional
     public void deleteCanvas(Integer canvasId, CustomUserDetails currentUser) {
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
-        CanvasDocument doc = getCanvasDocumentOrThrow(canvasId);
+        delete(DocumentScope.CANVAS, canvasId, currentUser);
+    }
+
+    @Transactional
+    public void delete(DocumentScope scope, Integer id, CustomUserDetails currentUser) {
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(scope, id);
+        CanvasDocument doc = getDocumentOrThrow(scope, id);
         validateCanvasOwnerOrSystemAdmin(doc, currentUser);
 
-        if (Boolean.TRUE.equals(canvasInfo.getIsCached())) {
-            log.warn("캔버스 #{} 삭제 실패: 활성화(캐시) 상태인 캔버스는 삭제할 수 없습니다.", canvasId);
-            throw new CustomException(ErrorCode.CANVAS_ACTIVE,
-                    "현재 활성화 상태인 캔버스는 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
+        if (Boolean.TRUE.equals(info.getIsCached())) {
+            log.warn("{} #{} 삭제 실패: 활성화(캐시) 상태에서는 삭제할 수 없습니다.", scope.wireName(), id);
+            throw new CustomException(scope.activeError(),
+                    "현재 활성화 상태이므로 삭제할 수 없습니다. 모든 사용자가 연결을 종료한 후 다시 시도해 주세요.");
         }
 
         // Persist cleanup in the same SQL transaction; rollback must preserve VM files.
-        runtimeCleanupQueue.enqueue(canvasId);
-        // MS SQL 삭제
-        canvasInfoRepository.delete(canvasInfo);
-
-        // Elasticsearch 삭제
-        if (!canvasElasticsearchService.deleteCanvas(canvasId, doc.getCanvasName())) {
-            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
-                    "캔버스 저장 문서를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+        if (scope == DocumentScope.CANVAS) {
+            runtimeCleanupQueue.enqueue(id);
+            canvasInfoRepository.delete((CanvasInfo) info);
+            if (!canvasElasticsearchService.deleteCanvas(id, doc.getCanvasName())) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                        "캔버스 저장 문서를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+            }
+            canvasResourceService.deleteCanvasResourceDirectory(id);
+            events.publishEvent(new com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupCoordinator.Deleted(id));
+        } else {
+            runtimeCleanupQueue.enqueue(scope, id);
+            if (workspaceInfoRepository != null) {
+                workspaceInfoRepository.delete((WorkspaceInfo) info);
+            }
+            if (!canvasElasticsearchService.deleteDocument(scope, id, doc.getCanvasName())) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR,
+                        "워크스페이스 저장 문서를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.");
+            }
+            canvasResourceService.deleteResourceDirectory(scope, id);
+            events.publishEvent(new com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupCoordinator.DeletedSpace(scope, id));
         }
-
-        // 비정형 리소스 디렉터리 정리
-        canvasResourceService.deleteCanvasResourceDirectory(canvasId);
-
-        events.publishEvent(new com.endpoint.frelog.domain.canvas.runtime.RuntimeCleanupCoordinator.Deleted(canvasId));
-        log.info("캔버스 #{} 삭제 완료; VM 정리는 커밋 후 수행", canvasId);
+        log.info("{} #{} 삭제 완료; VM 정리는 커밋 후 수행", scope.wireName(), id);
     }
 
-    // =========================================================================
-    // 5. Access API
-    // =========================================================================
-
-    /**
-     * 5. Access API:
-     * - 특정 캔버스 아이디에 대한 접속 API
-     * - 로그인한 사용자만 허용
-     * - 실제 참여 권한은 C++ WebSocket이 캐시/세션 예약 전에 다시 확인
-     * - is_cached가 true: 해당 테이블의 redis, server 정보 반환
-     * - is_cached가 false: redis 및 server 정보 테이블에서 is_activated가 true인 행에 대해서만 로드 밸런싱 수행 후 canvas_info 업데이트 및 is_cached=true 설정
-     * - C++ WebSocket이 사용할 JWT와 접속 대상 정보를 발급
-     * - user 테이블의 is_accessed, server_ip, server_port 갱신
-     * - 로드 밸런싱된 C++ 서버의 아이피와 포트만 반환
-     */
     @Transactional
     public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest, CustomUserDetails currentUser) {
         return accessCanvas(canvasId, httpRequest, currentUser, null);
@@ -465,39 +547,46 @@ public class CanvasService {
     public CanvasUpdateDtos.AccessResponse accessCanvas(Integer canvasId, jakarta.servlet.http.HttpServletRequest httpRequest,
                                                          CustomUserDetails currentUser, String suppliedPassword,
                                                          String suppliedPasswordToken) {
+        return access(DocumentScope.CANVAS, canvasId, httpRequest, currentUser, suppliedPassword, suppliedPasswordToken);
+    }
+
+    @Transactional
+    public CanvasUpdateDtos.AccessResponse access(DocumentScope scope, Integer id, jakarta.servlet.http.HttpServletRequest httpRequest,
+                                                    CustomUserDetails currentUser, String suppliedPassword,
+                                                    String suppliedPasswordToken) {
         if (currentUser == null || currentUser.getUserId() == null) {
             throw new CustomException(ErrorCode.UNAUTHORIZED, "로그인이 필요한 요청입니다.");
         }
 
-        // Lock the allocation row before choosing Elasticsearch or the live
-        // Redis document. A settings change must not race a cache handoff.
-        CanvasInfo canvasInfo = getCanvasInfoWithLockOrThrow(canvasId);
+        // Lock the allocation row before choosing Elasticsearch or the live Redis document.
+        SpaceInfo spaceInfo = getSpaceInfoWithLockOrThrow(scope, id);
 
-        // Connection presence belongs to Phoenix; C++ only owns canvas data.
-        boolean cachedCanvas = Boolean.TRUE.equals(canvasInfo.getIsCached());
-        CanvasDocument doc = cachedCanvas ? redisDocumentReader.read(canvasInfo) : getCanvasDocumentOrThrow(canvasId);
-        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.CANVAS_NOT_FOUND);
+        boolean cached = Boolean.TRUE.equals(spaceInfo.getIsCached());
+        CanvasDocument doc = cached ? readCachedDocument(scope, spaceInfo, null) : getDocumentOrThrow(scope, id);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(scope.notFoundError());
 
         String storedPassword = doc.getCanvasPasswordHash();
         long settingsRevision = doc.getSettingsRevision() == null ? 0L : doc.getSettingsRevision();
         boolean passwordProtected = "public".equals(doc.getVisibility()) && storedPassword != null && !storedPassword.isBlank();
-        boolean validPasswordToken = passwordProtected && jwtTokenProvider.validateCanvasPasswordGrant(
-                suppliedPasswordToken, currentUser.getUserId(), canvasId, doc.getPasswordRevision());
+        boolean validPasswordToken = passwordProtected && (scope == DocumentScope.CANVAS
+                ? jwtTokenProvider.validateCanvasPasswordGrant(
+                        suppliedPasswordToken, currentUser.getUserId(), id, doc.getPasswordRevision())
+                : jwtTokenProvider.validatePasswordGrant(
+                        scope, suppliedPasswordToken, currentUser.getUserId(), id, doc.getPasswordRevision()));
         if (passwordProtected && !validPasswordToken) {
             if (suppliedPassword == null || suppliedPassword.isBlank()) {
-                throw new CustomException(ErrorCode.CANVAS_PASSWORD_REQUIRED);
+                throw new CustomException(scope.passwordRequiredError());
             }
             boolean matches = CanvasPasswords.matches(suppliedPassword, storedPassword);
-            if (!matches) throw new CustomException(ErrorCode.CANVAS_PASSWORD_INVALID);
+            if (!matches) throw new CustomException(scope.passwordInvalidError());
         }
 
-        // 2. MS SQL canvas_info 확인 (동시 삭제/할당 방지를 위한 비관적 락 사용)
         String serverIp = "none";
         String wsPort = "none";
         Integer serverId = null;
 
-        ServerInfo assignedServer = canvasInfo.getCppServer();
-        boolean assignedServerAvailable = Boolean.TRUE.equals(canvasInfo.getIsCached())
+        ServerInfo assignedServer = spaceInfo.getCppServer();
+        boolean assignedServerAvailable = Boolean.TRUE.equals(spaceInfo.getIsCached())
                 && assignedServer != null
                 && Boolean.TRUE.equals(assignedServer.getIsActivated())
                 && assignedServer.getLastHeartbeatAt() != null
@@ -505,32 +594,27 @@ public class CanvasService {
 
         if (!assignedServerAvailable) {
             if (assignedServer != null) {
-                log.warn("캔버스 #{}의 기존 C++ 서버 #{} heartbeat가 만료되었거나 비활성 상태라 할당을 해제합니다.",
-                        canvasId, assignedServer.getServerId());
-                // Redis 캐시는 유지하여 새 C++ 서버가 최신 상태를 인계받게 한다.
-                canvasInfo.setCppServer(null);
-                canvasInfoRepository.save(canvasInfo);
+                log.warn("{} #{}의 기존 C++ 서버 #{} heartbeat가 만료되었거나 비활성 상태라 할당을 해제합니다.",
+                        scope.wireName(), id, assignedServer.getServerId());
+                spaceInfo.setCppServer(null);
+                saveSpaceInfo(scope, spaceInfo);
             }
             AllocateServerResponse serverAlloc = loadBalancerService.allocateServer();
             ServerInfo sInfo = serverInfoRepository.findByServerIpAndServerPort(serverAlloc.serverIp(), serverAlloc.serverPort()).orElse(null);
-            
+
             if (sInfo != null) {
                 serverIp = sInfo.getServerIp();
                 wsPort = sInfo.getWsPort();
                 serverId = sInfo.getServerId();
             }
-            log.info("캔버스 #{} 신규 접속 요청: 클라이언트에게 접속할 C++ 서버 안내 완료 [Server={}:{}] (실제 캐시 할당은 웹소켓 연결 시 처리됨)",
-                    canvasId, serverIp, wsPort);
+            log.info("{} #{} 신규 접속 요청: 클라이언트에게 접속할 C++ 서버 안내 완료 [Server={}:{}]",
+                    scope.wireName(), id, serverIp, wsPort);
         } else {
             serverIp = assignedServer.getServerIp();
             wsPort = assignedServer.getWsPort();
             serverId = assignedServer.getServerId();
         }
 
-        // The C++ WebSocket repeats the cross-canvas check when it reserves the
-        // session, so this API check gives callers an early, readable failure.
-
-        // 3. C++ 실시간 서버 전용 JWT (해시 및 tagNumber 포함) 발급
         String serverHash = "none";
         if (!"none".equals(serverIp) && !"none".equals(wsPort)) {
             try {
@@ -542,49 +626,115 @@ public class CanvasService {
                 log.error("Failed to generate server hash", e);
             }
         }
-        
+
         String canvasPasswordToken = passwordProtected
                 ? validPasswordToken
                     ? suppliedPasswordToken
-                    : jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), canvasId, doc.getPasswordRevision())
+                    : (scope == DocumentScope.CANVAS
+                        ? jwtTokenProvider.createCanvasPasswordGrant(currentUser.getUserId(), id, doc.getPasswordRevision())
+                        : jwtTokenProvider.createPasswordGrant(scope, currentUser.getUserId(), id, doc.getPasswordRevision()))
                 : null;
-        boolean bot = com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(currentUser.getUser());
-        long canvasAccessLifetimeMs = passwordProtected
-                ? jwtTokenProvider.getCanvasPasswordGrantRemainingMs(canvasPasswordToken)
+        boolean bot = scope == DocumentScope.CANVAS
+                && com.endpoint.frelog.domain.canvas.bot.CanvasBotService.isBot(currentUser.getUser());
+        long lifetimeMs = passwordProtected
+                ? (scope == DocumentScope.CANVAS
+                    ? jwtTokenProvider.getCanvasPasswordGrantRemainingMs(canvasPasswordToken)
+                    : jwtTokenProvider.getPasswordGrantRemainingMs(scope, canvasPasswordToken))
                 : 0L;
         if (bot) {
-            canvasAccessLifetimeMs = canvasAccessLifetimeMs > 0
-                    ? Math.min(canvasAccessLifetimeMs, 60_000L)
+            lifetimeMs = lifetimeMs > 0
+                    ? Math.min(lifetimeMs, 60_000L)
                     : 60_000L;
         }
-        String canvasAccessToken = canvasAccessLifetimeMs > 0
-                ? jwtTokenProvider.createCanvasAccessToken(
-                    bot ? currentUser.getNickname() : currentUser.getUser().getNickname(),
-                    currentUser.getUser().getTagNumber(), canvasId, httpRequest.getRemoteAddr(),
-                    serverHash, settingsRevision, canvasAccessLifetimeMs)
-                : jwtTokenProvider.createCanvasAccessToken(
-                    currentUser.getUser().getNickname(), currentUser.getUser().getTagNumber(),
-                    canvasId, httpRequest.getRemoteAddr(), serverHash, settingsRevision);
+        String nickname = bot ? currentUser.getNickname() : currentUser.getUser().getNickname();
+        String accessToken;
+        if (scope == DocumentScope.CANVAS) {
+            accessToken = lifetimeMs > 0
+                    ? jwtTokenProvider.createCanvasAccessToken(
+                        nickname, currentUser.getUser().getTagNumber(), id,
+                        httpRequest.getRemoteAddr(), serverHash, settingsRevision, lifetimeMs)
+                    : jwtTokenProvider.createCanvasAccessToken(
+                        nickname, currentUser.getUser().getTagNumber(), id,
+                        httpRequest.getRemoteAddr(), serverHash, settingsRevision);
+        } else {
+            accessToken = lifetimeMs > 0
+                    ? jwtTokenProvider.createAccessToken(
+                        scope, nickname, currentUser.getUser().getTagNumber(), id,
+                        httpRequest.getRemoteAddr(), serverHash, settingsRevision, lifetimeMs)
+                    : jwtTokenProvider.createWorkspaceAccessToken(
+                        nickname, currentUser.getUser().getTagNumber(), id,
+                        httpRequest.getRemoteAddr(), serverHash, settingsRevision);
+        }
 
-        // 4. C++ 실시간 서버의 ID, Port 및 Access Token 반환
-        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, canvasAccessToken, canvasPasswordToken);
+        return new CanvasUpdateDtos.AccessResponse(serverId, wsPort, accessToken, canvasPasswordToken);
     }
 
-    // =========================================================================
-    // 유틸리티 및 권한 검증 메서드
-    // =========================================================================
+    private SpaceInfo createSpaceInfo(DocumentScope scope) {
+        if (scope == DocumentScope.WORKSPACE) {
+            if (workspaceInfoRepository == null) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "워크스페이스 저장소가 초기화되지 않았습니다.");
+            }
+            return workspaceInfoRepository.save(new WorkspaceInfo());
+        }
+        return canvasInfoRepository.save(new CanvasInfo());
+    }
+
+    private Optional<? extends SpaceInfo> findSpaceById(DocumentScope scope, Integer id) {
+        if (scope == DocumentScope.WORKSPACE) {
+            return workspaceInfoRepository == null ? Optional.empty() : workspaceInfoRepository.findById(id);
+        }
+        return canvasInfoRepository.findById(id);
+    }
+
+    private void saveSpaceInfo(DocumentScope scope, SpaceInfo info) {
+        if (scope == DocumentScope.WORKSPACE) {
+            workspaceInfoRepository.save((WorkspaceInfo) info);
+        } else {
+            canvasInfoRepository.save((CanvasInfo) info);
+        }
+    }
+
+    private CanvasDocument readCachedDocument(DocumentScope scope, SpaceInfo info, String itemId) {
+        if (scope == DocumentScope.CANVAS) {
+            CanvasInfo canvasInfo = (CanvasInfo) info;
+            return itemId == null ? redisDocumentReader.read(canvasInfo) : redisDocumentReader.read(canvasInfo, itemId);
+        }
+        return itemId == null ? redisDocumentReader.read(scope, info) : redisDocumentReader.read(scope, info, itemId);
+    }
+
+    private void patchFields(DocumentScope scope, Integer id, Map<String, Object> fields) {
+        if (scope == DocumentScope.CANVAS) {
+            canvasElasticsearchService.patchCanvasFields(id, fields);
+        } else {
+            canvasElasticsearchService.patchFields(scope, id, fields);
+        }
+    }
 
     private CanvasDocument getCanvasDocumentOrThrow(Integer canvasId) {
-        return canvasElasticsearchService.getCanvasDocumentById(canvasId)
-                .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스를 찾을 수 없습니다: " + canvasId));
+        return getDocumentOrThrow(DocumentScope.CANVAS, canvasId);
+    }
+
+    private CanvasDocument getDocumentOrThrow(DocumentScope scope, Integer id) {
+        return (scope == DocumentScope.CANVAS
+                ? canvasElasticsearchService.getCanvasDocumentById(id)
+                : canvasElasticsearchService.getDocumentById(scope, id))
+                .orElseThrow(() -> new CustomException(scope.notFoundError(),
+                        scope.wireName() + "을(를) 찾을 수 없습니다: " + id));
     }
 
     private CanvasDocument migrateLegacyCanvasPassword(CanvasDocument doc) {
+        return migrateLegacyPassword(DocumentScope.CANVAS, doc);
+    }
+
+    private CanvasDocument migrateLegacyPassword(DocumentScope scope, CanvasDocument doc) {
         String password = doc.getCanvasPasswordHash();
         if (password != null && !password.isBlank() && !CanvasPasswords.isHash(password)) {
             doc.setCanvasPasswordHash(CanvasPasswords.hashForStorage(password));
-            if (!canvasElasticsearchService.saveCanvas(doc)) {
-                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "기존 캔버스 비밀번호를 안전하게 이전하지 못했습니다.");
+            boolean saved = scope == DocumentScope.CANVAS
+                    ? canvasElasticsearchService.saveCanvas(doc)
+                    : canvasElasticsearchService.saveDocument(scope, doc);
+            if (!saved) {
+                throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "기존 비밀번호를 안전하게 이전하지 못했습니다.");
             }
         }
         return doc;
@@ -593,6 +743,16 @@ public class CanvasService {
     private CanvasInfo getCanvasInfoWithLockOrThrow(Integer canvasId) {
         return canvasInfoRepository.findByIdWithPessimisticLock(canvasId)
                 .orElseThrow(() -> new CustomException(ErrorCode.CANVAS_NOT_FOUND, "캔버스 메타데이터를 찾을 수 없습니다: " + canvasId));
+    }
+
+    private SpaceInfo getSpaceInfoWithLockOrThrow(DocumentScope scope, Integer id) {
+        if (scope == DocumentScope.WORKSPACE) {
+            Optional<WorkspaceInfo> found = workspaceInfoRepository == null
+                    ? Optional.empty()
+                    : workspaceInfoRepository.findByIdWithPessimisticLock(id);
+            return found.orElseThrow(() -> new CustomException(ErrorCode.WORKSPACE_NOT_FOUND, "워크스페이스 메타데이터를 찾을 수 없습니다: " + id));
+        }
+        return getCanvasInfoWithLockOrThrow(id);
     }
 
     private void validateCanvasAdminGroupOrSystemAdmin(CanvasDocument doc, CustomUserDetails currentUser) {

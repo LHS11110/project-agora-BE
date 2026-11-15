@@ -97,6 +97,7 @@ services:
       ES_SCHEME: https
       ES_CA_CERT: /run/certs/elasticsearch-ca.crt
       ES_INDEX: ${ES_INDEX:-canvas}
+      ES_IRADE_WORKSPACE_INDEX: ${ES_IRADE_WORKSPACE_INDEX:-workspace}
       ES_SEARCH_INDEX: ${ES_SEARCH_INDEX:-canvas-search}
       ES_SEMANTIC_SEARCH_ENABLED: ${ES_SEMANTIC_SEARCH_ENABLED:-true}
       SEARCH_EMBEDDING_URL: ${SEARCH_EMBEDDING_URL:-https://agora-nginx:8444/internal/search/embedding}
@@ -165,6 +166,35 @@ services:
         max-size: 20m
         max-file: "5"
 
+  agent:
+    image: agora-agent:local
+    build:
+      context: ./agent
+    container_name: agora-agent
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,uid=10001,gid=10001
+    env_file:
+      - path: ./agent/.env
+        required: false
+    environment:
+      AGENT_SOCKET: /run/agora-agent/agent.sock
+    volumes:
+      - agent-socket:/run/agora-agent
+    networks: [agent-egress]
+    mem_limit: 512m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,json;s=socket.socket(socket.AF_UNIX);s.settimeout(3);s.connect('/run/agora-agent/agent.sock');s.sendall(b'{\"operation\":\"status\"}'+bytes([10]));assert json.loads(s.recv(4096))['ready']"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   cpp:
     image: agora-cpp:local
     build:
@@ -195,6 +225,7 @@ services:
       CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
       CPP_CANVAS_LRU_ITEMS_PER_CANVAS: ${CPP_CANVAS_LRU_ITEMS_PER_CANVAS:-64}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      AGORA_AGENT_SOCKET: /run/agora-agent/agent.sock
       AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}
       DB_PORT: ${DOCKER_DB_PORT:-1433}
@@ -208,6 +239,7 @@ services:
       ES_SCHEME: https
       ES_CA_CERT: /run/certs/elasticsearch-ca.crt
       ES_INDEX: ${ES_INDEX:-canvas}
+      ES_IRADE_WORKSPACE_INDEX: ${ES_IRADE_WORKSPACE_INDEX:-workspace}
       ES_USER_NAME: ${ES_USER_NAME:-agora_user}
       ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
       ES_LOG_INDEX: ${ES_LOG_INDEX:-agora-logs}
@@ -228,6 +260,7 @@ services:
       REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
       DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
     volumes:
+      - agent-socket:/run/agora-agent:ro
       - cpp-tls:/run/tls:ro
       - type: bind
         source: /run/agora-runtime
@@ -266,6 +299,8 @@ services:
         condition: service_completed_successfully
       spring:
         condition: service_healthy
+      agent:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "https://localhost:8000/health"]
       interval: 15s
@@ -279,6 +314,9 @@ services:
         max-file: "5"
 
 networks:
+  agent-egress:
+    name: agora-agent-egress
+    driver: bridge
   # Spring needs outbound HTTPS for the OIDC token, JWKS and userinfo endpoints.
   # No ports are published; DB/C++ stay on internal service networks.
   oauth-egress:
@@ -289,6 +327,8 @@ networks:
     name: agora-services
 
 volumes:
+  agent-socket:
+    name: agora-agent-socket
   spring-resources:
     name: agora-backend-spring-resources
 

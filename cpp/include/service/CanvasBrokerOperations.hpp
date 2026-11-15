@@ -106,6 +106,7 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    Json translated={{"ids",ids},{"dx",dx},{"dy",dy}};if(operation.contains("start")){translated["start"]=operation["start"];translated["end"]=operation["end"];}result.translations.push_back(translated);
   }else{
    result.only_translations=false;const auto id=operation.value("id","");auto old=get(id);
+   if(operation.contains("expected_revision")&&(!operation["expected_revision"].is_number_integer()||old.is_null()||operation["expected_revision"]!=result.expected[id]))throw std::invalid_argument("CANVAS_WRITE_CONFLICT");
    if(action=="delete"){
     if(!old.is_null()&&old.value("kind","")=="project"&&old.value("projectType","")=="board"&&!admin)throw std::invalid_argument("PROJECT_MANAGE_DENIED");
     if(!old.is_null()&&!queryCanAccess(old,groups,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");
@@ -170,7 +171,13 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    const bool execution_only=!operation.contains("notebook_structure")&&!operation.contains("text_edits")&&!operation.contains("notebook_edits")&&(output_only||state_only||notebook_only||notebook_cell_result_only||result_delta_only);
    const auto& writers=execution_only&&executable?*executable:groups;
    if(!old.is_null()&&!queryCanAccess(old,writers,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");
-   agora::question::validateRevision(old,item);validate(item);agora::project::authority(old,item,admin);agora::presentation::stamp(old,item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable,execution_only);
+   agora::question::validateRevision(old,item);validate(item);bool project_manager=false;
+   if(item.value("kind","")=="project"){
+    const auto board_id=item.value("projectBoard",std::string());
+    const auto board=item.value("projectType","")=="board"?old:(result.items.contains(board_id)?result.items[board_id]:read(board_id).value_or(Json()));
+    project_manager=board.is_object()&&board.value("kind","")=="project"&&board.value("projectType","")=="board"&&queryCanAccess(board,writers,admin);
+   }
+   agora::project::authority(old,item,admin,project_manager);agora::presentation::stamp(old,item);item=queryUpdatedItem(old,item,writers,admin,memberships?memberships:readable,execution_only);
    const auto kind=item.value("kind","");
    if(!old.is_null()&&(kind=="text"||kind=="note"||kind=="code")&&item.contains("automerge_snapshot")){
     if(old.contains("automerge_snapshot"))item["automerge_snapshot"]=old["automerge_snapshot"];

@@ -59,26 +59,61 @@ std::optional<nlohmann::json> restoreItems(nlohmann::json source, const std::str
         return std::nullopt;
     }
 }
+std::string configuredIndexFor(SpaceScope scope) {
+    if (scope == SpaceScope::Workspace) {
+        auto idx = environmentValue("ES_IRADE_WORKSPACE_INDEX");
+        return idx.empty() ? std::string("workspace") : idx;
+    }
+    return environmentValue("ES_INDEX");
+}
+
+nlohmann::json canonicalizeSpaceFields(nlohmann::json document) {
+    if (!document.is_object()) return document;
+    if (!document.contains("canvas-id") && document.contains("workspace-id")) {
+        document["canvas-id"] = document["workspace-id"];
+    }
+    document.erase("workspace-id");
+    if (!document.contains("canvas-name") && document.contains("workspace-name")) {
+        document["canvas-name"] = document["workspace-name"];
+    }
+    document.erase("workspace-name");
+    return document;
+}
+
+nlohmann::json storageSpaceFields(nlohmann::json document, int id, SpaceScope scope) {
+    if (scope != SpaceScope::Workspace || !document.is_object()) return document;
+    document["workspace-id"] = document.contains("canvas-id") ? document["canvas-id"] : nlohmann::json(id);
+    document.erase("canvas-id");
+    if (document.contains("canvas-name")) {
+        document["workspace-name"] = document["canvas-name"];
+        document.erase("canvas-name");
+    }
+    return document;
+}
+
 std::optional<nlohmann::json> restoreDocument(nlohmann::json source) {
     auto document=restoreItems(std::move(source));
     if (document) document=restoreItems(std::move(*document),"__broker_sync","broker-sync-b64");
-    return document?restoreItems(std::move(*document),"mention-states","mention-states-b64"):std::nullopt;
+    if (document) document=restoreItems(std::move(*document),"agent-sessions","agent-sessions-b64");
+    document = document ? restoreItems(std::move(*document),"mention-states","mention-states-b64") : std::nullopt;
+    if (document) document = canonicalizeSpaceFields(std::move(*document));
+    return document;
 }
 
 }
 CanvasSnapshotMemory::CanvasSnapshotMemory(const std::string& host, int port,
-        const std::string& user, const std::string& password, const std::string& index)
+        const std::string& user, const std::string& password, const std::string& index, SpaceScope scope)
     : CanvasSnapshotMemory(std::make_unique<ElasticsearchMemory>(host, port, user, password),
-                           index.empty() ? environmentValue("ES_INDEX") : index) {}
-CanvasSnapshotMemory::CanvasSnapshotMemory(std::unique_ptr<JsonDocumentStore> storage, std::string index)
-    : storage_(std::move(storage)), index_(std::move(index)) {
+                           index.empty() ? configuredIndexFor(scope) : index, scope) {}
+CanvasSnapshotMemory::CanvasSnapshotMemory(std::unique_ptr<JsonDocumentStore> storage, std::string index, SpaceScope scope)
+    : storage_(std::move(storage)), index_(std::move(index)), scope_(scope) {
     if (!storage_) throw std::invalid_argument("CanvasSnapshotMemory storage must not be null");
 }
 std::optional<nlohmann::json> CanvasSnapshotMemory::getCanvasDocument(int canvasId) {
     if (index_.empty()) return std::nullopt;
     if (const auto document = storage_->getDocument(index_, std::to_string(canvasId)))
         return restoreDocument(*document);
-    const nlohmann::json query = {{"query", {{"term", {{"canvas-id", canvasId}}}}}, {"size", 1}};
+    const nlohmann::json query = {{"query", {{"term", {{std::string(spaceScopeIdField(scope_)), canvasId}}}}}, {"size", 1}};
     const auto response = storage_->searchDocuments(index_, query);
     if (!response) return std::nullopt;
     try {
@@ -100,6 +135,11 @@ bool CanvasSnapshotMemory::saveCanvasDocument(int canvasId, const nlohmann::json
     }
     // Client IDs are arbitrary keys: encode the receipt ledger to avoid an
     // Elasticsearch mapping field per browser session and preserve retry state.
+    if(safe_doc.contains("agent-sessions")){
+        if(!safe_doc["agent-sessions"].is_object())return false;
+        safe_doc["agent-sessions-b64"]=encodeItems(safe_doc["agent-sessions"]);
+        safe_doc.erase("agent-sessions");
+    }
     if (safe_doc.contains("__broker_sync")) {
         if (!safe_doc["__broker_sync"].is_object()) return false;
         safe_doc["broker-sync-b64"] = encodeItems(safe_doc["__broker_sync"]);
@@ -125,21 +165,27 @@ bool CanvasSnapshotMemory::saveCanvasDocument(int canvasId, const nlohmann::json
         }
         safe_doc.erase(legacy);
     }
+    safe_doc = storageSpaceFields(std::move(safe_doc), canvasId, scope_);
     return storage_->putDocument(index_, std::to_string(canvasId), safe_doc);
 }
 bool CanvasSnapshotMemory::patchCanvasFields(int canvasId, const std::map<std::string, nlohmann::json>& fields) {
     if (fields.empty() || index_.empty()) return false;
     nlohmann::json normalized = nlohmann::json::object();
     for (const auto& [field, value] : fields) {
+        std::string target_field = field;
+        if (scope_ == SpaceScope::Workspace) {
+            if (field == "canvas-name") target_field = "workspace-name";
+            else if (field == "canvas-id") target_field = "workspace-id";
+        }
         if (field == "items" && value.is_object()) {
             normalized["items-b64"] = encodeItems(value);
             normalized["items"] = nullptr;
         } else if (field == "canvas-password-hash" && value.is_string()) {
             auto password = normalizeCanvasPassword(value.get<std::string>());
             if (!password) return false;
-            normalized[field] = *password;
+            normalized[target_field] = *password;
         } else {
-            normalized[field] = value;
+            normalized[target_field] = value;
         }
     }
     return storage_->patchDocument(index_, std::to_string(canvasId), normalized);

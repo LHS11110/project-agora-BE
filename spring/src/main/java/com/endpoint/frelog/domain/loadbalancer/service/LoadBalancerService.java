@@ -2,6 +2,8 @@ package com.endpoint.frelog.domain.loadbalancer.service;
 
 import com.endpoint.frelog.domain.canvas.client.CppServerClient;
 import com.endpoint.frelog.domain.canvas.repository.CanvasInfoRepository;
+import com.endpoint.frelog.domain.canvas.repository.WorkspaceInfoRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateRedisResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.AllocateServerResponse;
 import com.endpoint.frelog.domain.loadbalancer.dto.DatabaseAddressResponse;
@@ -41,6 +43,7 @@ public class LoadBalancerService {
     private final ServerInfoRepository serverInfoRepository;
     private final RedisInfoRepository redisInfoRepository;
     private final CanvasInfoRepository canvasInfoRepository;
+    private final WorkspaceInfoRepository workspaceInfoRepository;
     private final CppServerClient cppServerClient;
     private final DatabaseProperties databaseProperties;
 
@@ -50,9 +53,21 @@ public class LoadBalancerService {
             CanvasInfoRepository canvasInfoRepository,
             CppServerClient cppServerClient,
             DatabaseProperties databaseProperties) {
+        this(serverInfoRepository, redisInfoRepository, canvasInfoRepository, null, cppServerClient, databaseProperties);
+    }
+
+    @Autowired
+    public LoadBalancerService(
+            ServerInfoRepository serverInfoRepository,
+            RedisInfoRepository redisInfoRepository,
+            CanvasInfoRepository canvasInfoRepository,
+            WorkspaceInfoRepository workspaceInfoRepository,
+            CppServerClient cppServerClient,
+            DatabaseProperties databaseProperties) {
         this.serverInfoRepository = serverInfoRepository;
         this.redisInfoRepository = redisInfoRepository;
         this.canvasInfoRepository = canvasInfoRepository;
+        this.workspaceInfoRepository = workspaceInfoRepository;
         this.cppServerClient = cppServerClient;
         this.databaseProperties = databaseProperties;
     }
@@ -158,7 +173,26 @@ public class LoadBalancerService {
      */
     public int getRedisCanvasCountInJava(String redisIp, String redisPort) {
         long dbCount = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redisIp, redisPort);
+        if (workspaceInfoRepository != null) {
+            dbCount += workspaceInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPortAndIsCachedTrue(redisIp, redisPort);
+        }
         return (int) dbCount;
+    }
+
+    private boolean isServerInUse(ServerInfo server) {
+        long count = canvasInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort());
+        if (workspaceInfoRepository != null) {
+            count += workspaceInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort());
+        }
+        return count > 0;
+    }
+
+    private boolean isRedisInUse(RedisInfo redis) {
+        long count = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort());
+        if (workspaceInfoRepository != null) {
+            count += workspaceInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort());
+        }
+        return count > 0;
     }
 
     public DatabaseAddressResponse getDatabaseAddress() {
@@ -223,7 +257,7 @@ public class LoadBalancerService {
         ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort()) > 0;
+        boolean inUse = isServerInUse(server);
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -254,7 +288,7 @@ public class LoadBalancerService {
         ServerInfo server = serverInfoRepository.findById(Math.toIntExact(serverId))
                 .orElseThrow(() -> new CustomException(ErrorCode.SERVER_NOT_FOUND, "C++ 서버를 찾을 수 없습니다: " + serverId));
 
-        boolean inUse = canvasInfoRepository.countByCppServer_ServerIpAndCppServer_ServerPort(server.getServerIp(), server.getServerPort()) > 0;
+        boolean inUse = isServerInUse(server);
 
         if (inUse) {
             log.info("C++ 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",
@@ -314,7 +348,7 @@ public class LoadBalancerService {
         RedisInfo redis = redisInfoRepository.findById(Math.toIntExact(redisId))
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort()) > 0;
+        boolean inUse = isRedisInUse(redis);
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 is_activated만 false로 변경하고 다른 필드는 변경하지 않습니다.",
@@ -345,7 +379,7 @@ public class LoadBalancerService {
         RedisInfo redis = redisInfoRepository.findById(Math.toIntExact(redisId))
                 .orElseThrow(() -> new CustomException(ErrorCode.REDIS_NOT_FOUND, "Redis 서버를 찾을 수 없습니다: " + redisId));
 
-        boolean inUse = canvasInfoRepository.countByRedisInfo_RedisIpAndRedisInfo_RedisPort(redis.getRedisIp(), redis.getRedisPort()) > 0;
+        boolean inUse = isRedisInUse(redis);
 
         if (inUse) {
             log.info("Redis 서버 #{}({}:{})가 사용 중이므로 삭제 대신 is_activated=false로 변경합니다.",

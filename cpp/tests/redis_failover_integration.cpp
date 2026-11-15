@@ -247,7 +247,7 @@ public:
         std::lock_guard<std::mutex> lock(document_mutex_);
         const auto found = documents_.find(key);
         if (found == documents_.end()) return std::nullopt;
-        return found->second;
+        return std::optional<nlohmann::json>(found->second);
     }
 
 private:

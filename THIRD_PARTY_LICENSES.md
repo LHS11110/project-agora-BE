@@ -94,3 +94,7 @@ Email verification uses Spring Mail and its Jakarta Mail/Angus runtime dependenc
 ## Passkey verification
 
 [Yubico java-webauthn-server](https://github.com/Yubico/java-webauthn-server) `webauthn-server-core` and `yubico-util` 2.10.1 are used for server-side WebAuthn verification. Their upstream COPYING includes BSD-2-Clause and Google BSD-3-Clause notices; the exact versioned [COPYING](licenses/upstream/yubico-webauthn-2.10.1-COPYING) is included in the application JAR under `META-INF/agora-licenses`. Locked transitive dependencies retain their own licenses.
+
+## Python canvas agent
+
+The `agent` image installs `openai` 2.54.0 (Apache-2.0), `mcp` 1.30.0 (MIT), and `python-dotenv` 1.2.4 (BSD-3-Clause). Package distributions and their dependencies retain their installed `.dist-info` license files in the image; retain these files when redistributing it. No EXAONE model weights are distributed; the configured external API provider's terms apply to API use.

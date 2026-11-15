@@ -29,7 +29,7 @@ void CanvasPersistenceService::drain(const std::shared_ptr<Canvas>& canvas) {
         ElasticsearchBulkLogBuffer::instance().record(
             "canvas_persistence", "canvas_persistence", succeeded ? "INFO" : "ERROR",
             succeeded ? "Canvas event persisted to Redis" : "Canvas event persistence failed",
-            {{"canvas_id", canvas->getCanvasId()}, {"event_type", event_type}, {"ticket", ticket}},
+            {{"scope", std::string(spaceScopeWire(canvas->getScope()))}, {"canvas_id", canvas->getCanvasId()}, {"event_type", event_type}, {"ticket", ticket}},
             succeeded ? "success" : "failure", succeeded ? "" : "REDIS_WRITE_FAILED");
         canvas->endPersistence(ticket, succeeded);
     }

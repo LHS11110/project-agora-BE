@@ -16,6 +16,16 @@ void operations(){
  bool forged=false;multi["permission"].push_back("outsider");try{agora::broker::prepare(Json::array({{{"action","create"},{"id","forged"},{"patch",multi}}}),read,write_roles,false,&read_roles,nullptr,&all_roles);}catch(const std::invalid_argument& e){forged=std::string(e.what())=="ITEM_PERMISSION_DENIED";}AGORA_CHECK(forged);
  auto created=run(Json::array({{{"action","create"},{"id","new"},{"patch",shape}}}));
  AGORA_CHECK(created.items["new"]==shape&&created.expected["new"]==-1);
+ store["box"]["__broker_revision"]=4;
+ auto versioned=run(Json::array({{{"action","patch"},{"id","box"},{"expected_revision",4},{"patch",{{"color","blue"}}}}}));
+ AGORA_CHECK(versioned.items["box"]["color"]=="blue");
+ reject(Json::array({{{"action","patch"},{"id","box"},{"expected_revision",3},{"patch",{{"color","blue"}}}}}));
+ reject(Json::array({{{"action","delete"},{"id","box"},{"expected_revision",3}}}));
+ store["box"].erase("__broker_revision");
+ store["agent-code"]={{"kind","text"},{"renderMode","code"},{"text","old"},{"permission","writers"},{"__broker_revision",4},{"automerge_snapshot","AA=="},{"automerge_changes",Json::array()}};
+ auto source_edit=run(Json::array({{{"action","patch"},{"id","agent-code"},{"expected_revision",4},{"patch",{{"text","new"}}},{"unset",Json::array({"automerge_snapshot","automerge_changes"})}}}));
+ AGORA_CHECK(source_edit.items["agent-code"]["text"]=="new"&&!source_edit.items["agent-code"].contains("automerge_snapshot"));
+ store.erase("agent-code");
  auto lock=run(Json::array({{{"action","patch"},{"id","box"},{"patch",{{"locked",true}}}}}));
  AGORA_CHECK(lock.items["box"]["locked"]==true);
  store["box"]=lock.items["box"];

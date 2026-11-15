@@ -314,64 +314,112 @@ return 'APPLIED'
 }
 
 namespace {
-std::string canvasKey(int id) { return "canvas:" + std::to_string(id); }
+std::string spaceRedisKey(SpaceScope scope, int id) {
+    return (scope == SpaceScope::Workspace ? std::string("workspace:") : std::string("canvas:")) + std::to_string(id);
+}
 std::string fieldPath(const std::string& field) {
     return "$[" + nlohmann::json(field).dump() + "]";
 }
 }
 
-std::optional<std::string> CanvasServiceMemory::loadCanvas(int id) { return memory_->read(canvasKey(id)); }
-bool CanvasServiceMemory::storeCanvas(int id, const nlohmann::json& document) {
-    return memory_->write(canvasKey(id), document);
+std::optional<std::string> CanvasServiceMemory::loadCanvas(int id) { return loadCanvas(SpaceScope::Canvas, id); }
+std::optional<std::string> CanvasServiceMemory::loadCanvas(SpaceScope scope, int id) {
+    return memory_->read(spaceRedisKey(scope, id));
 }
-bool CanvasServiceMemory::flushCanvas(int id) { return memory_->flush(canvasKey(id)); }
-bool CanvasServiceMemory::clearCanvas(int id) {
-    return memory_->erasePattern(canvasKey(id) + ":*") && memory_->erase(canvasKey(id));
+bool CanvasServiceMemory::storeCanvas(int id, const nlohmann::json& document) {
+    return storeCanvas(SpaceScope::Canvas, id, document);
+}
+bool CanvasServiceMemory::storeCanvas(SpaceScope scope, int id, const nlohmann::json& document) {
+    return memory_->write(spaceRedisKey(scope, id), document);
+}
+bool CanvasServiceMemory::flushCanvas(int id) { return flushCanvas(SpaceScope::Canvas, id); }
+bool CanvasServiceMemory::flushCanvas(SpaceScope scope, int id) {
+    return memory_->flush(spaceRedisKey(scope, id));
+}
+bool CanvasServiceMemory::clearCanvas(int id) { return clearCanvas(SpaceScope::Canvas, id); }
+bool CanvasServiceMemory::clearCanvas(SpaceScope scope, int id) {
+    const auto key = spaceRedisKey(scope, id);
+    return memory_->erasePattern(key + ":*") && memory_->erase(key);
 }
 CanvasServiceMemory::CompareSetResult CanvasServiceMemory::removeCanvasGeneration(int id, const std::string& generation) {
-    return deleteIfCacheGenerationMatches(canvasKey(id), generation);
+    return removeCanvasGeneration(SpaceScope::Canvas, id, generation);
+}
+CanvasServiceMemory::CompareSetResult CanvasServiceMemory::removeCanvasGeneration(SpaceScope scope, int id, const std::string& generation) {
+    return deleteIfCacheGenerationMatches(spaceRedisKey(scope, id), generation);
 }
 std::optional<std::string> CanvasServiceMemory::readItem(int id, const std::string& item_id, const std::string& field) {
+    return readItem(SpaceScope::Canvas, id, item_id, field);
+}
+std::optional<std::string> CanvasServiceMemory::readItem(SpaceScope scope, int id, const std::string& item_id, const std::string& field) {
     auto path = canvasItemJsonPath(item_id);
     if (!field.empty()) path += fieldPath(field).substr(1);
-    return memory_->read(canvasKey(id), path);
+    return memory_->read(spaceRedisKey(scope, id), path);
 }
 bool CanvasServiceMemory::storeItem(int id, const std::string& item_id, const nlohmann::json& item) {
-    return memory_->write(canvasKey(id), item, canvasItemJsonPath(item_id));
+    return storeItem(SpaceScope::Canvas, id, item_id, item);
+}
+bool CanvasServiceMemory::storeItem(SpaceScope scope, int id, const std::string& item_id, const nlohmann::json& item) {
+    return memory_->write(spaceRedisKey(scope, id), item, canvasItemJsonPath(item_id));
 }
 bool CanvasServiceMemory::removeItem(int id, const std::string& item_id) {
-    return memory_->erase(canvasKey(id), canvasItemJsonPath(item_id));
+    return removeItem(SpaceScope::Canvas, id, item_id);
+}
+bool CanvasServiceMemory::removeItem(SpaceScope scope, int id, const std::string& item_id) {
+    return memory_->erase(spaceRedisKey(scope, id), canvasItemJsonPath(item_id));
 }
 bool CanvasServiceMemory::replaceItems(int id, const nlohmann::json& items) {
-    return memory_->write(canvasKey(id), items, "$.items");
+    return replaceItems(SpaceScope::Canvas, id, items);
+}
+bool CanvasServiceMemory::replaceItems(SpaceScope scope, int id, const nlohmann::json& items) {
+    return memory_->write(spaceRedisKey(scope, id), items, "$.items");
 }
 bool CanvasServiceMemory::appendMessage(int id, const std::string& room, std::uint64_t sequence, const nlohmann::json& message) {
-    return appendChatMessage(canvasKey(id), room, sequence, message);
+    return appendMessage(SpaceScope::Canvas, id, room, sequence, message);
+}
+bool CanvasServiceMemory::appendMessage(SpaceScope scope, int id, const std::string& room, std::uint64_t sequence, const nlohmann::json& message) {
+    return appendChatMessage(spaceRedisKey(scope, id), room, sequence, message);
 }
 std::optional<std::string> CanvasServiceMemory::readChatPage(int id, const std::string& room,
         const std::optional<std::uint64_t>& from, const std::optional<std::uint64_t>& to, std::uint64_t limit) {
-    return getChatHistoryPage(canvasKey(id), room, from, to, limit);
+    return readChatPage(SpaceScope::Canvas, id, room, from, to, limit);
+}
+std::optional<std::string> CanvasServiceMemory::readChatPage(SpaceScope scope, int id, const std::string& room,
+        const std::optional<std::uint64_t>& from, const std::optional<std::uint64_t>& to, std::uint64_t limit) {
+    return getChatHistoryPage(spaceRedisKey(scope, id), room, from, to, limit);
 }
 CanvasServiceMemory::CompareSetResult CanvasServiceMemory::compareAndSetFields(int id, long long revision,
+        const std::vector<std::pair<std::string, nlohmann::json>>& fields) {
+    return compareAndSetFields(SpaceScope::Canvas, id, revision, fields);
+}
+CanvasServiceMemory::CompareSetResult CanvasServiceMemory::compareAndSetFields(SpaceScope scope, int id, long long revision,
         const std::vector<std::pair<std::string, nlohmann::json>>& fields) {
     std::vector<std::pair<std::string, nlohmann::json>> paths;
     paths.reserve(fields.size());
     for (const auto& [name, value] : fields) paths.emplace_back(fieldPath(name), value);
-    return compareAndSetJsonPaths(canvasKey(id), revision, paths);
+    return compareAndSetJsonPaths(spaceRedisKey(scope, id), revision, paths);
 }
 
 bool CanvasServiceMemory::patchItemField(int id, const std::string& item_id, const std::string& field,
                                        const nlohmann::json& value) {
-    return memory_->write(canvasKey(id), value, canvasItemJsonPath(item_id) + fieldPath(field).substr(1));
+    return patchItemField(SpaceScope::Canvas, id, item_id, field, value);
 }
-bool CanvasServiceMemory::clearItems(int id) {
-    return memory_->erase(canvasKey(id), "$.items");
+bool CanvasServiceMemory::patchItemField(SpaceScope scope, int id, const std::string& item_id, const std::string& field,
+                                       const nlohmann::json& value) {
+    return memory_->write(spaceRedisKey(scope, id), value, canvasItemJsonPath(item_id) + fieldPath(field).substr(1));
+}
+bool CanvasServiceMemory::clearItems(int id) { return clearItems(SpaceScope::Canvas, id); }
+bool CanvasServiceMemory::clearItems(SpaceScope scope, int id) {
+    return memory_->erase(spaceRedisKey(scope, id), "$.items");
 }
 std::optional<nlohmann::json> CanvasServiceMemory::initializeCanvas(int id, CanvasSnapshotMemory& snapshots,
         bool already_cached, const std::string& generation) {
+    return initializeCanvas(SpaceScope::Canvas, id, snapshots, already_cached, generation);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::initializeCanvas(SpaceScope scope, int id, CanvasSnapshotMemory& snapshots,
+        bool already_cached, const std::string& generation) {
     std::optional<nlohmann::json> document;
     if (already_cached) {
-        auto serialized = loadCanvas(id);
+        auto serialized = loadCanvas(scope, id);
         if (!serialized) return {};
         try { document = nlohmann::json::parse(*serialized); } catch (...) { return {}; }
     } else document = snapshots.getCanvasDocument(id);
@@ -390,17 +438,21 @@ std::optional<nlohmann::json> CanvasServiceMemory::initializeCanvas(int id, Canv
     }
     if (migrated && !snapshots.saveCanvasDocument(id, *document)) return {};
     (*document)["_cache_generation"] = generation;
-    if (!storeCanvas(id, *document)) return {};
+    if (!storeCanvas(scope, id, *document)) return {};
     return document;
 }
 
 std::optional<nlohmann::json> CanvasServiceMemory::brokerSyncState(int id,const std::string& client) {
-    const auto revision=memory_->read(canvasKey(id), "$[\"__broker_sync\"][\"revision\"]");
+    return brokerSyncState(SpaceScope::Canvas, id, client);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::brokerSyncState(SpaceScope scope, int id,const std::string& client) {
+    const auto key = spaceRedisKey(scope, id);
+    const auto revision=memory_->read(key, "$[\"__broker_sync\"][\"revision\"]");
     if(!revision)return std::nullopt;
     const auto values=nlohmann::json::parse(*revision);
     nlohmann::json result{{"revision",values.empty()?0:values[0].get<long long>()},{"receipt",nullptr}};
     if(!client.empty()){
-        const auto raw=memory_->read(canvasKey(id),"$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]");
+        const auto raw=memory_->read(key,"$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]");
         if(!raw)return std::nullopt;
         const auto entries=nlohmann::json::parse(*raw);if(!entries.empty())result["receipt"]=entries[0];
     }
@@ -409,6 +461,12 @@ std::optional<nlohmann::json> CanvasServiceMemory::brokerSyncState(int id,const 
 std::optional<nlohmann::json> CanvasServiceMemory::applyBrokerBatch(int id,const std::string& client,
     long long count,const std::string& request,const std::string& digest,
     const nlohmann::json& items,const nlohmann::json& expected) {
+    return applyBrokerBatch(SpaceScope::Canvas, id, client, count, request, digest, items, expected);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::applyBrokerBatch(SpaceScope scope, int id,const std::string& client,
+    long long count,const std::string& request,const std::string& digest,
+    const nlohmann::json& items,const nlohmann::json& expected,const nlohmann::json& activity) {
+    const auto key = spaceRedisKey(scope, id);
     static const std::string script=R"LUA(local key=KEYS[1]
 if redis.call('EXISTS',key)==0 then return cjson.encode({error='CANVAS_NOT_READY'}) end
 local function read(path)
@@ -451,7 +509,17 @@ for id,item in pairs(changes) do
  end
 end
 redis.call('JSON.SET',key,meta..'["revision"]',tostring(revision))
-redis.call('JSON.SET',key,receiptPath,cjson.encode({count=count,revision=revision,digest=ARGV[4],request_id=ARGV[3]}))
+local receipt={count=count,revision=revision,digest=ARGV[4],request_id=ARGV[3]}
+local totals=previous and previous.activity or {}
+local activity=ARGV[7] and cjson.decode(ARGV[7]) or {}
+if activity.day and ((activity.created or 0)+(activity.updated or 0)+(activity.deleted or 0))>0 then
+ local day=activity.day
+ local values=totals[day] or {created=0,updated=0,deleted=0}
+ for _,kind in ipairs({'created','updated','deleted'}) do values[kind]=values[kind]+(activity[kind] or 0) end
+ totals[day]=values
+end
+receipt.activity=totals
+redis.call('JSON.SET',key,receiptPath,cjson.encode(receipt))
 return cjson.encode({duplicate=false,revision=revision,server_revision=revision,accepted_count=count})
 )LUA";
     const auto path="$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]";
@@ -461,17 +529,21 @@ return cjson.encode({duplicate=false,revision=revision,server_revision=revision,
     // which would corrupt CRDT histories, empty tables, and drawing arrays.
     nlohmann::json encoded=nlohmann::json::object();
     for(const auto& entry:items.items())encoded[entry.key()]=entry.value().is_null()?nlohmann::json():nlohmann::json(entry.value().dump());
-    const auto response=memory_->executeAtomic(canvasKey(id),{"EVAL",script,"1",canvasKey(id),path,
-        std::to_string(count),request,digest,encoded.dump(),expected.dump()},changed);
+    const auto response=memory_->executeAtomic(key,{"EVAL",script,"1",key,path,
+        std::to_string(count),request,digest,encoded.dump(),expected.dump(),activity.dump()},changed);
     if(!response)return std::nullopt;
     try{return nlohmann::json::parse(*response);}catch(...){return std::nullopt;}
 }
 
 std::optional<nlohmann::json> CanvasServiceMemory::readBrokerItems(int id,const std::vector<std::string>& ids) {
+    return readBrokerItems(SpaceScope::Canvas, id, ids);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::readBrokerItems(SpaceScope scope, int id,const std::vector<std::string>& ids) {
     nlohmann::json items=nlohmann::json::object();if(ids.empty())return items;
-    std::vector<std::string> command={"JSON.GET",canvasKey(id)};
+    const auto key = spaceRedisKey(scope, id);
+    std::vector<std::string> command={"JSON.GET",key};
     for(const auto& item:ids)command.push_back(canvasItemJsonPath(item));
-    const auto raw=memory_->executeAtomic(canvasKey(id),command,{});if(!raw)return std::nullopt;
+    const auto raw=memory_->executeAtomic(key,command,{});if(!raw)return std::nullopt;
     try{
         const auto result=nlohmann::json::parse(*raw);
         for(std::size_t i=0;i<ids.size();++i){
@@ -485,8 +557,12 @@ std::optional<nlohmann::json> CanvasServiceMemory::readBrokerItems(int id,const 
 
 bool CanvasServiceMemory::storeMentionState(int id, long long user_id, const std::string& mention_id,
         const nlohmann::json& notification, bool unread) {
+    return storeMentionState(SpaceScope::Canvas, id, user_id, mention_id, notification, unread);
+}
+bool CanvasServiceMemory::storeMentionState(SpaceScope scope, int id, long long user_id, const std::string& mention_id,
+        const nlohmann::json& notification, bool unread) {
     if (user_id <= 0 || mention_id.empty() || mention_id.size() > 256 || !notification.is_object()) return false;
-    const auto key = canvasKey(id);
+    const auto key = spaceRedisKey(scope, id);
     const std::string user_path = "$[\"mention-states\"][" + nlohmann::json(std::to_string(user_id)).dump() + "]";
     const std::string path = user_path + "[" + nlohmann::json(mention_id).dump() + "]";
     static const std::string script = R"LUA(
@@ -520,9 +596,12 @@ return 'OK'
 }
 
 std::optional<nlohmann::json> CanvasServiceMemory::readMentionStates(int id, long long user_id) {
+    return readMentionStates(SpaceScope::Canvas, id, user_id);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::readMentionStates(SpaceScope scope, int id, long long user_id) {
     if (user_id <= 0) return std::nullopt;
     const auto path = "$[\"mention-states\"][" + nlohmann::json(std::to_string(user_id)).dump() + "]";
-    const auto raw = memory_->read(canvasKey(id), path);
+    const auto raw = memory_->read(spaceRedisKey(scope, id), path);
     if (!raw) return std::nullopt;
     try {
         const auto matches = nlohmann::json::parse(*raw);
@@ -533,7 +612,11 @@ std::optional<nlohmann::json> CanvasServiceMemory::readMentionStates(int id, lon
 
 std::optional<nlohmann::json> CanvasServiceMemory::commitChatMessage(int id, const std::string& room_id,
         const nlohmann::json& permission, const nlohmann::json& message) {
-    const auto key = canvasKey(id), path = canvasItemJsonPath(room_id);
+    return commitChatMessage(SpaceScope::Canvas, id, room_id, permission, message);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::commitChatMessage(SpaceScope scope, int id, const std::string& room_id,
+        const nlohmann::json& permission, const nlohmann::json& message) {
+    const auto key = spaceRedisKey(scope, id), path = canvasItemJsonPath(room_id);
     const auto receipt = path + "[\"requests\"][" + nlohmann::json(std::to_string(message.value("sender_user_id", 0LL)) + ":" + message.value("request_id", "")).dump() + "]";
     nlohmann::json room{{"type", "chat_room"}, {"permission", permission}, {"data", nlohmann::json::array()}, {"requests", nlohmann::json::object()}, {"next_sequence", 1}};
     static const std::string script = R"LUA(
@@ -581,4 +664,16 @@ return ARGV[4]
     if (!result) return std::nullopt;
     try { auto parsed = nlohmann::json::parse(*result); if (!parsed.is_object()) return std::nullopt; return std::optional<nlohmann::json>(std::in_place, parsed); }
     catch (...) { return std::nullopt; }
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::brokerActivityClients(int id){
+ const auto raw=memory_->read(spaceRedisKey(SpaceScope::Canvas,id),"$[\"__broker_sync\"][\"clients\"]");if(!raw)return std::nullopt;
+ try{const auto values=nlohmann::json::parse(*raw);if(values.empty())return nlohmann::json::object();return values[0];}catch(...){return std::nullopt;}
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::agentItemIds(int id,int offset,int limit){
+ const auto key=spaceRedisKey(SpaceScope::Canvas,id);
+ const auto script=std::string("local keys=redis.call('JSON.OBJKEYS',KEYS[1],'$.items');local ids=keys[1] or {};local result={};local offset=tonumber(ARGV[1]);local limit=tonumber(ARGV[2]);for i=offset+1,math.min(#ids,offset+limit) do result[#result+1]=ids[i] end;return cjson.encode({ids=result,more=#ids>offset+limit})");
+ const auto raw=memory_->executeAtomic(key,{"EVAL",script,"1",key,std::to_string(offset),std::to_string(limit)},{});
+ if(!raw)return std::nullopt;try{return nlohmann::json::parse(*raw);}catch(...){return std::nullopt;}
 }

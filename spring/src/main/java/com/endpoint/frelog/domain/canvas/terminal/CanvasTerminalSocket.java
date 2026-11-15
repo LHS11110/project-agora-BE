@@ -1,6 +1,7 @@
 package com.endpoint.frelog.domain.canvas.terminal;
 
 import com.endpoint.frelog.domain.canvas.controller.CanvasRuntimeController;
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import com.endpoint.frelog.domain.canvas.service.CanvasRuntimeService;
 import com.endpoint.frelog.domain.canvas.bot.CanvasBotService;
 import com.endpoint.frelog.domain.auth.mfa.MfaService;
@@ -28,8 +29,8 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
     private final ScheduledExecutorService timer=Executors.newScheduledThreadPool(2,Thread.ofPlatform().daemon(true).name("terminal-watchdog-",0).factory());
     private final java.security.SecureRandom random=new java.security.SecureRandom();
     static final class Ticket {
-        final int canvas;final String object,grant,token,ip;final CustomUserDetails user;final long expires;
-        Ticket(int canvas,String object,String grant,String token,String ip,CustomUserDetails user){this.canvas=canvas;this.object=object;this.grant=grant;this.token=token;this.ip=ip;this.user=user;this.expires=System.nanoTime()+15_000_000_000L;}
+        final DocumentScope scope;final int canvas;final String object,grant,token,ip;final CustomUserDetails user;final long expires;
+        Ticket(DocumentScope scope,int canvas,String object,String grant,String token,String ip,CustomUserDetails user){this.scope=scope;this.canvas=canvas;this.object=object;this.grant=grant;this.token=token;this.ip=ip;this.user=user;this.expires=System.nanoTime()+15_000_000_000L;}
     }
     static final class Connection {
         final WebSocketSession socket;final AtomicBoolean closed=new AtomicBoolean(),checking=new AtomicBoolean();
@@ -38,12 +39,15 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
     }
     public CanvasTerminalSocket(CanvasRuntimeController access,CanvasRuntimeService runtime,JwtTokenProvider tokens,CustomUserDetailsService users,MfaService mfa,CanvasBotService bots){this.access=access;this.runtime=runtime;this.tokens=tokens;this.users=users;this.mfa=mfa;this.bots=bots;}
     public Map<String,Object> issue(int canvas,String object,String grant,String authorization,String ip,CustomUserDetails user){
-        if(object==null||!object.matches("[a-zA-Z0-9_-]{1,128}")||authorization==null||!authorization.startsWith("Bearer "))throw new IllegalArgumentException("Invalid terminal ticket request");
-        access.authorizeTerminal(canvas,object,grant,user);
+        return issue(DocumentScope.CANVAS,canvas,object,grant,authorization,ip,user);
+    }
+    public Map<String,Object> issue(DocumentScope scope,int canvas,String object,String grant,String authorization,String ip,CustomUserDetails user){
+        if(scope==null||object==null||!object.matches("[a-zA-Z0-9_-]{1,128}")||authorization==null||!authorization.startsWith("Bearer "))throw new IllegalArgumentException("Invalid terminal ticket request");
+        if(scope==DocumentScope.CANVAS)access.authorizeTerminal(canvas,object,grant,user);else access.authorizeTerminal(scope,canvas,object,grant,user);
         tickets.entrySet().removeIf(e->e.getValue().expires<System.nanoTime());
         if(tickets.size()>=1024)throw new IllegalStateException("Terminal ticket capacity reached");
         byte[] bytes=new byte[32];random.nextBytes(bytes);String secret=Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        tickets.put(secret,new Ticket(canvas,object,grant,authorization.substring(7),ip,user));
+        tickets.put(secret,new Ticket(scope,canvas,object,grant,authorization.substring(7),ip,user));
         return Map.of("ticket",secret,"expiresIn",15,"path","/api/terminal/ws");
     }
     @Override public void afterConnectionEstablished(WebSocketSession socket) throws Exception {
@@ -62,7 +66,7 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
                 c.ticket=ticket;validate(c);
                 int cols=node.path("cols").asInt(80),rows=node.path("rows").asInt(24);long offset=node.path("offset").asLong(0);
                 if(cols<2||cols>300||rows<2||rows>150||offset<0)throw new IllegalArgumentException("Invalid size");
-                var bridge=runtime.attachTerminal(ticket.canvas,ticket.user.getUserId(),ticket.object,cols,rows,offset,
+                var bridge=runtime.attachTerminal(ticket.scope.runtimeTargetId(ticket.canvas),ticket.user.getUserId(),ticket.object,cols,rows,offset,
                     frame->{try{send(c,frame);if(Boolean.TRUE.equals(frame.get("closed")))close(c,CloseStatus.NORMAL);}catch(Exception error){close(c,CloseStatus.SERVER_ERROR);}},
                     ()->close(c,CloseStatus.SERVER_ERROR));
                 c.bridge=bridge;if(c.closed.get()){bridge.close();return;}
@@ -83,6 +87,7 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
     private void validate(Connection c){
         var t=c.ticket;CustomUserDetails current;
         if(t.token.startsWith(CanvasBotService.PREFIX)){
+            if(t.scope!=DocumentScope.CANVAS)throw new SecurityException("Bot tokens are canvas-only");
             var identity=bots.authenticate(t.token);
             if(identity==null||!bots.allowed(identity,"POST","/api/canvases/"+t.canvas+"/runtime/terminal"))throw new SecurityException("Bot revoked");
             current=identity.user();
@@ -91,7 +96,7 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
             current=(CustomUserDetails)users.loadUserByUsername(tokens.getEmailFromToken(t.token));
             if(!current.isEnabled()||!current.isAccountNonLocked()||!Objects.equals(current.getUserId(),t.user.getUserId())||!mfa.accepts(current.getUserId(),t.token))throw new SecurityException("Account revoked");
         }
-        access.authorizeTerminal(t.canvas,t.object,t.grant,current);
+        if(t.scope==DocumentScope.CANVAS)access.authorizeTerminal(t.canvas,t.object,t.grant,current);else access.authorizeTerminal(t.scope,t.canvas,t.object,t.grant,current);
     }
     private void send(Connection c,Map<String,Object> frame)throws Exception{if(!c.closed.get()&&c.socket.isOpen())c.socket.sendMessage(new TextMessage(json.writeValueAsString(frame)));}
     private void reject(Connection c){try{send(c,Map.of("type","error","retryable",false,"message","터미널 인증 또는 실행 권한이 만료되었습니다."));}catch(Exception ignored){}close(c,CloseStatus.POLICY_VIOLATION);}

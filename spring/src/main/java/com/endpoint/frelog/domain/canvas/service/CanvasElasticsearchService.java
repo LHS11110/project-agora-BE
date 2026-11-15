@@ -2,6 +2,8 @@ package com.endpoint.frelog.domain.canvas.service;
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocumentJson;
 
 import com.endpoint.frelog.domain.canvas.dto.CanvasDocument;
+import com.endpoint.frelog.domain.canvas.dto.CanvasDocumentJson;
+import com.endpoint.frelog.domain.canvas.dto.DocumentScope;
 import com.endpoint.frelog.domain.canvas.dto.UpdateCanvasDocumentRequest;
 import com.endpoint.frelog.global.config.ElasticsearchProperties;
 import com.endpoint.frelog.global.exception.CustomException;
@@ -54,14 +56,31 @@ public class CanvasElasticsearchService {
         this.searchService = searchService;
     }
 
+    private String indexFor(DocumentScope scope) {
+        return scope == DocumentScope.WORKSPACE ? properties.getWorkspaceIndex() : properties.getIndex();
+    }
+
     private String encodeCanvasDocument(CanvasDocument document) throws Exception {
-        ObjectNode source = objectMapper.valueToTree(document);
+        return encodeDocument(DocumentScope.CANVAS, document);
+    }
+
+    private String encodeDocument(DocumentScope scope, CanvasDocument document) throws Exception {
+        ObjectNode source = CanvasDocumentJson.toStorageNode(objectMapper, document, scope);
         JsonNode items = source.remove("items");
         byte[] raw = objectMapper.writeValueAsBytes(items == null ? objectMapper.createObjectNode() : items);
         ArrayNode chunks = source.putArray("items-b64");
         for (int offset = 0; offset < raw.length; offset += ITEMS_CHUNK_BYTES) {
             int end = Math.min(offset + ITEMS_CHUNK_BYTES, raw.length);
             chunks.add(Base64.getEncoder().encodeToString(Arrays.copyOfRange(raw, offset, end)));
+        }
+        JsonNode sessions=source.remove("agent-sessions");
+        if(sessions!=null){
+            if(!sessions.isObject())throw new IllegalArgumentException("Invalid agent sessions");
+            byte[] data=objectMapper.writeValueAsBytes(sessions);
+            ArrayNode encoded=source.putArray("agent-sessions-b64");
+            for(int offset=0;offset<data.length;offset+=ITEMS_CHUNK_BYTES){
+                encoded.add(Base64.getEncoder().encodeToString(Arrays.copyOfRange(data,offset,Math.min(offset+ITEMS_CHUNK_BYTES,data.length))));
+            }
         }
         return objectMapper.writeValueAsString(source);
     }
@@ -101,16 +120,21 @@ public class CanvasElasticsearchService {
     }
 
     public boolean isIndexExists() {
+        return isIndexExists(DocumentScope.CANVAS);
+    }
+
+    public boolean isIndexExists(DocumentScope scope) {
+        String indexName = indexFor(scope);
         try {
             restClient.head()
-                    .uri("/{index}", properties.getIndex())
+                    .uri("/{index}", indexName)
                     .retrieve()
                     .toBodilessEntity();
             return true;
         } catch (HttpClientErrorException.NotFound e) {
             return false;
         } catch (Exception e) {
-            log.debug("Elasticsearch 인덱스 '{}' 존재 확인 실패: {}", properties.getIndex(), e.getMessage());
+            log.debug("Elasticsearch 인덱스 '{}' 존재 확인 실패: {}", indexName, e.getMessage());
             return false;
         }
     }
@@ -128,38 +152,48 @@ public class CanvasElasticsearchService {
     }
 
     private void handleIndexNotFound(String operation, Exception e) {
+        handleIndexNotFound(DocumentScope.CANVAS, operation, e);
+    }
+
+    private void handleIndexNotFound(DocumentScope scope, String operation, Exception e) {
+        String indexName = indexFor(scope);
         log.error("Elasticsearch 인덱스 '{}'가 존재하지 않습니다 (index_not_found_exception). {} 실패: {}",
-                properties.getIndex(), operation, e.getMessage());
+                indexName, operation, e.getMessage());
         if (properties.isFailOnError()) {
             throw new CustomException(
                     ErrorCode.ELASTICSEARCH_INDEX_NOT_FOUND,
-                    "Elasticsearch 인덱스 '" + properties.getIndex() + "'가 존재하지 않습니다: " + e.getMessage()
+                    "Elasticsearch 인덱스 '" + indexName + "'가 존재하지 않습니다: " + e.getMessage()
             );
         }
     }
 
     /**
-     * 캔버스 도큐먼트 저장 (docId: canvasId)
+     * 캔버스 또는 워크스페이스 도큐먼트 저장 (docId: spaceId)
      */
     public boolean saveCanvas(CanvasDocument document) {
+        return saveDocument(DocumentScope.CANVAS, document);
+    }
+
+    public boolean saveDocument(DocumentScope scope, CanvasDocument document) {
+        String indexName = indexFor(scope);
         try {
             document.setCanvasPasswordHash(CanvasPasswords.normalizeStoredHash(document.getCanvasPasswordHash()));
             String docId = String.valueOf(document.getCanvasId());
-            String docJson = encodeCanvasDocument(document);
+            String docJson = encodeDocument(scope, document);
             restClient.put()
-                    .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), docId)
+                    .uri("/{index}/_doc/{id}?refresh=true", indexName, docId)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(docJson)
                     .retrieve()
                     .toBodilessEntity();
-            log.info("캔버스 '{}'(ID: {}) Elasticsearch 저장 성공", document.getCanvasName(), document.getCanvasId());
+            log.info("{} '{}'(ID: {}) Elasticsearch({}) 저장 성공", scope.wireName(), document.getCanvasName(), document.getCanvasId(), indexName);
             return true;
         } catch (Exception e) {
             if (isIndexNotFoundException(e)) {
-                handleIndexNotFound("도큐먼트 색인 저장 (saveCanvas)", e);
+                handleIndexNotFound(scope, "도큐먼트 색인 저장 (saveDocument)", e);
                 return false;
             }
-            log.warn("캔버스 '{}' Elasticsearch 저장 실패: {}", document.getCanvasName(), e.getMessage());
+            log.warn("{} '{}' Elasticsearch 저장 실패: {}", scope.wireName(), document.getCanvasName(), e.getMessage());
             if (properties.isFailOnError()) {
                 throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "Elasticsearch 색인 실패: " + e.getMessage());
             }
@@ -167,38 +201,51 @@ public class CanvasElasticsearchService {
         }
     }
 
-    /** Update only settings fields so an item snapshot is never written over newer canvas items. */
+    /** Update only settings fields so an item snapshot is never written over newer items. */
     public void patchCanvasFields(Integer canvasId, Map<String, Object> fields) {
+        patchFields(DocumentScope.CANVAS, canvasId, fields);
+    }
+
+    public void patchFields(DocumentScope scope, Integer id, Map<String, Object> fields) {
+        String indexName = indexFor(scope);
         try {
             Map<String, Object> normalized = new java.util.HashMap<>(fields);
             if (normalized.containsKey("canvas-password-hash")) {
                 normalized.put("canvas-password-hash", CanvasPasswords.normalizeStoredHash((String) normalized.get("canvas-password-hash")));
             }
+            if (scope == DocumentScope.WORKSPACE && normalized.containsKey("canvas-name")) {
+                normalized.put("workspace-name", normalized.remove("canvas-name"));
+            }
             restClient.post()
-                    .uri("/{index}/_update/{id}?refresh=true&retry_on_conflict=3", properties.getIndex(), String.valueOf(canvasId))
+                    .uri("/{index}/_update/{id}?refresh=true&retry_on_conflict=3", indexName, String.valueOf(id))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(objectMapper.writeValueAsString(Map.of("doc", normalized)))
                     .retrieve()
                     .toBodilessEntity();
         } catch (Exception e) {
-            log.warn("캔버스 #{} 설정 저장 실패: {}", canvasId, e.getMessage());
-            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "캔버스 설정 저장에 실패했습니다.");
+            log.warn("{} #{} 설정 저장 실패: {}", scope.wireName(), id, e.getMessage());
+            throw new CustomException(ErrorCode.INTERNAL_SERVER_ERROR, "설정 저장에 실패했습니다.");
         }
     }
 
     /**
-     * 캔버스 이름으로 단건 조회
+     * 이름으로 단건 조회
      */
     public Optional<CanvasDocument> getCanvasDocumentByName(String canvasName) {
+        return getDocumentByName(DocumentScope.CANVAS, canvasName);
+    }
+
+    public Optional<CanvasDocument> getDocumentByName(DocumentScope scope, String name) {
+        String indexName = indexFor(scope);
         try {
             Map<String, Object> queryBody = Map.of(
-                    "query", Map.of("term", Map.of("canvas-name.keyword", canvasName)),
+                    "query", Map.of("term", Map.of(scope.nameField() + ".keyword", name)),
                     "size", 1
             );
             String queryJson = objectMapper.writeValueAsString(queryBody);
 
             String rawJson = restClient.post()
-                    .uri("/{index}/_search", properties.getIndex())
+                    .uri("/{index}/_search", indexName)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(queryJson)
                     .retrieve()
@@ -215,9 +262,9 @@ public class CanvasElasticsearchService {
                 }
             }
 
-            // Fallback: search by ID or direct ID lookup
+            // Fallback: direct ID lookup
             String directJson = restClient.get()
-                    .uri("/{index}/_doc/{id}", properties.getIndex(), canvasName)
+                    .uri("/{index}/_doc/{id}", indexName, name)
                     .retrieve()
                     .body(String.class);
             if (directJson != null) {
@@ -233,20 +280,31 @@ public class CanvasElasticsearchService {
     }
 
     /**
-     * 캔버스 이름 기반 검색 (요구사항 4.2)
+     * 이름 기반 검색 (Canvas는 canvas-search 인덱스, Workspace는 workspace 인덱스 전용 조회)
      */
     public List<CanvasDocument> searchCanvasesByName(String canvasName) {
+        return searchDocumentsByName(DocumentScope.CANVAS, canvasName);
+    }
+
+    public List<CanvasDocument> searchDocumentsByName(DocumentScope scope, String name) {
+        String indexName = indexFor(scope);
         try {
-            if (canvasName != null && !canvasName.isBlank()) return searchService.search(canvasName);
+            if (scope == DocumentScope.CANVAS && name != null && !name.isBlank()) return searchService.search(name);
+            Map<String, Object> query = (name == null || name.isBlank())
+                    ? Map.of("match_all", Map.of())
+                    : Map.of("multi_match", Map.of(
+                            "query", name,
+                            "fields", List.of(scope.nameField() + "^2", "description"),
+                            "type", "phrase_prefix"));
             Map<String, Object> queryBody = Map.of(
-                    "query", Map.of("match_all", Map.of()),
-                    "_source", List.of("canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility", "inner-group", "init-group", "canvas-password-hash", "group-permissions", "group-bits"),
+                    "query", query,
+                    "_source", List.of(scope.idField(), scope.nameField(), "canvas-id", "canvas-name", "description", "people", "admin-user-id", "visibility", "inner-group", "init-group", "canvas-password-hash", "group-permissions", "group-bits"),
                     "size", 1000
             );
             String queryJson = objectMapper.writeValueAsString(queryBody);
 
             String rawJson = restClient.post()
-                    .uri("/{index}/_search", properties.getIndex())
+                    .uri("/{index}/_search", indexName)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(queryJson)
                     .retrieve()
@@ -267,19 +325,24 @@ public class CanvasElasticsearchService {
             }
             return Collections.emptyList();
         } catch (Exception e) {
-            log.warn("Elasticsearch 캔버스 검색 실패: {}", e.getClass().getSimpleName());
+            log.warn("Elasticsearch {} 검색 실패: {}", scope.wireName(), e.getClass().getSimpleName());
             return Collections.emptyList();
         }
     }
 
     /**
-     * canvas-id 필드로 검색하여 단건 조회
+     * 식별자 필드로 검색하여 단건 조회
      */
     public Optional<CanvasDocument> getCanvasDocumentById(Integer canvasId) {
+        return getDocumentById(DocumentScope.CANVAS, canvasId);
+    }
+
+    public Optional<CanvasDocument> getDocumentById(DocumentScope scope, Integer id) {
+        String indexName = indexFor(scope);
         try {
             // 1. Direct doc lookup by ID
             String rawJson = restClient.get()
-                    .uri("/{index}/_doc/{id}", properties.getIndex(), String.valueOf(canvasId))
+                    .uri("/{index}/_doc/{id}", indexName, String.valueOf(id))
                     .retrieve()
                     .body(String.class);
 
@@ -301,13 +364,13 @@ public class CanvasElasticsearchService {
         try {
             // 2. Term query search
             Map<String, Object> queryBody = Map.of(
-                    "query", Map.of("term", Map.of("canvas-id", canvasId)),
+                    "query", Map.of("term", Map.of(scope.idField(), id)),
                     "size", 1
             );
             String queryJson = objectMapper.writeValueAsString(queryBody);
 
             String rawJson = restClient.post()
-                    .uri("/{index}/_search", properties.getIndex())
+                    .uri("/{index}/_search", indexName)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(queryJson)
                     .retrieve()
@@ -325,9 +388,9 @@ public class CanvasElasticsearchService {
             }
             return Optional.empty();
         } catch (HttpClientErrorException.NotFound e) {
-            throw canvasReadFailure("canvas-id 검색", e);
+            throw canvasReadFailure(scope.idField() + " 검색", e);
         } catch (Exception e) {
-            throw canvasReadFailure("canvas-id 검색", e);
+            throw canvasReadFailure(scope.idField() + " 검색", e);
         }
     }
 
@@ -394,26 +457,31 @@ public class CanvasElasticsearchService {
      * 캔버스 도큐먼트 삭제
      */
     public boolean deleteCanvas(Integer canvasId, String canvasName) {
-        if (canvasId == null) return false;
+        return deleteDocument(DocumentScope.CANVAS, canvasId, canvasName);
+    }
+
+    public boolean deleteDocument(DocumentScope scope, Integer id, String name) {
+        if (id == null) return false;
+        String indexName = indexFor(scope);
         try {
             restClient.delete()
-                    .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), String.valueOf(canvasId))
+                    .uri("/{index}/_doc/{id}?refresh=true", indexName, String.valueOf(id))
                     .retrieve()
                     .toBodilessEntity();
-            log.info("캔버스 #{} Elasticsearch 문서 삭제 완료", canvasId);
+            log.info("{} #{} Elasticsearch 문서({}) 삭제 완료", scope.wireName(), id, indexName);
         } catch (Exception e) {
-            log.error("캔버스 #{} Elasticsearch 문서 삭제 실패", canvasId, e);
+            log.error("{} #{} Elasticsearch 문서 삭제 실패", scope.wireName(), id, e);
             return false;
         }
 
-        if (canvasName != null && !canvasName.equals(String.valueOf(canvasId))) {
+        if (name != null && !name.equals(String.valueOf(id))) {
             try {
                 restClient.delete()
-                        .uri("/{index}/_doc/{id}?refresh=true", properties.getIndex(), canvasName)
+                        .uri("/{index}/_doc/{id}?refresh=true", indexName, name)
                         .retrieve()
                         .toBodilessEntity();
             } catch (Exception e) {
-                log.warn("캔버스 #{}의 이전 이름 기반 Elasticsearch 문서 삭제 실패: {}", canvasId, e.getMessage());
+                log.warn("{} #{}의 이전 이름 기반 Elasticsearch 문서 삭제 실패: {}", scope.wireName(), id, e.getMessage());
             }
         }
 
