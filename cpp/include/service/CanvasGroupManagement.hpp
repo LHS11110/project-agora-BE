@@ -29,10 +29,11 @@ inline std::vector<std::string> applyCanvasGroupManagement(CanvasGroupJson& doc,
  const std::function<std::optional<int>(const CanvasGroupJson&)>& resolveMember){
  using J=CanvasGroupJson;
  if(action=="participant_groups"){
-  if(!value.is_object()||!value.contains("groups")||!value["groups"].is_array()||value["groups"].size()>CANVAS_MAX_GROUPS||!doc.contains("inner-group")||!doc["inner-group"].is_object())throw std::invalid_argument("SETTINGS_INVALID_INPUT");
+  if(!value.is_object()||!value.contains("groups")||!value["groups"].is_array()||value["groups"].empty()||value["groups"].size()>CANVAS_MAX_GROUPS||!doc.contains("inner-group")||!doc["inner-group"].is_object())throw std::invalid_argument("SETTINGS_INVALID_INPUT");
   auto id=resolveMember(value);if(!id||!doc.contains("people")||std::find(doc["people"].begin(),doc["people"].end(),J(*id))==doc["people"].end())throw std::invalid_argument("SETTINGS_USER_NOT_FOUND");
   std::set<std::string> roles;
   for(const auto& role:value["groups"]){if(!role.is_string()||!doc["inner-group"].contains(role.get<std::string>()))throw std::invalid_argument("GROUP_NOT_FOUND");roles.insert(role.get<std::string>());}
+  if(roles.empty())throw std::invalid_argument("SETTINGS_INVALID_INPUT");
   if(*id==doc.value("admin-user-id",0)&&!roles.count("admin-group"))throw std::invalid_argument("SETTINGS_OWNER_REQUIRED");
   for(auto& [name,members]:doc["inner-group"].items()){
    if(!members.is_array())throw std::invalid_argument("SETTINGS_INVALID_INPUT");
@@ -68,7 +69,6 @@ inline std::vector<std::string> applyCanvasGroupManagement(CanvasGroupJson& doc,
  if(name=="admin-group")throw std::invalid_argument("SETTINGS_OWNER_REQUIRED");
  if(action=="group_delete"){
   if(doc.value("init-group",std::string("default"))==name)throw std::invalid_argument("GROUP_IS_INITIAL");
-  if(doc.contains("items")&&doc["items"].is_object())for(const auto& item:doc["items"].items())if(item.value().is_object()&&item.value().contains("permission")&&canvasPermissionReferences(item.value()["permission"],name))throw std::invalid_argument("GROUP_IN_USE");
   groups.erase(name);if(doc.contains("group-bits")&&doc["group-bits"].is_object())doc["group-bits"].erase(name);if(doc.contains("group-permissions")&&doc["group-permissions"].is_object())doc["group-permissions"].erase(name);
   return {"inner-group","group-permissions"};
  }
@@ -79,9 +79,6 @@ inline std::vector<std::string> applyCanvasGroupManagement(CanvasGroupJson& doc,
   groups[next]=groups[name];groups.erase(name);std::vector<std::string> fields{"inner-group"};
   if(doc.contains("group-permissions")&&doc["group-permissions"].is_object()&&doc["group-permissions"].contains(name)){doc["group-permissions"][next]=doc["group-permissions"][name];doc["group-permissions"].erase(name);fields.push_back("group-permissions");}
   if(doc.value("init-group",std::string("default"))==name){doc["init-group"]=next;fields.push_back("init-group");}
-  bool changed=false;
-  if(doc.contains("items")&&doc["items"].is_object())for(auto& item:doc["items"].items())if(item.value().is_object()&&item.value().contains("permission")&&canvasPermissionReferences(item.value()["permission"],name)){renameCanvasPermission(item.value()["permission"],name,next);changed=true;}
-  if(changed)fields.push_back("items");
   return fields;
  }
  throw std::invalid_argument("SETTINGS_INVALID_INPUT");

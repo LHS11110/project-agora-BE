@@ -13,6 +13,12 @@ void aclAndPatchRulesRejectEscalation() {
     bool rejected = false;
     try { queryUpdatedItem(item, escalated, groups, false); } catch (const std::invalid_argument&) { rejected = true; }
     AGORA_CHECK(rejected);
+    auto multi_member = item; multi_member["permission"] = nlohmann::json::array({"writers", "research"});
+    const std::unordered_set<std::string> member_groups{"writers", "research"};
+    AGORA_CHECK(queryUpdatedItem(item, multi_member, groups, false, &member_groups)["permission"] == multi_member["permission"]);
+    rejected = false;
+    try { queryUpdatedItem(item, multi_member, groups, false); } catch (const std::invalid_argument&) { rejected = true; }
+    AGORA_CHECK(rejected);
     auto text = item; text["kind"] = "text";
     rejected = false; try { queryUpdatedItem(item, text, groups, false); } catch (const std::invalid_argument&) { rejected = true; }
     AGORA_CHECK(rejected);
@@ -34,6 +40,15 @@ void canvasVisibilityRules() {
     AGORA_CHECK(groupsForUser(doc,2).first.empty());
     doc["visibility"]="public";
     AGORA_CHECK(canvasIsPublic(doc) && groupsForUser(doc,2).first.count("default") == 1 && !groupsForUser(doc,2).second);
+    AGORA_CHECK(groupsForUser(doc,1).second && groupsForUser(doc,1).first.count("admin-group") == 1 && groupsForUser(doc,1).first.count("default") == 0);
+    AGORA_CHECK(canvasMemberGroups(doc,1).count("default") == 0);
+    doc["inner-group"]["default"].push_back(1);
+    AGORA_CHECK(groupsForUser(doc,1).first.count("default") == 1 && canvasMemberGroups(doc,1).count("default") == 1);
+    doc["inner-group"]["default"].clear();
+    doc["inner-group"]["research"]=nlohmann::json::array({2});
+    AGORA_CHECK(groupsForUser(doc,2).first.count("research") == 1 && groupsForUser(doc,2).first.count("default") == 0);
+    AGORA_CHECK(canvasMemberGroups(doc,2).count("research") == 1 && canvasMemberGroups(doc,2).count("default") == 0);
+    doc["inner-group"].erase("research");
     doc["canvas-password-hash"]="unexpected";
     AGORA_CHECK(canvasIsPublic(doc) && groupsForUser(doc,2).first.count("default") == 1);
     doc["canvas-password-hash"]=nullptr;

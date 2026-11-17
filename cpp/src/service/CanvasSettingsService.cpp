@@ -17,14 +17,23 @@ static bool isCanvasParticipant(const nlohmann::json& doc, int user_id) {
     return false;
 }
 
-static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, RegistryServiceMemory& db, int user_id) {
+static nlohmann::json canvasSettingsSnapshot(const nlohmann::json& doc, RegistryServiceMemory& db, int user_id,
+                                              std::map<int, nlohmann::json>* preloaded_handles = nullptr) {
     nlohmann::json participants = nlohmann::json::array();
-    std::map<int,nlohmann::json> handles;
+    std::map<int,nlohmann::json> local_handles;
+    auto& handles = preloaded_handles ? *preloaded_handles : local_handles;
     if (doc.contains("people") && doc["people"].is_array()) {
         for (const auto& member : doc["people"]) {
             if (!member.is_number_integer()) continue;
-            auto handle = db.getUserHandle(member.get<int>());
-            if (handle) {nlohmann::json person{{"nickname", handle->first}, {"tag_number", handle->second}};participants.push_back(person);handles[member.get<int>()]=person;}
+            const int member_id = member.get<int>();
+            auto found = handles.find(member_id);
+            if (found == handles.end()) {
+                auto handle = db.getUserHandle(member_id);
+                if (handle) {
+                    found = handles.emplace(member_id, nlohmann::json{{"nickname", handle->first}, {"tag_number", handle->second}}).first;
+                }
+            }
+            if (found != handles.end()) participants.push_back(found->second);
         }
     }
     const bool protected_canvas = canvasIsPublic(doc) && doc.contains("canvas-password-hash")
@@ -62,11 +71,9 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     const SpaceScope scope = canvas->getScope();
 
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
-    auto raw = memory.loadCanvas(scope, canvas_id);
-    if (!raw) return reject("SETTINGS_STORAGE_ERROR");
-    nlohmann::json doc;
-    try { doc = nlohmann::json::parse(*raw); } catch (...) { return reject("SETTINGS_STORAGE_ERROR"); }
-    if (!doc.is_object()) return reject("SETTINGS_STORAGE_ERROR");
+    auto loaded_doc = memory.loadCanvasSettings(scope, canvas_id);
+    if (!loaded_doc || !loaded_doc->is_object()) return reject("SETTINGS_STORAGE_ERROR");
+    nlohmann::json doc = std::move(*loaded_doc);
 
     RegistryServiceMemory db(pool.getDbHost(), pool.getDbPort());
     if (!db.isCanvasAssignedToServer(scope, canvas_id, pool.getCppServerIp(), pool.getCppServerPort())) {
@@ -100,6 +107,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     std::vector<std::pair<std::string, nlohmann::json>> changes;
     std::map<std::string, nlohmann::json> es_changes;
     std::map<std::string, nlohmann::json> original_settings;
+    std::map<int, nlohmann::json> cached_handles;
     auto rememberOriginal = [&](const std::string& document_field) {
         if (doc.contains(document_field)) original_settings.emplace(document_field, doc[document_field]);
     };
@@ -115,9 +123,8 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     doc["group-bits"]=canvasGroupBitLayout(doc);
     if (field == "participant_groups" || field == "group_create" || field == "group_members" || field == "group_initial" || field == "group_rename" || field == "group_delete") {
         for(const auto* key:{"inner-group","group-permissions","init-group"})rememberOriginal(key);
-        if(field=="group_rename")rememberOriginal("items");
         std::map<std::pair<std::string,int>,int> member_handles;
-        if((field=="group_members"||field=="participant_groups")&&doc.contains("people")&&doc["people"].is_array())for(const auto& id:doc["people"])if(id.is_number_integer()){auto h=db.getUserHandle(id.get<int>());if(h)member_handles[*h]=id.get<int>();}
+        if((field=="group_members"||field=="participant_groups")&&doc.contains("people")&&doc["people"].is_array())for(const auto& id:doc["people"])if(id.is_number_integer()){auto h=db.getUserHandle(id.get<int>());if(h){member_handles[*h]=id.get<int>();cached_handles[id.get<int>()]={{"nickname",h->first},{"tag_number",h->second}};}}
         try {
             auto fields=applyCanvasGroupManagement(doc,field,event.value("value",nlohmann::json()),[&](const nlohmann::json& member)->std::optional<int>{
                 if(!member.is_object()||!member.contains("nickname")||!member["nickname"].is_string()||!member.contains("tag_number")||!member["tag_number"].is_number_integer())return std::nullopt;
@@ -245,14 +252,11 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
     addChange("settings-revision", revision + 1);
     const auto stored = memory.compareAndSetFields(scope, canvas_id, revision, changes);
     if (stored == CanvasServiceMemory::CompareSetResult::Conflict) {
-        auto latest_raw = memory.loadCanvas(scope, canvas_id);
-        nlohmann::json latest = doc;
-        if (latest_raw) {
-            try { latest = nlohmann::json::parse(*latest_raw); } catch (...) {}
-        }
+        auto latest_doc = memory.loadCanvasSettings(scope, canvas_id);
+        nlohmann::json latest = latest_doc && latest_doc->is_object() ? std::move(*latest_doc) : doc;
         result.response = nlohmann::json{{"type", "canvas_settings_result"}, {"ok", false},
             {"request_id", request_id}, {"code", "SETTINGS_CONFLICT"},
-            {"settings", canvasSettingsSnapshot(latest, db, user_id)}};
+            {"settings", canvasSettingsSnapshot(latest, db, user_id, &cached_handles)}};
         return result;
     }
     if (stored != CanvasServiceMemory::CompareSetResult::Applied) return reject("SETTINGS_STORAGE_ERROR");
@@ -291,7 +295,7 @@ CanvasSettingsTaskResult CanvasSettingsService::execute(
             if (member.is_number_integer()) result.participant_ids.insert(member.get<int>());
         }
     }
-    const auto snapshot = canvasSettingsSnapshot(doc, db, user_id);
+    const auto snapshot = canvasSettingsSnapshot(doc, db, user_id, &cached_handles);
     result.response = nlohmann::json{{"type", "canvas_settings_result"}, {"ok", true},
         {"request_id", request_id}, {"settings", snapshot}};
     result.changed_settings = snapshot;

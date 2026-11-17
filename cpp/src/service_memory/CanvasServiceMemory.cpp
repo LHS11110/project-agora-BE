@@ -326,6 +326,44 @@ std::optional<std::string> CanvasServiceMemory::loadCanvas(int id) { return load
 std::optional<std::string> CanvasServiceMemory::loadCanvas(SpaceScope scope, int id) {
     return memory_->read(spaceRedisKey(scope, id));
 }
+std::optional<nlohmann::json> CanvasServiceMemory::loadCanvasSettings(int id) {
+    return loadCanvasSettings(SpaceScope::Canvas, id);
+}
+std::optional<nlohmann::json> CanvasServiceMemory::loadCanvasSettings(SpaceScope scope, int id) {
+    static const std::vector<std::string> fields = {
+        "canvas-id", "workspace-id", "canvas-name", "workspace-name", "description",
+        "visibility", "canvas-password-hash", "password-revision", "settings-revision",
+        "admin-user-id", "people", "inner-group", "init-group", "group-permissions", "group-bits"
+    };
+    const auto key = spaceRedisKey(scope, id);
+    std::vector<std::string> command = {"JSON.GET", key};
+    for (const auto& field : fields) command.push_back(fieldPath(field));
+    if (const auto raw = memory_->executeAtomic(key, command, {})) {
+        try {
+            const auto result = nlohmann::json::parse(*raw);
+            if (result.is_object()) {
+                nlohmann::json doc = nlohmann::json::object();
+                for (const auto& field : fields) {
+                    const auto path = fieldPath(field);
+                    if (result.contains(path) && result[path].is_array() && !result[path].empty()) {
+                        doc[field] = result[path][0];
+                    }
+                }
+                if (!doc.empty()) return doc;
+            }
+        } catch (...) {}
+    }
+    const auto fallback = loadCanvas(scope, id);
+    if (!fallback) return std::nullopt;
+    try {
+        auto parsed = nlohmann::json::parse(*fallback);
+        if (!parsed.is_object()) return std::nullopt;
+        parsed.erase("items");
+        return parsed;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
 bool CanvasServiceMemory::storeCanvas(int id, const nlohmann::json& document) {
     return storeCanvas(SpaceScope::Canvas, id, document);
 }
@@ -668,7 +706,7 @@ return ARGV[4]
 
 std::optional<nlohmann::json> CanvasServiceMemory::brokerActivityClients(int id){
  const auto raw=memory_->read(spaceRedisKey(SpaceScope::Canvas,id),"$[\"__broker_sync\"][\"clients\"]");if(!raw)return std::nullopt;
- try{const auto values=nlohmann::json::parse(*raw);if(values.empty())return nlohmann::json::object();return values[0];}catch(...){return std::nullopt;}
+ try{const auto values=nlohmann::json::parse(*raw);if(values.empty())return nlohmann::json::object();return std::optional<nlohmann::json>(std::in_place, values[0]);}catch(...){return std::nullopt;}
 }
 
 std::optional<nlohmann::json> CanvasServiceMemory::agentItemIds(int id,int offset,int limit){

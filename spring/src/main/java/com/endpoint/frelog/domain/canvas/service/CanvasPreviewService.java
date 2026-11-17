@@ -58,7 +58,7 @@ public class CanvasPreviewService {
         if (doc.getInnerGroup() != null) doc.getInnerGroup().forEach((group, members) -> {
             if (members != null && members.contains(user.getUserId()) && CanvasGroupPermissions.group(doc,group,"read")) groups.add(group);
         });
-        if ("public".equals(doc.getVisibility()) && doc.getInitGroup() != null && !doc.getInitGroup().equals("admin-group") && CanvasGroupPermissions.group(doc,doc.getInitGroup(),"read")) groups.add(doc.getInitGroup());
+        if (!CanvasGroupPermissions.admin(doc,user.getUserId()) && "public".equals(doc.getVisibility()) && doc.getInitGroup() != null && !doc.getInitGroup().equals("admin-group") && CanvasGroupPermissions.group(doc,doc.getInitGroup(),"read")) groups.add(doc.getInitGroup());
         boolean admin = CanvasGroupPermissions.admin(doc,user.getUserId());
         var index=new CanvasGroupBits(doc);final long readMask=index.mask(groups);
         Map<String, Object> items = new LinkedHashMap<>();

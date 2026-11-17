@@ -36,6 +36,8 @@ public:
 
     std::optional<std::string> loadCanvas(int canvas_id);
     std::optional<std::string> loadCanvas(SpaceScope scope, int canvas_id);
+    std::optional<nlohmann::json> loadCanvasSettings(int canvas_id);
+    std::optional<nlohmann::json> loadCanvasSettings(SpaceScope scope, int canvas_id);
     bool storeCanvas(int canvas_id, const nlohmann::json& document);
     bool storeCanvas(SpaceScope scope, int canvas_id, const nlohmann::json& document);
     bool flushCanvas(int canvas_id);

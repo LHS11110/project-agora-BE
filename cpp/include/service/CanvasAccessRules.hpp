@@ -27,18 +27,20 @@ inline nlohmann::json canvasGroupPolicies(const nlohmann::json& doc) {
 inline std::pair<std::unordered_set<std::string>, bool> groupsForUser(const nlohmann::json& doc, int user_id, const std::string& capability="read") {
     std::unordered_set<std::string> groups;
     bool is_admin = false;
+    bool has_assigned_group = false;
     if (!doc.contains("inner-group") || !doc["inner-group"].is_object()) return {groups, false};
     for (const auto& [group, members] : doc["inner-group"].items()) {
         if (!members.is_array()) continue;
         for (const auto& member : members) {
             if (member.is_number_integer() && member.get<int>() == user_id) {
+                has_assigned_group = true;
                 if(canvasGroupCapability(doc,group,capability))groups.insert(group);
                 if (group == "admin-group") is_admin = true;
                 break;
             }
         }
     }
-    if (canvasIsPublic(doc) && doc.contains("init-group") && doc["init-group"].is_string()) {
+    if (!has_assigned_group && canvasIsPublic(doc) && doc.contains("init-group") && doc["init-group"].is_string()) {
         auto group = doc["init-group"].get<std::string>();
         if (!group.empty() && group != "admin-group" && doc["inner-group"].contains(group) && canvasGroupCapability(doc,group,capability)) groups.insert(group);
     }
@@ -52,7 +54,7 @@ inline std::unordered_set<std::string> canvasMemberGroups(const nlohmann::json& 
  std::unordered_set<std::string> result;
  if(doc.contains("inner-group")&&doc["inner-group"].is_object())for(const auto& [name,members]:doc["inner-group"].items())
   if(members.is_array())for(const auto& member:members)if(member.is_number_integer()&&member==user_id){result.insert(name);break;}
- if(canvasIsPublic(doc)&&doc.contains("init-group")&&doc["init-group"].is_string()){
+ if(result.empty() && canvasIsPublic(doc)&&doc.contains("init-group")&&doc["init-group"].is_string()){
   const auto name=doc["init-group"].get<std::string>();
   if(name!="admin-group"&&doc.contains("inner-group")&&doc["inner-group"].contains(name))result.insert(name);
  }

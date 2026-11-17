@@ -54,10 +54,15 @@ inline nlohmann::json queryUpdatedItem(const nlohmann::json& previous, const nlo
     if (!input.is_object() || input.empty()) throw std::invalid_argument("ITEM_INVALID");
     if (!previous.is_null() && !queryCanAccess(previous, groups, admin)) throw std::invalid_argument("ITEM_ACCESS_DENIED");
     if (!queryCanAccess(input, groups, admin)) throw std::invalid_argument("ITEM_ACCESS_DENIED");
-    if (!admin && !previous.is_null() && queryPermissionGroups(previous) != queryPermissionGroups(input))
-        throw std::invalid_argument("ITEM_PERMISSION_DENIED");
-    if (!admin && previous.is_null()) for (const auto& required : queryPermissionGroups(input))
-        if (!(memberships?*memberships:groups).count(required)) throw std::invalid_argument("ITEM_PERMISSION_DENIED");
+    const auto input_groups = queryPermissionGroups(input);
+    if (input_groups.empty()) throw std::invalid_argument("ITEM_PERMISSION_DENIED");
+    if (!admin) {
+        const auto previous_groups = previous.is_null() ? std::unordered_set<std::string>{} : queryPermissionGroups(previous);
+        const auto& allowed_groups = memberships ? *memberships : groups;
+        for (const auto& required : input_groups) {
+            if (!allowed_groups.count(required) && !previous_groups.count(required)) throw std::invalid_argument("ITEM_PERMISSION_DENIED");
+        }
+    }
     if (input.value("type", "") == "chat_room" || (!previous.is_null() && previous.value("type", "") == "chat_room"))
         throw std::invalid_argument("CHAT_QUERY_REQUIRED");
     if(!execution_state)queryCheckObjectLock(previous, input);

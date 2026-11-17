@@ -16,6 +16,8 @@ class AgoraClient:
         ws=urlsplit(self.ws_origin)
         if ws.scheme!="wss" or not ws.hostname or ws.username or ws.password or ws.path not in ("", "/") or ws.query or ws.fragment:raise ValueError("ws_origin must be a WSS origin")
         self.ssl_context=ssl.create_default_context(cafile=ca_file)
+        # Identify HTTPS/WSS on Wall's shared HTTPS + TURN/TLS listener.
+        self.ssl_context.set_alpn_protocols(["http/1.1"])
         self._sessions=weakref.WeakSet()
         self._token=token
         self.http=httpx.Client(base_url=self.base_url,verify=self.ssl_context,timeout=timeout,follow_redirects=False,trust_env=False)

@@ -11,6 +11,14 @@ class CanvasGroupPermissionsTest {
  @Test void legacyRightsAndOwnerArePreserved(){var d=doc();assertTrue(CanvasGroupPermissions.allows(d,user(2),"write"));d.setGroupPermissions(Map.of("default",Map.of("read",false,"write",false,"execute",false),"operators",Map.of("read",false,"write",false,"execute",false)));assertTrue(CanvasGroupPermissions.allows(d,user(1),"execute"));assertFalse(CanvasVisibility.allows(d,user(2)));}
  @Test void independentRightsAndGroupUnion(){var d=doc();d.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",false),"operators",Map.of("read",true,"write",false,"execute",true)));assertTrue(CanvasVisibility.allows(d,user(2)));assertFalse(CanvasGroupPermissions.allows(d,user(2),"write"));assertTrue(CanvasGroupPermissions.allows(d,user(2),"execute"));assertFalse(CanvasVisibility.allows(d,user(3)));}
  @Test void publicAccessUsesInitialGroupAndRevocationIsImmediate(){var d=doc();d.setVisibility("public");d.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",false)));assertTrue(CanvasVisibility.allows(d,user(3)));assertFalse(CanvasGroupPermissions.allows(d,user(3),"execute"));d.setGroupPermissions(Map.of("default",Map.of("read",false,"write",true,"execute",true)));assertFalse(CanvasVisibility.allows(d,user(3)));assertFalse(CanvasGroupPermissions.allows(d,user(3),"execute"));}
+ @Test void assignedGroupDoesNotForciblyInheritDefaultGroupOnPublicCanvas(){
+  var d=doc();d.setVisibility("public");
+  d.setInnerGroup(Map.of("admin-group",List.of(1L),"default",List.of(),"operators",List.of(2L)));
+  d.setGroupPermissions(Map.of("default",Map.of("read",true,"write",true,"execute",true),"operators",Map.of("read",true,"write",false,"execute",false)));
+  assertTrue(CanvasVisibility.allows(d,user(2)));
+  assertFalse(CanvasGroupPermissions.allows(d,user(2),"write"));
+  assertFalse(CanvasGroupPermissions.allows(d,user(2),"execute"));
+ }
  @Test void policySurvivesJsonStorage()throws Exception{var d=doc();d.setGroupPermissions(Map.of("default",Map.of("read",true,"write",false,"execute",true)));var json=new com.fasterxml.jackson.databind.ObjectMapper();var restored=json.readValue(json.writeValueAsBytes(d),CanvasDocument.class);assertEquals(d.getGroupPermissions(),restored.getGroupPermissions());assertFalse(CanvasGroupPermissions.policies(restored).get("default").get("write"));}
  @Test void canonicalMembershipWinsOverStaleLegacyAliases()throws Exception{
   var mapper=new com.fasterxml.jackson.databind.ObjectMapper();var source=mapper.readTree("{\"canvas-name\":\"Aliases\",\"admin-user-id\":1,\"people\":[1,2],\"peoples\":[1],\"inner-group\":{\"admin-group\":[1],\"default\":[2]},\"group-permissions\":{\"default\":{\"read\":true,\"write\":false,\"execute\":false}}}");

@@ -8,6 +8,9 @@ void test(){
  auto deny=[&](std::string action,J value){bool rejected=false;try{apply(action,value);}catch(const std::invalid_argument&){rejected=true;}AGORA_CHECK(rejected);};
  apply("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array({"default"})}});AGORA_CHECK(doc["inner-group"]["default"]==J::array({1,2}));
  deny("participant_groups",{{"nickname","owner"},{"tag_number",1},{"groups",J::array({"default"})}});
+ apply("participant_groups",{{"nickname","owner"},{"tag_number",1},{"groups",J::array({"admin-group"})}});
+ AGORA_CHECK(doc["inner-group"]["admin-group"]==J::array({1}));
+ AGORA_CHECK(doc["inner-group"]["default"]==J::array({2}));
  deny("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array({"missing"})}});
  deny("participant_groups",{{"nickname","outsider"},{"groups",J::array({"default"})}});
  apply("group_create",{{"name","research"}});AGORA_CHECK(doc["group-permissions"]["research"]==1);
@@ -15,12 +18,14 @@ void test(){
  apply("group_members",{{"name","research"},{"members",J::array({{{"nickname","viewer"},{"tag_number",1}}})}});AGORA_CHECK(doc["inner-group"]["research"]==J::array({2}));
  deny("group_members",{{"name","admin-group"},{"members",J::array()}});deny("group_members",{{"name","research"},{"members",J::array({{{"nickname","outsider"}}})}});
  deny("group_delete",{{"name","default"}});deny("group_rename",{{"name","admin-group"},{"new_name","admins"}});
- apply("group_rename",{{"name","default"},{"new_name","writers"}});AGORA_CHECK(doc["init-group"]=="writers"&&doc["items"]["a"]["permission"]=="writers"&&doc["items"]["b"]["permission"][0]=="writers"&&doc["items"]["c"]["permission"].contains("writers"));
- apply("group_initial",{{"name","research"}});deny("group_delete",{{"name","writers"}});
+ apply("group_rename",{{"name","default"},{"new_name","writers"}});AGORA_CHECK(doc["init-group"]=="writers"&&doc["inner-group"].contains("writers")&&doc["items"]["a"]["permission"]=="default");
+ apply("group_initial",{{"name","research"}});
  apply("group_create",{{"name","unused"}});apply("group_delete",{{"name","unused"}});AGORA_CHECK(!doc["inner-group"].contains("unused"));
  apply("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array({"research","writers"})}});
- AGORA_CHECK(doc["inner-group"]["research"]==J::array({2})&&doc["inner-group"]["writers"]==J::array({1,2}));
- apply("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array()}});AGORA_CHECK(doc["inner-group"]["research"].empty()&&doc["inner-group"]["writers"]==J::array({1}));
+ AGORA_CHECK(doc["inner-group"]["research"]==J::array({2})&&doc["inner-group"]["writers"]==J::array({2}));
+ apply("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array({"research"})}});
+ AGORA_CHECK(doc["inner-group"]["research"]==J::array({2})&&doc["inner-group"]["writers"].empty());
+ deny("participant_groups",{{"nickname","viewer"},{"tag_number",1},{"groups",J::array()}});
  deny("group_initial",{{"name","admin-group"}});
 }
 int main(){return runTest("canvas group lifecycle, membership, owner safety and ACL rename",test);}

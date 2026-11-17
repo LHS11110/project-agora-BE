@@ -172,9 +172,9 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     const auto type = event.value("type", "");
     if (type == "canvas_access_refresh") {
         CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
-        const auto raw = memory.loadCanvas(scope, id);
-        if (!raw) throw std::runtime_error("STORAGE_UNAVAILABLE");
-        const auto doc = Json::parse(*raw);
+        const auto loaded = memory.loadCanvasSettings(scope, id);
+        if (!loaded || !loaded->is_object()) throw std::runtime_error("STORAGE_UNAVAILABLE");
+        const auto& doc = *loaded;
         const int user = identity["user_id"];
         if (!canvasIsPublic(doc) && !canvasHasMember(doc, user)) throw std::invalid_argument("CANVAS_ACCESS_UNAUTHORIZED");
         auto [read, admin] = groupsForUser(doc, user);
@@ -551,7 +551,8 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         if (result.changed) {
             reply["refresh_sessions"] = true;
             const auto field = event.value("field", "");
-            reply["refresh_items"] = field != "name" && field != "description" && field != "password";
+            reply["refresh_access"] = field != "name" && field != "description" && field != "password";
+            reply["refresh_items"] = false;
         }
         return reply;
     }
