@@ -143,5 +143,21 @@ void operations(){
  store["box"]["__host_version"]=Json::array({1,2});store["box"]["__broker_revision"]=7;
  auto migrated=run(Json::array({{{"action","patch"},{"id","box"},{"patch",{{"x",2}}}}}));
  AGORA_CHECK(!migrated.items["box"].contains("__host_version")&&migrated.expected["box"]==7);
+ // In-progress strokes append points after a prefix pinned by its last point.
+ store["ink"]=Json{{"kind","stroke"},{"brush","pen"},{"complete",false},{"color","#000000"},{"strokeWidth",3},{"permission","writers"},{"points",Json::array({{{"x",0.1},{"y",0.2},{"pressure",0.5}},{{"x",0.15},{"y",0.25},{"pressure",0.5}}})}};
+ const Json more=Json::array({{{"x",0.2},{"y",0.3},{"pressure",0.6}}});
+ auto appended=run(Json::array({{{"action","patch"},{"id","ink"},{"patch",Json::object()},{"points_append",{{"from",2},{"last",{{"x",0.15},{"y",0.25},{"pressure",0.5}}},{"points",more}}}}}));
+ AGORA_CHECK(appended.items["ink"]["points"].size()==3&&appended.items["ink"]["points"][2]==more[0]&&appended.items["ink"]["points"][0]==store["ink"]["points"][0]);
+ auto truncated=run(Json::array({{{"action","patch"},{"id","ink"},{"patch",{{"complete",true}}},{"points_append",{{"from",1},{"last",{{"x",0.1},{"y",0.2},{"pressure",0.5}}},{"points",Json::array()}}}}}));
+ AGORA_CHECK(truncated.items["ink"]["points"].size()==1&&truncated.items["ink"]["complete"]==true);
+ auto points_conflict=[&](Json append){std::string code;try{run(Json::array({{{"action","patch"},{"id","ink"},{"patch",Json::object()},{"points_append",append}}}));}catch(const std::invalid_argument& e){code=e.what();}return code;};
+ AGORA_CHECK(points_conflict({{"from",2},{"last",{{"x",0.15},{"y",0.26},{"pressure",0.5}}},{"points",more}})=="CANVAS_TEXT_CONFLICT");
+ AGORA_CHECK(points_conflict({{"from",2},{"last",{{"x",0.15},{"y",0.25}}},{"points",more}})=="CANVAS_TEXT_CONFLICT");
+ AGORA_CHECK(points_conflict({{"from",3},{"last",{{"x",0.15},{"y",0.25},{"pressure",0.5}}},{"points",more}})=="CANVAS_TEXT_CONFLICT");
+ AGORA_CHECK(points_conflict({{"from",0},{"last",{{"x",0.1},{"y",0.2}}},{"points",more}})=="CANVAS_TEXT_CONFLICT");
+ AGORA_CHECK(points_conflict({{"from",2},{"points",more}})=="ITEM_POINTS_DELTA_INVALID");
+ reject(Json::array({{{"action","patch"},{"id","ink"},{"patch",{{"points",more}}},{"points_append",{{"from",2},{"last",{{"x",0.15},{"y",0.25},{"pressure",0.5}}},{"points",more}}}}}));
+ reject(Json::array({{{"action","patch"},{"id","box"},{"patch",Json::object()},{"points_append",{{"from",1},{"last",{{"x",0},{"y",0}}},{"points",more}}}}}));
+ bool readonly_points=false;try{agora::broker::prepare(Json::array({{{"action","patch"},{"id","ink"},{"patch",Json::object()},{"points_append",{{"from",2},{"last",{{"x",0.15},{"y",0.25},{"pressure",0.5}}},{"points",more}}}}}),read,{"readers"},false);}catch(const std::invalid_argument& e){readonly_points=std::string(e.what())=="ITEM_ACCESS_DENIED"||std::string(e.what())=="ITEM_WRITE_DENIED";}AGORA_CHECK(readonly_points);
 }
 int main(){return runTest("server authoritative operations, ACL, graph and CRDT union",operations);}

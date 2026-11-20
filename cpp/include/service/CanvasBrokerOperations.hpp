@@ -170,6 +170,28 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
      item[field.key()]=agora::textdelta::apply(old[field.key()].get<std::string>(),field.value());
     }
    }
+   if(operation.contains("points_append")){
+    // A stroke being drawn is saved ~30 times a second. Instead of the whole point
+    // list, the client sends the points after the prefix the server already has.
+    // `last` pins that prefix; a mismatch is a conflict the client rebases.
+    const auto& append=operation["points_append"];
+    if(action!="patch"||old.value("kind","")!="stroke"||patch.contains("points")||!append.is_object()||append.size()!=3
+     ||!append.contains("from")||!append["from"].is_number_integer()||append["from"].get<long long>()<0||!append.contains("last")||!append["last"].is_object()
+     ||!append.contains("points")||!append["points"].is_array()||!old.contains("points")||!old["points"].is_array())
+     throw std::invalid_argument("ITEM_POINTS_DELTA_INVALID");
+    const auto from=static_cast<std::size_t>(append["from"].get<long long>());
+    const auto& base=old["points"];
+    const auto same_number=[](const Json& a,const Json& b){return a.is_number()&&b.is_number()&&a.get<double>()==b.get<double>();};
+    const auto same_point=[&](const Json& a,const Json& b){
+     if(!a.is_object()||!b.is_object()||!a.contains("x")||!a.contains("y")||!b.contains("x")||!b.contains("y")||!same_number(a["x"],b["x"])||!same_number(a["y"],b["y"]))return false;
+     return a.contains("pressure")==b.contains("pressure")&&(!a.contains("pressure")||same_number(a["pressure"],b["pressure"]));
+    };
+    if(from==0||from>base.size()||!same_point(base[from-1],append["last"]))throw std::invalid_argument("CANVAS_TEXT_CONFLICT");
+    Json points=Json::array();
+    for(std::size_t i=0;i<from;i++)points.push_back(base[i]);
+    for(const auto& point:append["points"])points.push_back(point);
+    item["points"]=std::move(points);
+   }
    if(old.is_null()&&!item.contains("permission"))item["permission"]=memberships?*memberships:readable?*readable:groups;
    for(const auto& field:unset){if(!field.is_string()||field.get<std::string>().rfind("__",0)==0)throw std::invalid_argument("ITEM_PATCH_INVALID");item.erase(field.get<std::string>());}
    if(!old.is_null()&&old.value("kind","")!=item.value("kind",""))throw std::invalid_argument("ITEM_KIND_INVALID");

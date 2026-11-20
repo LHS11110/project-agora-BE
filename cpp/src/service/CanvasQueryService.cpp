@@ -146,7 +146,7 @@ Json CanvasQueryService::join(const Json& input) {
         {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin", admin}, {"settings_revision", revision}, {"canvas_id", id}, {"scope", std::string(spaceScopeWire(scope))}};
     return {{"route", route}, {"identity", identity},
         {"response", {{"type", "init_items"}, {"canvas_id", id}, {"scope", std::string(spaceScopeWire(scope))}, {"items", visible}, {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin",admin},
-                      {"participant_joined", participantJoined}, {"edit_protocol",2},{"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
+                      {"participant_joined", participantJoined}, {"edit_protocol",2},{"points_protocol",1},{"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
 }
 Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output) {
     auto route = routing(input); int id = route["canvas_id"];
@@ -452,7 +452,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
                 if (entry.value().value("kind", "") != "host-tombstone" && queryCanAccess(entry.value(),groups,admin)) {
                     auto item=entry.value();if(agora::canvas::isChatRoomItem(item)){item.erase("data");item.erase("requests");}items[entry.key()]=std::move(item);
                 }
-            return envelope(route, {{"type","canvas_snapshot"},{"edit_protocol",2},{"sync_protocol",2},{"sync_user_id",identity["user_id"]},{"items",items},{"revision",(*sync)["revision"]},{"client_id",client},{"accepted_count",accepted}});
+            return envelope(route, {{"type","canvas_snapshot"},{"edit_protocol",2},{"points_protocol",1},{"sync_protocol",2},{"sync_user_id",identity["user_id"]},{"items",items},{"revision",(*sync)["revision"]},{"client_id",client},{"accepted_count",accepted}});
         }
         if (!event.contains("request_count") || !event["request_count"].is_number_integer()) throw std::invalid_argument("CLIENT_SEQUENCE_INVALID");
         const auto count=event["request_count"].get<long long>();
