@@ -68,6 +68,16 @@ void operations(){
  auto executor=shape; executor["runtimeRole"]="executor";
  auto accepted=run(Json::array({{{"action","create"},{"id","executor"},{"patch",executor}}}));
  AGORA_CHECK(accepted.items["executor"]["runtimeRole"]=="executor");
+ auto timer=shape;
+ timer["runtimeRole"]="timer";
+ timer["timerDuration"]=300;
+ timer["timerRemaining"]=300000;
+ timer["timerDeadline"]=0;
+ auto created_timer=run(Json::array({{{"action","create"},{"id","timer"},{"patch",timer}}}));
+ store["timer"]=created_timer.items["timer"];
+ auto started_timer=run(Json::array({{{"action","patch"},{"id","timer"},{"patch",{{"timerDeadline",1795000000000LL}}}}}));
+ AGORA_CHECK(started_timer.items["timer"]["timerDeadline"]==1795000000000LL);
+ reject(Json::array({{{"action","patch"},{"id","timer"},{"patch",{{"timerRemaining",300001}}}}}));
  auto terminal=shape;terminal["runtimeRole"]="terminal";
  auto connected=run(Json::array({{{"action","create"},{"id","terminal"},{"patch",terminal}}}));
  AGORA_CHECK(connected.items["terminal"]["runtimeRole"]=="terminal");

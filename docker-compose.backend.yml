@@ -2,7 +2,7 @@ name: agora-backend
 
 services:
   service-tls-init:
-    image: eclipse-temurin:26-jdk
+    image: eclipse-temurin:27-jdk
     user: "0:0"
     restart: "no"
     network_mode: none

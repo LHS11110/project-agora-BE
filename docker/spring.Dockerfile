@@ -1,4 +1,4 @@
-FROM eclipse-temurin:26-jdk AS build
+FROM eclipse-temurin:27-jdk AS build
 
 WORKDIR /workspace
 
@@ -13,7 +13,7 @@ COPY cpp/third_party/uWebSockets/LICENSE cpp/third_party/uWebSockets/LICENSE
 RUN chmod +x spring/gradlew \
     && ./spring/gradlew --no-daemon -p spring bootJar
 
-FROM eclipse-temurin:26-jre
+FROM eclipse-temurin:27-jre
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
