@@ -26,7 +26,7 @@ class GoogleOAuthIntegrationTest {
     @MockitoBean CppServerClient cpp;
     @MockitoBean CanvasRedisDocumentReader redis;
     @TestBean(methodName="database") DataSource dataSource;
-    static DataSource database() {var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:google_auth;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
+    static DataSource database() {var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:google_auth;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");db.setUsername("sa");return db;}
     @Autowired WebApplicationContext context;
     MockMvc mvc;
     @BeforeEach void setup(){mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();}

@@ -24,7 +24,7 @@ class NoDefaultUsersIntegrationTest {
 
     static DataSource emptyDatabase() {
         HikariDataSource db = new HikariDataSource();
-        db.setJdbcUrl("jdbc:h2:mem:no_default_users;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE");
+        db.setJdbcUrl("jdbc:h2:mem:no_default_users;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo;DB_CLOSE_ON_EXIT=FALSE");
         db.setUsername("sa");
         return db;
     }

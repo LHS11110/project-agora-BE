@@ -36,7 +36,7 @@ class OrcidIntegrationTest {
     @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @Autowired com.endpoint.frelog.domain.auth.service.AuthService auth;
     @TestBean(methodName="database") DataSource dataSource;
-    static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:irade_orcid;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
+    static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:irade_orcid;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");db.setUsername("sa");return db;}
     @Autowired WebApplicationContext context;
     @Autowired OrcidAttemptRepository attempts;
     @Autowired UserRepository users;

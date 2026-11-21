@@ -248,3 +248,6 @@ appendonlydir/
 
 # Private optional provider configuration
 .secrets/
+
+# Public self-signed CA certificate (no private key) used only by Spring tests
+!spring/src/test/resources/test-service-ca.pem

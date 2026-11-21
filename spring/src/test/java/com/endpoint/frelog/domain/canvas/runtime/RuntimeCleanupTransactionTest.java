@@ -26,7 +26,7 @@ class RuntimeCleanupTransactionTest {
     @Configuration @EnableTransactionManagement
     static class Config {
         @Bean DataSource dataSource() {
-            var ds=new DriverManagerDataSource("jdbc:h2:mem:cleanup_tx;MODE=MSSQLServer;DB_CLOSE_DELAY=-1","sa","");
+            var ds=new DriverManagerDataSource("jdbc:h2:mem:cleanup_tx;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo","sa","");
             new ResourceDatabasePopulator(new ClassPathResource("runtime-cleanup-test.sql")).execute(ds);return ds;
         }
         @Bean JdbcTemplate jdbc(DataSource ds) { return new JdbcTemplate(ds); }

@@ -165,6 +165,8 @@ class CanvasRuntimeControllerTest {
         var request = new CanvasRuntimeController.ExecuteRequest("python", "print(1)", "grant");
         assertEquals("1", controller.execute(12, request, user).getBody().get("output"));
         doc.setSettingsRevision(100L);
+        // The runtime receives the current settings revision; the grant still applies.
+        when(runtime.execute(12, "python", "print(1)", null, 7L, 100L, null)).thenReturn(Map.of("output", "1"));
         assertEquals("1", controller.execute(12, request, user).getBody().get("output"));
         doc.setPasswordRevision(5L);
         assertThrows(CustomException.class, () -> controller.execute(12, request, user));

@@ -29,7 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class EmailVerificationIntegrationTest {
  @MockitoBean CppServerClient cpp;@MockitoBean CanvasRedisDocumentReader redis;@MockitoBean VerificationMailer mail;
  @TestBean(methodName="database") DataSource dataSource;
- static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:email_verify;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");d.setUsername("sa");return d;}
+ static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:email_verify;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");d.setUsername("sa");return d;}
  @TestBean(methodName="clock") Clock mfaClock;
  static Clock clock(){return new MutableClock();}
  static class MutableClock extends Clock {Instant value=Instant.now();public ZoneId getZone(){return ZoneOffset.UTC;}public Clock withZone(ZoneId zone){return this;}public Instant instant(){return value;}void advance(long seconds){value=value.plusSeconds(seconds);}}

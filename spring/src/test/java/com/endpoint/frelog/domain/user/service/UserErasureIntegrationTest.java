@@ -36,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class UserErasureIntegrationTest {
  @MockitoBean CppServerClient cpp;@MockitoBean CanvasRedisDocumentReader redis;@MockitoBean VerificationMailer mail;@MockitoBean UserProfileImageService images;
  @TestBean(methodName="database") DataSource dataSource;
- static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:user_erasure;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
+ static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:user_erasure;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");db.setUsername("sa");return db;}
  @Autowired AuthService auth;@Autowired UserRepository users;@Autowired EmailVerificationService email;@Autowired MfaService mfa;@Autowired JwtTokenProvider tokens;@Autowired WebApplicationContext context;
  MockMvc mvc;JdbcTemplate sql;List<String> codes;
  @BeforeEach void setup(){mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();sql=new JdbcTemplate(dataSource);codes=new ArrayList<>();when(mail.available()).thenReturn(true);doAnswer(i->{codes.add(i.getArgument(1));return null;}).when(mail).send(anyString(),anyString());}

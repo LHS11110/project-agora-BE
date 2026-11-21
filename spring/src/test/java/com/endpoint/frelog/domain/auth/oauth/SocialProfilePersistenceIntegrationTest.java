@@ -36,7 +36,7 @@ class SocialProfilePersistenceIntegrationTest {
  @MockitoBean CppServerClient cpp;@MockitoBean CanvasRedisDocumentReader redis;@MockitoBean VerificationMailer mail;
  @MockitoSpyBean SocialProfileImageService importer;
  @TestBean(methodName="database") DataSource dataSource;
- static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:social_profile;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");d.setUsername("sa");return d;}
+ static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:social_profile;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");d.setUsername("sa");return d;}
  @Autowired AuthService auth;@Autowired UserRepository users;@Autowired UserProfileImageService images;@Autowired EmailVerificationService email;@Autowired PlatformTransactionManager manager;
  @TempDir Path directory;List<String> codes;
  byte[] png(int color) throws Exception {var image=new BufferedImage(2,2,BufferedImage.TYPE_INT_RGB);image.setRGB(0,0,color);var out=new ByteArrayOutputStream();ImageIO.write(image,"png",out);return out.toByteArray();}

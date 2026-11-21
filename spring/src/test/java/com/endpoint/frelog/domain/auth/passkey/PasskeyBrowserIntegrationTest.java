@@ -24,7 +24,7 @@ class PasskeyBrowserIntegrationTest {
     @MockitoBean CppServerClient cpp;
     @MockitoBean CanvasRedisDocumentReader redis;
     @TestBean(methodName="database") DataSource dataSource;
-    static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:passkey_browser;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
+    static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:passkey_browser;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");db.setUsername("sa");return db;}
     @LocalServerPort int port;
     @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @Autowired UserRepository users;

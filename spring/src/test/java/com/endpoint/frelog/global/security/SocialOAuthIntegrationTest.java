@@ -35,7 +35,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class SocialOAuthIntegrationTest {
  @MockitoBean CppServerClient cpp;@MockitoBean CanvasRedisDocumentReader redis;@MockitoBean VerificationMailer mail;
  @TestBean(methodName="database") DataSource dataSource;
- static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:social_oauth;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");d.setUsername("sa");return d;}
+ static DataSource database(){var d=new HikariDataSource();d.setJdbcUrl("jdbc:h2:mem:social_oauth;MODE=MSSQLServer;DB_CLOSE_DELAY=-1;INIT=CREATE SCHEMA IF NOT EXISTS dbo\\;SET SCHEMA dbo");d.setUsername("sa");return d;}
  static HttpServer vendor;
  static List<String> tokenForms=new CopyOnWriteArrayList<>();
  static String naverSubject="naver-subject",naverEmail="naver@example.invalid",kakaoEmail="kakao@example.invalid";
