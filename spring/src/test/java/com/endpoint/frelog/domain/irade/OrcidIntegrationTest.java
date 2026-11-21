@@ -33,6 +33,7 @@ class OrcidIntegrationTest {
     @MockitoBean CanvasRedisDocumentReader redis;
     @MockitoBean CanvasService canvases;
     @MockitoBean com.endpoint.frelog.domain.user.service.UserProfileImageService images;
+    @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @Autowired com.endpoint.frelog.domain.auth.service.AuthService auth;
     @TestBean(methodName="database") DataSource dataSource;
     static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:irade_orcid;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
@@ -103,7 +104,7 @@ class OrcidIntegrationTest {
     }
     @Test void existingAccountMustExplicitlyAuthenticateBeforeLinking() throws Exception {
         var user=users.saveAndFlush(new User("existing@example.invalid",null,"Existing researcher",1,Role.ROLE_USER));
-        String token=tokens.createToken(user.getEmail(),1,user.getNickname(),"ROLE_USER","127.0.0.1");
+        String token=com.endpoint.frelog.TestSessions.token(authSessions,user,"127.0.0.1");
         mvc.perform(post("/api/irade/auth/orcid/link").contentType("application/json").content("{}").header("Origin",ORIGIN)).andExpect(status().isUnauthorized());
         mvc.perform(post("/api/irade/auth/orcid/link").contentType("application/json").content("{}").header("Authorization","Bearer "+token).header("Origin","https://attacker.invalid")).andExpect(status().isForbidden());
         var start=mvc.perform(post("/api/irade/auth/orcid/link").contentType("application/json").content("{\"workspace\":42}").header("Authorization","Bearer "+token).header("Origin",ORIGIN)).andExpect(status().isOk()).andReturn();
@@ -113,7 +114,7 @@ class OrcidIntegrationTest {
     }
     @Test void authenticatedOrcidIsRequiredAndCreationIsPrivate() throws Exception {
         mvc.perform(get("/api/irade/workspaces")).andExpect(status().isUnauthorized());
-        var user=users.saveAndFlush(new User("unlinked@example.invalid",null,"Unlinked",1,Role.ROLE_USER));String ordinary=tokens.createToken(user.getEmail(),1,user.getNickname(),"ROLE_USER","127.0.0.1");
+        var user=users.saveAndFlush(new User("unlinked@example.invalid",null,"Unlinked",1,Role.ROLE_USER));String ordinary=com.endpoint.frelog.TestSessions.token(authSessions,user,"127.0.0.1");
         mvc.perform(get("/api/irade/workspaces").header("Authorization","Bearer "+ordinary)).andExpect(status().isForbidden());verifyNoInteractions(canvases);
         String token=login();when(canvases.createSpace(eq(com.endpoint.frelog.domain.canvas.dto.DocumentScope.WORKSPACE),eq("Research"),isNull(),isNull(),isNull(),any(),eq("private"))).thenReturn(new CanvasSummaryResponse(43,null,null,"Research",1,"private"));
         mvc.perform(post("/api/irade/workspaces").header("Authorization","Bearer "+token).contentType("application/json").content("{\"name\":\"Research\"}")).andExpect(status().isCreated()).andExpect(jsonPath("$.workspaceId").value(43));

@@ -17,9 +17,10 @@ class CanvasTerminalSocketTest {
  final CustomUserDetailsService users=mock(CustomUserDetailsService.class);
  final CustomUserDetails user=mock(CustomUserDetails.class);
  final MfaService mfa=mock(MfaService.class);
- final CanvasTerminalSocket handler=new CanvasTerminalSocket(access,runtime,tokens,users,mfa,mock(CanvasBotService.class));
+ final com.endpoint.frelog.domain.auth.session.AuthSessionService sessions=mock(com.endpoint.frelog.domain.auth.session.AuthSessionService.class);
+ final CanvasTerminalSocket handler=new CanvasTerminalSocket(access,runtime,tokens,users,mfa,mock(CanvasBotService.class),sessions);
  final ObjectMapper json=new ObjectMapper();
- @BeforeEach void auth(){when(user.getUserId()).thenReturn(7L);when(user.isEnabled()).thenReturn(true);when(user.isAccountNonLocked()).thenReturn(true);when(tokens.validateToken("token")).thenReturn(true);when(tokens.getUserIdFromToken("token")).thenReturn(7L);when(tokens.getClientIpFromToken("token")).thenReturn("127.0.0.1");when(tokens.getEmailFromToken("token")).thenReturn("test@example.invalid");when(users.loadUserByUsername("test@example.invalid")).thenReturn(user);when(mfa.accepts(7L,"token")).thenReturn(true);}
+ @BeforeEach void auth(){when(user.getUserId()).thenReturn(7L);when(user.isEnabled()).thenReturn(true);when(user.isAccountNonLocked()).thenReturn(true);when(tokens.validateToken("token")).thenReturn(true);when(tokens.getUserIdFromToken("token")).thenReturn(7L);when(tokens.getClientIpFromToken("token")).thenReturn("127.0.0.1");when(tokens.getEmailFromToken("token")).thenReturn("test@example.invalid");when(users.loadUserByUsername("test@example.invalid")).thenReturn(user);when(mfa.accepts(7L,"token")).thenReturn(true);when(tokens.isUserAccessToken("token")).thenReturn(true);when(tokens.getSessionId("token")).thenReturn("sid");when(sessions.isActive("sid",7L)).thenReturn(true);when(mfa.acceptsVersion(7L,null)).thenReturn(true);}
  @AfterEach void clean(){handler.destroy();}
  WebSocketSession socket(String id,String ip)throws Exception{var s=mock(WebSocketSession.class);when(s.getId()).thenReturn(id);when(s.getAttributes()).thenReturn(Map.of("clientIp",ip));when(s.isOpen()).thenReturn(true);handler.afterConnectionEstablished(s);return s;}
  String ticket(){return (String)handler.issue(42,"object","grant","Bearer token","127.0.0.1",user).get("ticket");}
@@ -36,7 +37,7 @@ class CanvasTerminalSocketTest {
   var anonymous=socket("anonymous","127.0.0.1");attach(anonymous,"invalid");verify(anonymous).close(CloseStatus.POLICY_VIOLATION);verifyNoInteractions(runtime);
  }
  @Test void revokedTokenCannotAttach()throws Exception{
-  String ticket=ticket();when(tokens.validateToken("token")).thenReturn(false);var socket=socket("revoked","127.0.0.1");attach(socket,ticket);verify(socket).close(CloseStatus.POLICY_VIOLATION);verifyNoInteractions(runtime);
+  String ticket=ticket();when(sessions.isActive("sid",7L)).thenReturn(false);var socket=socket("revoked","127.0.0.1");attach(socket,ticket);verify(socket).close(CloseStatus.POLICY_VIOLATION);verifyNoInteractions(runtime);
  }
  @Test void permissionRevocationClosesAnExistingSocket()throws Exception{
   var bridge=mock(CanvasRuntimeService.TerminalBridge.class);when(runtime.attachTerminal(anyInt(),anyLong(),anyString(),anyInt(),anyInt(),anyLong(),any(),any())).thenReturn(bridge);

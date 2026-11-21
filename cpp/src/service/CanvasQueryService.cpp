@@ -202,6 +202,16 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     const auto member_groups=identity.value("member_groups",identity["groups"]).get<std::unordered_set<std::string>>();
     CanvasAclScope access(identity.value("group_bits",Json::object()),{&groups,&write_groups,&execute_groups,&member_groups});
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    // The broker admits a peer into a call channel only if the channel item is
+    // a voice channel this identity can read.
+    if (type == "voice_channel_access") {
+        const auto channel = event.value("channel", "");
+        if (!validQueryItemId(channel)) throw std::invalid_argument("VOICE_CHANNEL_DENIED");
+        const auto item = readItem(memory, scope, id, channel);
+        if (!item || item->value("kind", "") != "channel" || item->value("channelType", "") != "voice"
+            || !queryCanAccess(*item, groups, admin)) throw std::invalid_argument("VOICE_CHANNEL_DENIED");
+        return envelope(route, {{"type", "voice_channel_access"}, {"ok", true}, {"channel", channel}});
+    }
     if (type == "workspace_files") {
         agora::workspace::validate(event);
         const auto operation = event["operation"].get<std::string>();
@@ -486,7 +496,30 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
                 return readItem(memory,scope,id,item);
             },write_groups,admin,&groups,&execute_groups,&member_groups);
         }
-        const auto result=memory.applyBrokerBatch(scope, id, key, count, route["request_id"], digest, mutation.items, mutation.expected, scope==SpaceScope::Canvas?agora::activity::delta(mutation.previous,mutation.items):Json::object());
+        // Activity counts the user's own edits only, before comment rooms are added.
+        const Json activity=scope==SpaceScope::Canvas?agora::activity::delta(mutation.previous,mutation.items):Json::object();
+        // Deleting an object (including a chat channel) deletes its comment thread too.
+        Json purged_rooms=Json::array();
+        {
+            std::vector<std::string> rooms;
+            for(const auto& entry:mutation.items.items()){
+                if(!entry.value().is_null())continue;
+                const auto old=mutation.previous.value(entry.key(),Json());
+                if(!old.is_object()||agora::canvas::isChatRoomItem(old))continue;
+                rooms.push_back(commentRoomId(entry.key()));
+            }
+            if(!rooms.empty()){
+                const auto existing=memory.readBrokerItems(scope, id, rooms);
+                if(!existing)throw std::runtime_error("STORAGE_UNAVAILABLE");
+                for(const auto& room:rooms){
+                    if(!existing->contains(room)||!agora::canvas::isChatRoomItem((*existing)[room]))continue;
+                    mutation.previous[room]=(*existing)[room];
+                    mutation.items[room]=nullptr;
+                    purged_rooms.push_back(room);
+                }
+            }
+        }
+        const auto result=memory.applyBrokerBatch(scope, id, key, count, route["request_id"], digest, mutation.items, mutation.expected, activity, purged_rooms);
         if(!result)throw std::runtime_error("QUERY_OUTCOME_UNKNOWN");
         if(result->contains("error"))throw std::invalid_argument((*result)["error"].get<std::string>());
         Json response=*result;response["type"]="canvas_result";response["ok"]=true;response["client_id"]=client;response["request_count"]=count;
@@ -662,6 +695,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     Json operations = batch ? event.value("changes", Json::array()) : Json::array({event});
     if (!operations.is_array() || operations.empty() || operations.size() > 512) throw std::invalid_argument("QUERY_BATCH_INVALID");
     Json prepared = Json::array(), broadcasts = Json::array(), results = Json::array();
+    Json purged_rooms = Json::array();
     std::unordered_set<std::string> touched;
     for (auto operation : operations) {
         const auto item_id = operation.value("item_id", operation.value("id", ""));
@@ -680,6 +714,16 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             if (previous && agora::canvas::isChatRoomItem(old)) throw std::invalid_argument("CHAT_QUERY_REQUIRED");
             prepared.push_back({{"type", "item_delete"}, {"item_id", item_id}});
             broadcasts.push_back({{"event", {{"type", "item_delete"}, {"item_id", item_id}}}, {"permission", previous ? old.value("permission", Json::array()) : Json::array()}});
+            // The object's comment thread (a chat channel's messages) goes with it.
+            if (previous && !agora::canvas::isChatRoomItem(old)) {
+                const auto room = commentRoomId(item_id);
+                const auto thread = readItem(memory, scope, id, room);
+                if (thread && agora::canvas::isChatRoomItem(*thread)) {
+                    prepared.push_back({{"type", "item_delete"}, {"item_id", room}});
+                    broadcasts.push_back({{"event", {{"type", "item_delete"}, {"item_id", room}}}, {"permission", thread->value("permission", Json::array())}});
+                    purged_rooms.push_back(room);
+                }
+            }
         } else if (action == "create" || action == "update" || action == "patch") {
             if (action == "create" && previous) throw std::invalid_argument("ITEM_ALREADY_EXISTS");
             if (action == "patch" && !previous) throw std::invalid_argument("ITEM_NOT_FOUND");
@@ -703,6 +747,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             {{"type", type == "host_item_batch" ? "host_batch_result" : "crud_result"}, {"ok", false}, {"code", "STORAGE_UNAVAILABLE"}, {"applied", applied}});
         ++applied;
     }
+    if (!memory.purgeMentionStates(scope, id, purged_rooms)) return envelope(route, {{"type", type == "host_item_batch" ? "host_batch_result" : "crud_result"}, {"ok", false}, {"code", "STORAGE_UNAVAILABLE"}, {"applied", applied}});
     if (!memory.flushCanvas(scope, id)) return envelope(route, {{"type", type == "host_item_batch" ? "host_batch_result" : "crud_result"}, {"ok", false}, {"code", "STORAGE_UNAVAILABLE"}, {"applied", applied}});
     return envelope(route, {{"type", type == "host_item_batch" ? "host_batch_result" : "crud_result"}, {"ok", true}, {"applied", applied}, {"results", results}}, broadcasts);
 }

@@ -23,6 +23,7 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
     private final CustomUserDetailsService users;
     private final MfaService mfa;
     private final CanvasBotService bots;
+    private final com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     private final ObjectMapper json=new ObjectMapper();
     private final ConcurrentHashMap<String,Ticket> tickets=new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String,Connection> connections=new ConcurrentHashMap<>();
@@ -30,6 +31,8 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
     private final java.security.SecureRandom random=new java.security.SecureRandom();
     static final class Ticket {
         final DocumentScope scope;final int canvas;final String object,grant,token,ip;final CustomUserDetails user;final long expires;
+        // Captured from the access token while it is verified; a terminal outlives the short token lifetime.
+        String sessionId,email,mfaVersion,tokenIp;Long tokenUserId;
         Ticket(DocumentScope scope,int canvas,String object,String grant,String token,String ip,CustomUserDetails user){this.scope=scope;this.canvas=canvas;this.object=object;this.grant=grant;this.token=token;this.ip=ip;this.user=user;this.expires=System.nanoTime()+15_000_000_000L;}
     }
     static final class Connection {
@@ -37,7 +40,7 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
         volatile Ticket ticket;volatile CanvasRuntimeService.TerminalBridge bridge;volatile ScheduledFuture<?> monitor;
         Connection(WebSocketSession socket){this.socket=new ConcurrentWebSocketSessionDecorator(socket,5000,131072);}
     }
-    public CanvasTerminalSocket(CanvasRuntimeController access,CanvasRuntimeService runtime,JwtTokenProvider tokens,CustomUserDetailsService users,MfaService mfa,CanvasBotService bots){this.access=access;this.runtime=runtime;this.tokens=tokens;this.users=users;this.mfa=mfa;this.bots=bots;}
+    public CanvasTerminalSocket(CanvasRuntimeController access,CanvasRuntimeService runtime,JwtTokenProvider tokens,CustomUserDetailsService users,MfaService mfa,CanvasBotService bots,com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions){this.authSessions=authSessions;this.access=access;this.runtime=runtime;this.tokens=tokens;this.users=users;this.mfa=mfa;this.bots=bots;}
     public Map<String,Object> issue(int canvas,String object,String grant,String authorization,String ip,CustomUserDetails user){
         return issue(DocumentScope.CANVAS,canvas,object,grant,authorization,ip,user);
     }
@@ -47,7 +50,13 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
         tickets.entrySet().removeIf(e->e.getValue().expires<System.nanoTime());
         if(tickets.size()>=1024)throw new IllegalStateException("Terminal ticket capacity reached");
         byte[] bytes=new byte[32];random.nextBytes(bytes);String secret=Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
-        tickets.put(secret,new Ticket(scope,canvas,object,grant,authorization.substring(7),ip,user));
+        var ticket=new Ticket(scope,canvas,object,grant,authorization.substring(7),ip,user);
+        if(!ticket.token.startsWith(CanvasBotService.PREFIX)){
+            if(!tokens.validateToken(ticket.token)||!tokens.isUserAccessToken(ticket.token))throw new SecurityException("Authentication expired");
+            ticket.sessionId=tokens.getSessionId(ticket.token);ticket.email=tokens.getEmailFromToken(ticket.token);ticket.mfaVersion=tokens.getMfaVersion(ticket.token);
+            ticket.tokenIp=tokens.getClientIpFromToken(ticket.token);ticket.tokenUserId=tokens.getUserIdFromToken(ticket.token);
+        }
+        tickets.put(secret,ticket);
         return Map.of("ticket",secret,"expiresIn",15,"path","/api/terminal/ws");
     }
     @Override public void afterConnectionEstablished(WebSocketSession socket) throws Exception {
@@ -92,9 +101,9 @@ public class CanvasTerminalSocket extends TextWebSocketHandler {
             if(identity==null||!bots.allowed(identity,"POST","/api/canvases/"+t.canvas+"/runtime/terminal"))throw new SecurityException("Bot revoked");
             current=identity.user();
         }else{
-            if(!tokens.validateToken(t.token)||!Objects.equals(t.user.getUserId(),tokens.getUserIdFromToken(t.token))||!Objects.equals(t.ip,tokens.getClientIpFromToken(t.token)))throw new SecurityException("Authentication expired");
-            current=(CustomUserDetails)users.loadUserByUsername(tokens.getEmailFromToken(t.token));
-            if(!current.isEnabled()||!current.isAccountNonLocked()||!Objects.equals(current.getUserId(),t.user.getUserId())||!mfa.accepts(current.getUserId(),t.token))throw new SecurityException("Account revoked");
+            if(t.sessionId==null||!authSessions.isActive(t.sessionId,t.user.getUserId())||!Objects.equals(t.user.getUserId(),t.tokenUserId)||!Objects.equals(t.ip,t.tokenIp))throw new SecurityException("Authentication expired");
+            current=(CustomUserDetails)users.loadUserByUsername(t.email);
+            if(!current.isEnabled()||!current.isAccountNonLocked()||!Objects.equals(current.getUserId(),t.user.getUserId())||!mfa.acceptsVersion(current.getUserId(),t.mfaVersion))throw new SecurityException("Account revoked");
         }
         if(t.scope==DocumentScope.CANVAS)access.authorizeTerminal(t.canvas,t.object,t.grant,current);else access.authorizeTerminal(t.scope,t.canvas,t.object,t.grant,current);
     }

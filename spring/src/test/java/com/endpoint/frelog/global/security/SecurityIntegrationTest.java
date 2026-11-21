@@ -28,6 +28,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest
 class SecurityIntegrationTest {
+    @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @Test void unauthenticatedRuntimeStreamIsRejectedBeforeExecution() throws Exception {
         mockMvc.perform(post("/api/canvases/1/runtime/execute/stream")
                 .contentType(MediaType.APPLICATION_JSON).content("{\"language\":\"python\",\"code\":\"print(1)\"}"))
@@ -102,13 +103,7 @@ class SecurityIntegrationTest {
         user.setStatus(UserStatus.ACTIVE);
         User savedUser = userRepository.save(user);
 
-        String token = jwtTokenProvider.createToken(
-                savedUser.getEmail(),
-                savedUser.getTagNumber(),
-                savedUser.getNickname(),
-                savedUser.getRole().name(),
-                "127.0.0.1"
-        );
+        String token = com.endpoint.frelog.TestSessions.token(authSessions, savedUser, "127.0.0.1");
 
         // when & then
         mockMvc.perform(post("/api/auth/me")

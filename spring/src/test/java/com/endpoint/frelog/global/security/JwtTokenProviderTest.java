@@ -32,13 +32,26 @@ class JwtTokenProviderTest {
         String role = "ROLE_USER";
 
         Integer tagNumber = 1234;
-        String token = jwtTokenProvider.createToken(email, tagNumber, nickname, role, "127.0.0.1");
+        var user = new com.endpoint.frelog.domain.user.entity.User(email, null, nickname, tagNumber, com.endpoint.frelog.domain.user.entity.Role.ROLE_USER);
+        user.setUserId(userId);
+        String token = jwtTokenProvider.createUserAccessToken(user, "127.0.0.1", null, "session-1");
 
         // then
         assertThat(token).isNotBlank();
         assertThat(jwtTokenProvider.validateToken(token)).isTrue();
         assertThat(jwtTokenProvider.getEmailFromToken(token)).isEqualTo(email);
         assertThat(jwtTokenProvider.getTagNumberFromToken(token)).isEqualTo(tagNumber);
+        assertThat(jwtTokenProvider.isUserAccessToken(token)).isTrue();
+        assertThat(jwtTokenProvider.getSessionId(token)).isEqualTo("session-1");
+    }
+
+    @Test
+    @DisplayName("캔버스 접근 토큰과 비밀번호 grant는 로그인 access token으로 인정하지 않는다")
+    void otherTokenKindsAreNotUserAccessTokens() {
+        String canvas = jwtTokenProvider.createCanvasAccessToken("테스터", 1, 1, "127.0.0.1", "server-hash", 0L);
+        String grant = jwtTokenProvider.createCanvasPasswordGrant(1L, 1, 0L);
+        assertThat(jwtTokenProvider.isUserAccessToken(canvas)).isFalse();
+        assertThat(jwtTokenProvider.isUserAccessToken(grant)).isFalse();
     }
 
     @Test
@@ -78,8 +91,9 @@ class JwtTokenProviderTest {
     @DisplayName("만료된 JWT 토큰 검증 시 false 반환")
     void validateToken_Expired() {
         // given: 만료 시간이 -1000ms인 provider
-        JwtTokenProvider expiredProvider = new JwtTokenProvider(SECRET, -1000);
-        String token = expiredProvider.createToken("test@agora.com", 1234, "테스터", "ROLE_USER", "127.0.0.1");
+        JwtTokenProvider expiredProvider = new JwtTokenProvider(SECRET, -1000, -1000, null);
+        var user = new com.endpoint.frelog.domain.user.entity.User("test@agora.com", null, "테스터", 1234, com.endpoint.frelog.domain.user.entity.Role.ROLE_USER);
+        String token = expiredProvider.createUserAccessToken(user, "127.0.0.1", null, "session-1");
 
         // when & then
         assertThat(jwtTokenProvider.validateToken(token)).isFalse();

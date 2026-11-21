@@ -25,6 +25,7 @@ class GoogleLoginTest {
     @Mock JwtTokenProvider tokens;
     @Mock private com.endpoint.frelog.domain.auth.mfa.MfaService mfa;
     @Mock private com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification;
+    @Mock com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @InjectMocks AuthService auth;
 
     OidcUser principal() {
@@ -52,7 +53,7 @@ class GoogleLoginTest {
         when(users.findMaxTagNumberByNicknameForUpdate("Person")).thenReturn(2);
         when(users.save(any())).thenAnswer(i -> { User u = i.getArgument(0);u.setUserId(7L);u.setOauthProvider("google");u.setOauthId("google-subject");return u; });
         when(sessions.findByIdWithPessimisticLock(7L)).thenReturn(Optional.empty());
-        when(tokens.createToken(any(), any(), any(), any(), any())).thenReturn("frelog-jwt");
+        when(authSessions.issue(any(), any(), any())).thenReturn("frelog-jwt");
         var result = auth.loginGoogle(p, new MockHttpServletRequest());
         var captor = ArgumentCaptor.forClass(User.class);verify(users).save(captor.capture());
         User u = captor.getValue();assertThat(u.getRole()).isEqualTo(Role.ROLE_USER);
@@ -66,7 +67,7 @@ class GoogleLoginTest {
         when(sessions.findByIdWithPessimisticLock(7L)).thenReturn(Optional.empty());
         auth.loginGoogle(p, new MockHttpServletRequest());
         verify(users, never()).save(any());verify(users, never()).existsByEmail(any());
-        verify(tokens).createToken(eq("previous@example.com"),eq(1),eq("Person"),eq("ROLE_USER"),any());
+        verify(authSessions).issue(eq(u),any(),isNull());
     }
     @Test void suspendedAccountsCannotLogin() {
         OidcUser p = principal();User u = new User("person@example.com", null, "Person", 1, Role.ROLE_USER);
@@ -87,7 +88,7 @@ class GoogleLoginTest {
         doAnswer(i->{((User)i.getArgument(0)).erasePersonalData();return null;}).when(erasure).erase(old);
         when(users.save(any())).thenAnswer(i -> { User u = i.getArgument(0); u.setUserId(8L); return u; });
         when(sessions.findByIdWithPessimisticLock(8L)).thenReturn(Optional.empty());
-        when(tokens.createToken(any(), any(), any(), any(), any())).thenReturn("new-user-jwt");
+        when(authSessions.issue(any(), any(), any())).thenReturn("new-user-jwt");
         var result = auth.loginGoogle(p, new MockHttpServletRequest());
         var order = inOrder(users); order.verify(users).findByOauthProviderAndOauthId("google", "google-subject");
         order.verify(users).saveAndFlush(old); order.verify(users).existsByEmail("person@example.com");

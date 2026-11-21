@@ -16,7 +16,7 @@ public class UserErasureService {
         Long id=user.getUserId();String email=user.getEmail();
         // Follow the email-proof -> user ordering used by signup.
         if(email!=null)entityManager.createQuery("delete from EmailProof p where p.email=:email").setParameter("email",email).executeUpdate();
-        for(String type:new String[]{"QrLogin","MfaChallenge","MfaState","PasskeyChallenge","PasskeyCredential","UserSession"})
+        for(String type:new String[]{"QrLogin","MfaChallenge","MfaState","PasskeyChallenge","PasskeyCredential","UserSession","AuthSession"})
             entityManager.createQuery("delete from "+type+" p where p.userId=:id").setParameter("id",id).executeUpdate();
         entityManager.createNativeQuery("SELECT user_id FROM dbo.users WITH(UPDLOCK,HOLDLOCK) WHERE user_id=:id").setParameter("id",id).getResultList();
         entityManager.createNativeQuery("DELETE FROM dbo.user_canvas_activity WHERE user_id=:id").setParameter("id",id).executeUpdate();

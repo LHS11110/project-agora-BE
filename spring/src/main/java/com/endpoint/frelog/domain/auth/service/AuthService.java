@@ -42,11 +42,13 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenProvider jwtTokenProvider;
     private final UserSessionRepository userSessionRepository;
+    private final com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        JwtTokenProvider jwtTokenProvider,
-                       UserSessionRepository userSessionRepository, org.springframework.context.ApplicationEventPublisher events, com.endpoint.frelog.domain.user.service.UserErasureService erasure, com.endpoint.frelog.domain.auth.mfa.MfaService mfa, com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification) {
+                       UserSessionRepository userSessionRepository, org.springframework.context.ApplicationEventPublisher events, com.endpoint.frelog.domain.user.service.UserErasureService erasure, com.endpoint.frelog.domain.auth.mfa.MfaService mfa, com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification, com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions) {
+        this.authSessions = authSessions;
         this.events = events;
         this.erasure = erasure;
         this.mfa = mfa;
@@ -93,7 +95,7 @@ public class AuthService {
         if(mfa.enabled(user.getUserId()))return mfa.challenge(user,request);
         UserSession session=userSessionRepository.findByIdWithPessimisticLock(user.getUserId()).orElseGet(()->new UserSession(user));
         session.updateLastLogin(LocalDateTime.now());userSessionRepository.save(session);
-        return LoginResponse.of(jwtTokenProvider.createOrcidToken(user,request.getRemoteAddr(),null),UserResponse.from(user));
+        return LoginResponse.of(authSessions.issue(user,request,null),UserResponse.from(user));
     }
 
     private LoginResponse completeLogin(User user, HttpServletRequest httpRequest) {
@@ -103,15 +105,8 @@ public class AuthService {
         session.updateLastLogin(LocalDateTime.now());
         userSessionRepository.save(session);
 
-        // Multi-session login: stateless JWT issued per login request
-        String clientIp = httpRequest.getRemoteAddr();
-        String token = jwtTokenProvider.createToken(
-                user.getEmail(),
-                user.getTagNumber(),
-                user.getNickname(),
-                user.getRole().name(),
-                clientIp
-        );
+        // Each login is its own server-side session behind a short-lived access token.
+        String token = authSessions.issue(user, httpRequest, null);
 
         return LoginResponse.of(token, UserResponse.from(user));
     }
@@ -230,6 +225,9 @@ public class AuthService {
         if (request.password() != null) {
             com.endpoint.frelog.domain.auth.validation.PasswordPolicy.validate(request.password());
             user.changePassword(passwordEncoder.encode(request.password()));
+            // Sign out every other device; the caller keeps the session that made the change.
+            boolean self = currentUser != null && java.util.Objects.equals(currentUser.getUserId(), user.getUserId());
+            authSessions.revokeAll(user.getUserId(), self ? authSessions.currentSessionId() : null);
         }
 
         User saved = userRepository.save(user);

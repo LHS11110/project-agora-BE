@@ -37,6 +37,16 @@ void operations(){
  auto unlock=run(Json::array({{{"action","patch"},{"id","box"},{"patch",{{"locked",false}}}}}));AGORA_CHECK(unlock.items["box"]["locked"]==false);
  bool admin_denied=false;try{agora::broker::prepare(Json::array({{{"action","delete"},{"id","box"}}}),read,{},true);}catch(const std::invalid_argument& e){admin_denied=std::string(e.what())=="ITEM_LOCKED";}AGORA_CHECK(admin_denied);
  store["box"]=shape;
+ // Channels: text/voice channels and categories are accepted; their fields stay on channel items.
+ const Json text_channel{{"kind","channel"},{"channelType","text"},{"name","general-2"},{"order",1},{"x",0},{"y",0},{"width",0.01},{"height",0.01},{"permission","writers"}};
+ auto category=text_channel;category["channelType"]="category";category["name"]="Team";
+ auto voice_channel=text_channel;voice_channel["channelType"]="voice";voice_channel["categoryId"]="cat";
+ auto channels=run(Json::array({{{"action","create"},{"id","chan"},{"patch",text_channel}},{{"action","create"},{"id","cat"},{"patch",category}},{{"action","create"},{"id","call"},{"patch",voice_channel}}}));
+ AGORA_CHECK(channels.items["chan"]["channelType"]=="text"&&channels.items["call"]["categoryId"]=="cat"&&channels.items["cat"]["name"]=="Team");
+ auto bad_type=text_channel;bad_type["channelType"]="video";reject(Json::array({{{"action","create"},{"id","bad-type"},{"patch",bad_type}}}));
+ auto no_name=text_channel;no_name.erase("name");reject(Json::array({{{"action","create"},{"id","no-name"},{"patch",no_name}}}));
+ auto nested=category;nested["categoryId"]="cat";reject(Json::array({{{"action","create"},{"id","nested"},{"patch",nested}}}));
+ auto shape_named=shape;shape_named["name"]="x";reject(Json::array({{{"action","create"},{"id","shape-named"},{"patch",shape_named}}}));
  auto bad_lock=shape;bad_lock["locked"]="true";reject(Json::array({{{"action","create"},{"id","bad-lock"},{"patch",bad_lock}}}));
  auto locked_stroke=Json{{"kind","stroke"},{"permission","writers"},{"points",Json::array({{{"x",0},{"y",0}},{{"x",1},{"y",1}}})},{"locked",true}};
  store["stroke-lock"]=locked_stroke;reject(Json::array({{{"action","delete"},{"id","stroke-lock"}}}));

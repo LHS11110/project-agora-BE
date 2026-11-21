@@ -84,6 +84,24 @@ class HttpTests(unittest.TestCase):
   self.assertEqual(e.exception.challenge,'challenge');self.assertIsNone(client._token)
   client.complete_mfa(e.exception.challenge,'123456');client.me();self.assertEqual(calls[-1].headers['Authorization'],'Bearer user-token')
   self.assertNotIn('user-token',repr(client))
+ def test_expired_user_token_is_renewed_once_with_the_refresh_cookie(self):
+  client=AgoraClient();self.addCleanup(client.close);seen=[]
+  def serve(request):
+   if request.url.path=='/api/auth/login':return httpx.Response(200,json={'accessToken':'old','user':{'nickname':'A'}},headers={'set-cookie':'__Secure-agora_refresh=r1; Path=/api/auth/session; Secure; HttpOnly; SameSite=Strict'})
+   if request.url.path=='/api/auth/session/refresh':
+    self.assertEqual(request.headers['X-Agora-Session'],'1');self.assertIn('__Secure-agora_refresh=r1',request.headers.get('cookie',''))
+    return httpx.Response(200,json={'accessToken':'new'})
+   seen.append(request.headers['Authorization'])
+   return httpx.Response(401,json={'reason':'SESSION_EXPIRED'}) if request.headers['Authorization']=='Bearer old' else httpx.Response(200,json={'nickname':'A'})
+  client.http.close();client.http=httpx.Client(base_url=client.base_url,transport=httpx.MockTransport(serve))
+  client.login('a@example.invalid','secret');self.assertEqual(client.me(),{'nickname':'A'})
+  self.assertEqual(seen,['Bearer old','Bearer new'])
+ def test_supplied_token_without_session_cookie_is_not_refreshed(self):
+  client=AgoraClient(token='external');self.addCleanup(client.close);paths=[]
+  def serve(request):paths.append(request.url.path);return httpx.Response(401,json={'message':'expired'})
+  client.http.close();client.http=httpx.Client(base_url=client.base_url,transport=httpx.MockTransport(serve))
+  with self.assertRaises(AgoraError):client.me()
+  self.assertEqual(paths,['/api/auth/me'])
  def test_client_close_closes_owned_canvas_sessions(self):
   client=AgoraClient();session=client.canvas(12);client.close();self.assertTrue(session._closed.is_set())
  def test_origin_validation_prevents_credentials_to_arbitrary_urls(self):

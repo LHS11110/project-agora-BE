@@ -105,6 +105,8 @@ public class SecurityConfig {
                                 "/api/auth/passkeys/login/options",
                                 "/api/auth/passkeys/login/verify",
                                 "/api/auth/login",
+                                "/api/auth/session/refresh",
+                                "/api/auth/session/logout",
                                 "/api/auth/signup",
                                 "/api/auth/me",
                                 "/api/auth/health",

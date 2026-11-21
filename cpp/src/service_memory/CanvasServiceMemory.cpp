@@ -503,7 +503,7 @@ std::optional<nlohmann::json> CanvasServiceMemory::applyBrokerBatch(int id,const
 }
 std::optional<nlohmann::json> CanvasServiceMemory::applyBrokerBatch(SpaceScope scope, int id,const std::string& client,
     long long count,const std::string& request,const std::string& digest,
-    const nlohmann::json& items,const nlohmann::json& expected,const nlohmann::json& activity) {
+    const nlohmann::json& items,const nlohmann::json& expected,const nlohmann::json& activity,const nlohmann::json& purged_rooms) {
     const auto key = spaceRedisKey(scope, id);
     static const std::string script=R"LUA(local key=KEYS[1]
 if redis.call('EXISTS',key)==0 then return cjson.encode({error='CANVAS_NOT_READY'}) end
@@ -547,6 +547,27 @@ for id,item in pairs(changes) do
  end
 end
 redis.call('JSON.SET',key,meta..'["revision"]',tostring(revision))
+-- Comment rooms deleted with their object also lose every mention notification
+-- (which quotes the message) in the same atomic commit.
+local purged=ARGV[8] and cjson.decode(ARGV[8]) or {}
+if #purged>0 then
+ local users=redis.call('JSON.OBJKEYS',key,'$["mention-states"]')
+ users=users and users[1]
+ if type(users)=='table' then
+  for _,user in ipairs(users) do
+   local user_path='$["mention-states"]['..cjson.encode(user)..']'
+   local ids=redis.call('JSON.OBJKEYS',key,user_path)
+   ids=ids and ids[1]
+   if type(ids)=='table' then
+    for _,mention in ipairs(ids) do
+     for _,room in ipairs(purged) do
+      if string.sub(mention,1,#room+1)==room..':' then redis.call('JSON.DEL',key,user_path..'['..cjson.encode(mention)..']') break end
+     end
+    end
+   end
+  end
+ end
+end
 local receipt={count=count,revision=revision,digest=ARGV[4],request_id=ARGV[3]}
 local totals=previous and previous.activity or {}
 local activity=ARGV[7] and cjson.decode(ARGV[7]) or {}
@@ -563,12 +584,14 @@ return cjson.encode({duplicate=false,revision=revision,server_revision=revision,
     const auto path="$[\"__broker_sync\"][\"clients\"]["+nlohmann::json(client).dump()+"]";
     std::vector<std::string> changed={"$[\"__broker_sync\"]"};
     for(const auto& entry:items.items())changed.push_back(canvasItemJsonPath(entry.key()));
+    if(purged_rooms.is_array()&&!purged_rooms.empty())changed.push_back("$[\"mention-states\"]");
     // Keep each item's original JSON encoding. Lua cjson turns [] into {},
     // which would corrupt CRDT histories, empty tables, and drawing arrays.
     nlohmann::json encoded=nlohmann::json::object();
     for(const auto& entry:items.items())encoded[entry.key()]=entry.value().is_null()?nlohmann::json():nlohmann::json(entry.value().dump());
     const auto response=memory_->executeAtomic(key,{"EVAL",script,"1",key,path,
-        std::to_string(count),request,digest,encoded.dump(),expected.dump(),activity.dump()},changed);
+        std::to_string(count),request,digest,encoded.dump(),expected.dump(),activity.dump(),
+        (purged_rooms.is_array()?purged_rooms:nlohmann::json::array()).dump()},changed);
     if(!response)return std::nullopt;
     try{return nlohmann::json::parse(*response);}catch(...){return std::nullopt;}
 }
@@ -631,6 +654,32 @@ return 'OK'
     const auto reply = memory_->executeAtomic(key, {"EVAL", script, "1", key, user_path, path,
         record.dump(), unread ? "create" : "read", std::to_string(user_id)}, changed);
     return reply == "OK";
+}
+
+bool CanvasServiceMemory::purgeMentionStates(SpaceScope scope, int id, const nlohmann::json& rooms) {
+    if (!rooms.is_array() || rooms.empty()) return true;
+    const auto key = spaceRedisKey(scope, id);
+    static const std::string script = R"LUA(
+if redis.call('EXISTS', KEYS[1]) == 0 then return 'OK' end
+local purged = cjson.decode(ARGV[1])
+local users = redis.call('JSON.OBJKEYS', KEYS[1], '$["mention-states"]')
+users = users and users[1]
+if type(users) ~= 'table' then return 'OK' end
+for _, user in ipairs(users) do
+ local user_path = '$["mention-states"][' .. cjson.encode(user) .. ']'
+ local ids = redis.call('JSON.OBJKEYS', KEYS[1], user_path)
+ ids = ids and ids[1]
+ if type(ids) == 'table' then
+  for _, mention in ipairs(ids) do
+   for _, room in ipairs(purged) do
+    if string.sub(mention, 1, #room + 1) == room .. ':' then redis.call('JSON.DEL', KEYS[1], user_path .. '[' .. cjson.encode(mention) .. ']') break end
+   end
+  end
+ end
+end
+return 'OK'
+)LUA";
+    return memory_->executeAtomic(key, {"EVAL", script, "1", key, rooms.dump()}, {"$[\"mention-states\"]"}) == "OK";
 }
 
 std::optional<nlohmann::json> CanvasServiceMemory::readMentionStates(int id, long long user_id) {

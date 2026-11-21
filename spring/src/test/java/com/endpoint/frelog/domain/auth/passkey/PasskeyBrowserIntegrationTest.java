@@ -26,6 +26,7 @@ class PasskeyBrowserIntegrationTest {
     @TestBean(methodName="database") DataSource dataSource;
     static DataSource database(){var db=new HikariDataSource();db.setJdbcUrl("jdbc:h2:mem:passkey_browser;MODE=MSSQLServer;DB_CLOSE_DELAY=-1");db.setUsername("sa");return db;}
     @LocalServerPort int port;
+    @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @Autowired UserRepository users;
     @Autowired JwtTokenProvider tokens;
     @Autowired org.springframework.security.crypto.password.PasswordEncoder passwords;
@@ -36,8 +37,8 @@ class PasskeyBrowserIntegrationTest {
         Path output=Files.createTempFile("passkey-browser-", ".log");
         var builder=new ProcessBuilder("node","src/test/browser/passkeys.mjs");
         builder.environment().put("AGORA_PASSKEY_BACKEND","http://127.0.0.1:"+port);
-        builder.environment().put("AGORA_PASSKEY_TOKEN",tokens.createToken(first.getEmail(),1,first.getNickname(),"ROLE_USER","127.0.0.1"));
-        builder.environment().put("AGORA_PASSKEY_OTHER_TOKEN",tokens.createToken(second.getEmail(),1,second.getNickname(),"ROLE_USER","127.0.0.1"));
+        builder.environment().put("AGORA_PASSKEY_TOKEN",com.endpoint.frelog.TestSessions.token(authSessions,first,"127.0.0.1"));
+        builder.environment().put("AGORA_PASSKEY_OTHER_TOKEN",com.endpoint.frelog.TestSessions.token(authSessions,second,"127.0.0.1"));
         builder.redirectErrorStream(true).redirectOutput(output.toFile());
         var process=builder.start();
         if(!process.waitFor(120,TimeUnit.SECONDS)){process.destroyForcibly();throw new AssertionError("Browser test timed out: "+Files.readString(output));}

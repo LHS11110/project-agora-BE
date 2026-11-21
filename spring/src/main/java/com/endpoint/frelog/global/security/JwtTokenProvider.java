@@ -25,14 +25,19 @@ public class JwtTokenProvider {
 
     private final SecretKey key;
     private final long expirationMs;
+    private final long accessExpirationMs;
+    public static final String TOKEN_USE_CLAIM = "tokenUse";
+    public static final String ACCESS_TOKEN_USE = "access";
+    public static final String SESSION_CLAIM = "sid";
     private final com.endpoint.frelog.domain.user.repository.UserRepository users;
 
-    public JwtTokenProvider(String secret,long expirationMs){this(secret,expirationMs,null);}
+    public JwtTokenProvider(String secret,long expirationMs){this(secret,expirationMs,900000L,null);}
 
     @org.springframework.beans.factory.annotation.Autowired
     public JwtTokenProvider(
             @Value("${jwt.secret}") String secret,
             @Value("${jwt.expiration-ms:86400000}") long expirationMs,
+            @Value("${jwt.access-expiration-ms:900000}") long accessExpirationMs,
             com.endpoint.frelog.domain.user.repository.UserRepository users) {
         // Match the C++ server's HS256 verifier for every supported key length.
         byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
@@ -41,44 +46,37 @@ public class JwtTokenProvider {
         }
         this.key = new SecretKeySpec(keyBytes, "HmacSHA256");
         this.expirationMs = expirationMs;
+        this.accessExpirationMs = accessExpirationMs;
         this.users = users;
     }
 
-    public String createToken(String email, Integer tagNumber, String nickname, String role, String clientIp) {
-        Date now = new Date();
-        Date validity = new Date(now.getTime() + expirationMs);
-
-        return Jwts.builder()
-                .subject(email)
-                .claim("userId", accountId(email))
-                .claim("tagNumber", tagNumber)
-                .claim("nickname", nickname)
-                .claim("role", role)
-                .claim("clientIp", clientIp)
-                .issuedAt(now)
-                .expiration(validity)
-                .signWith(key, Jwts.SIG.HS256)
-                .compact();
-    }
-
-    /** Application identity after a server-verified ORCID exchange, including accounts without public email. */
-    public String createOrcidToken(com.endpoint.frelog.domain.user.entity.User user,String ip,String mfaVersion) {
-        if(user.getUserId()==null||user.getOrcid()==null||user.getOrcidIssuer()==null)throw new IllegalArgumentException("ORCID account required");
+    /** Login access token bound to a server-side session ({@code sid}); valid only while that session is. */
+    public String createUserAccessToken(com.endpoint.frelog.domain.user.entity.User user,String clientIp,String mfaVersion,String sessionId) {
+        if(sessionId==null||sessionId.isBlank())throw new IllegalArgumentException("Session id required");
         Date now=new Date();
-        return Jwts.builder().subject("irade-user:"+user.getUserId()).claim("userId",user.getUserId()).claim("authType","orcid")
-            .claim("orcid",user.getOrcid()).claim("orcidIssuer",user.getOrcidIssuer()).claim("tagNumber",user.getTagNumber()).claim("nickname",user.getNickname())
-            .claim("role",user.getRole().name()).claim("clientIp",ip).claim("mfa_version",mfaVersion).issuedAt(now).expiration(new Date(now.getTime()+expirationMs)).signWith(key,Jwts.SIG.HS256).compact();
+        boolean orcid=user.getEmail()==null&&user.getOrcid()!=null;
+        if(orcid&&(user.getUserId()==null||user.getOrcidIssuer()==null))throw new IllegalArgumentException("ORCID account required");
+        var builder=Jwts.builder().subject(orcid?"irade-user:"+user.getUserId():user.getEmail())
+                .claim("userId",user.getUserId()).claim("tagNumber",user.getTagNumber()).claim("nickname",user.getNickname())
+                .claim("role",user.getRole().name()).claim("clientIp",clientIp)
+                .claim(TOKEN_USE_CLAIM,ACCESS_TOKEN_USE).claim(SESSION_CLAIM,sessionId);
+        if(orcid)builder.claim("authType","orcid").claim("orcid",user.getOrcid()).claim("orcidIssuer",user.getOrcidIssuer());
+        if(mfaVersion!=null)builder.claim("mfa_version",mfaVersion);
+        return builder.issuedAt(now).expiration(new Date(now.getTime()+accessExpirationMs)).signWith(key,Jwts.SIG.HS256).compact();
     }
+    /** Canvas, workspace and password-grant tokens share the key but never authenticate API requests. */
+    public boolean isUserAccessToken(String token){
+        var claims=getClaims(token);
+        return ACCESS_TOKEN_USE.equals(claims.get(TOKEN_USE_CLAIM,String.class))&&claims.get(SESSION_CLAIM,String.class)!=null;
+    }
+    public String getSessionId(String token){return getClaims(token).get(SESSION_CLAIM,String.class);}
+
     public boolean isOrcidToken(String token){return "orcid".equals(getClaims(token).get("authType",String.class));}
     public boolean matchesOrcidIdentity(String token,com.endpoint.frelog.domain.user.entity.User user){
         var claims=getClaims(token);return user.getOrcid()!=null&&user.getOrcidIssuer()!=null&&("irade-user:"+user.getUserId()).equals(claims.getSubject())
             &&user.getOrcid().equals(claims.get("orcid",String.class))&&user.getOrcidIssuer().equals(claims.get("orcidIssuer",String.class));
     }
 
-    public String createMfaToken(String email,Integer tag,String name,String role,String ip,String version) {
-        Date now=new Date();return Jwts.builder().subject(email).claim("userId",accountId(email)).claim("tagNumber",tag).claim("nickname",name).claim("role",role).claim("clientIp",ip).claim("mfa_version",version).issuedAt(now).expiration(new Date(now.getTime()+expirationMs)).signWith(key,Jwts.SIG.HS256).compact();
-    }
-    private Long accountId(String email){return users==null?null:users.findByEmail(email).map(com.endpoint.frelog.domain.user.entity.User::getUserId).orElse(null);}
     public Long getUserIdFromToken(String token){Object value=getClaims(token).get("userId");return value instanceof Number n?n.longValue():null;}
     public String getMfaVersion(String token) { return getClaims(token).get("mfa_version",String.class); }
     public Date getIssuedAt(String token) { return getClaims(token).getIssuedAt(); }

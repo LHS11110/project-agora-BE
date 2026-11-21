@@ -80,7 +80,8 @@ public:
         const nlohmann::json& items, const nlohmann::json& expected);
     std::optional<nlohmann::json> applyBrokerBatch(SpaceScope scope, int canvas_id, const std::string& client_key,
         long long count, const std::string& request_id, const std::string& digest,
-        const nlohmann::json& items, const nlohmann::json& expected, const nlohmann::json& activity = nlohmann::json::object());
+        const nlohmann::json& items, const nlohmann::json& expected, const nlohmann::json& activity = nlohmann::json::object(),
+        const nlohmann::json& purged_rooms = nlohmann::json::array());
     std::optional<nlohmann::json> agentSessions(int canvas_id, const std::string& action, const nlohmann::json& arguments);
     std::optional<nlohmann::json> agentItemIds(int canvas_id,int offset,int limit);
     std::optional<nlohmann::json> brokerActivityClients(int canvas_id);
@@ -95,6 +96,8 @@ public:
     bool storeMentionState(SpaceScope scope, int canvas_id, long long user_id, const std::string& mention_id,
                            const nlohmann::json& notification, bool unread);
     std::optional<nlohmann::json> readMentionStates(int canvas_id, long long user_id);
+    /** Removes every user's mention notifications that point into the given chat rooms. */
+    bool purgeMentionStates(SpaceScope scope, int canvas_id, const nlohmann::json& rooms);
     std::optional<nlohmann::json> readMentionStates(SpaceScope scope, int canvas_id, long long user_id);
     std::optional<nlohmann::json> commitChatMessage(int canvas_id, const std::string& room_id,
         const nlohmann::json& permission, const nlohmann::json& message);

@@ -48,6 +48,7 @@ class AuthServiceTest {
 
     @Mock private com.endpoint.frelog.domain.auth.mfa.MfaService mfa;
     @Mock private com.endpoint.frelog.domain.auth.email.EmailVerificationService emailVerification;
+    @Mock private com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
     @InjectMocks
     private AuthService authService;
 
@@ -68,8 +69,8 @@ class AuthServiceTest {
         given(userRepository.findByEmail(request.email())).willReturn(Optional.of(activeUser));
         given(passwordEncoder.matches("password123", "encodedPassword123")).willReturn(true);
         HttpServletRequest httpRequest = org.mockito.Mockito.mock(HttpServletRequest.class);
-        given(httpRequest.getRemoteAddr()).willReturn("127.0.0.1");
-        given(jwtTokenProvider.createToken(eq(activeUser.getEmail()), eq(1), eq("아고라유저"), eq("ROLE_USER"), eq("127.0.0.1")))
+        
+        given(authSessions.issue(eq(activeUser), eq(httpRequest), org.mockito.ArgumentMatchers.isNull()))
                 .willReturn("mock-jwt-token");
         // when
         LoginResponse response = authService.login(request, httpRequest);

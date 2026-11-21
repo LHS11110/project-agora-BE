@@ -33,11 +33,12 @@ class MfaIntegrationTest {
  @TestBean(methodName="clock") Clock mfaClock;
  static Clock clock(){return new MutableClock();}
  static class MutableClock extends Clock {Instant value=Instant.now();public ZoneId getZone(){return ZoneOffset.UTC;}public Clock withZone(ZoneId zone){return this;}public Instant instant(){return value;}void advance(long seconds){value=value.plusSeconds(seconds);}}
+ @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
  @Autowired MfaService mfa;@Autowired MfaStateRepository states;@Autowired MfaChallengeRepository challenges;
  @Autowired UserRepository users;@Autowired UserSessionRepository sessions;@Autowired PasswordEncoder passwords;@Autowired JwtTokenProvider tokens;@Autowired AuthService auth;
  @Autowired WebApplicationContext context;
  User user;String original,secret;MockHttpServletRequest request;MockMvc mvc;
- @BeforeEach void setup(){challenges.deleteAll();states.deleteAll();sessions.deleteAll();users.deleteAll();((MutableClock)mfaClock).value=Instant.now();user=users.save(new User("mfa@example.invalid",passwords.encode("test-password"),"MFA",1,Role.ROLE_USER));request=new MockHttpServletRequest();request.setRemoteAddr("127.0.0.1");original=tokens.createToken(user.getEmail(),1,"MFA","ROLE_USER","127.0.0.1");mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();}
+ @BeforeEach void setup(){challenges.deleteAll();states.deleteAll();sessions.deleteAll();users.deleteAll();((MutableClock)mfaClock).value=Instant.now();user=users.save(new User("mfa@example.invalid",passwords.encode("test-password"),"MFA",1,Role.ROLE_USER));request=new MockHttpServletRequest();request.setRemoteAddr("127.0.0.1");original=com.endpoint.frelog.TestSessions.token(authSessions,user,"127.0.0.1");mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();}
  String code(){return Totp.code(secret,mfaClock.instant().getEpochSecond()/30);}
  MfaService.Enrollment enroll(){secret=mfa.begin(user.getUserId(),original).get("secret");return mfa.confirm(user.getUserId(),code(),original,request);}
  @Test void enrollmentIsEncryptedAndOldJwtCannotBypassMfa() throws Exception {

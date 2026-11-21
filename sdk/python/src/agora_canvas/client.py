@@ -27,16 +27,38 @@ class AgoraClient:
     def close(self):
         for session in list(self._sessions):session.close()
         self.http.close()
+    SESSION_HEADER={"X-Agora-Session":"1"}
     def request(self, method, path, *, raw=False, **kwargs):
         if not path.startswith("/api/") or ".." in path or "?" in path or "#" in path:raise ValueError("Expected an API path")
         headers={**kwargs.pop("headers",{})}
-        if self._token:headers["Authorization"]="Bearer "+self._token
-        try:response=self.http.request(method,path,headers=headers,**kwargs)
-        except httpx.HTTPError:raise AgoraError("HTTPS request failed") from None
+        response=self._send(method,path,headers,kwargs)
+        # User access tokens last 15 minutes; a session from login() renews them
+        # with the refresh cookie kept by this client's cookie jar.
+        if response.status_code==401 and self._can_refresh() and not path.startswith("/api/auth/session/") and self._refresh():
+            response=self._send(method,path,headers,kwargs)
         try:data=response.json() if response.content else None
         except ValueError:data=None
         if response.is_error:raise AgoraError((data or {}).get("message","API request failed") if isinstance(data,dict) else "API request failed",status=response.status_code,code=data.get("code") if isinstance(data,dict) else None)
         return response if raw else data
+    def _send(self,method,path,headers,kwargs):
+        if self._token:headers={**headers,"Authorization":"Bearer "+self._token}
+        try:return self.http.request(method,path,headers=headers,**kwargs)
+        except httpx.HTTPError:raise AgoraError("HTTPS request failed") from None
+    def _can_refresh(self):
+        return bool(self._token) and not self._token.startswith("agora_bot_") and any(c.name=="__Secure-agora_refresh" for c in self.http.cookies.jar)
+    def _refresh(self):
+        try:response=self.http.post("/api/auth/session/refresh",headers=self.SESSION_HEADER)
+        except httpx.HTTPError:return False
+        if response.status_code!=200:return False
+        token=(response.json() or {}).get("accessToken")
+        if not token:return False
+        self._token=token;return True
+    def logout(self):
+        """Ends the server-side session so the token and refresh cookie stop working immediately."""
+        if self._token and not self._token.startswith("agora_bot_"):
+            try:self.http.post("/api/auth/session/logout",headers={**self.SESSION_HEADER,"Authorization":"Bearer "+self._token})
+            except httpx.HTTPError:pass
+        self._token=None;self.http.cookies.clear()
     def login(self,email,password,*,mfa_code=None):
         data=self.request("POST","/api/auth/login",json={"email":email,"password":password})
         if data.get("mfaRequired"):

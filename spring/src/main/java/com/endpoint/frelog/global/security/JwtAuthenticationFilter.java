@@ -25,13 +25,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final JwtTokenProvider tokenProvider;
     private final CustomUserDetailsService userDetailsService;
     private final com.endpoint.frelog.domain.canvas.bot.CanvasBotService bots;
+    private final com.endpoint.frelog.domain.auth.session.AuthSessionService sessions;
 
-    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider, CustomUserDetailsService userDetailsService, com.endpoint.frelog.domain.auth.mfa.MfaService mfa) {
-        this(tokenProvider,userDetailsService,mfa,null);
-    }
     @org.springframework.beans.factory.annotation.Autowired
-    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider, CustomUserDetailsService userDetailsService, com.endpoint.frelog.domain.auth.mfa.MfaService mfa, com.endpoint.frelog.domain.canvas.bot.CanvasBotService bots) {
+    public JwtAuthenticationFilter(JwtTokenProvider tokenProvider, CustomUserDetailsService userDetailsService, com.endpoint.frelog.domain.auth.mfa.MfaService mfa, com.endpoint.frelog.domain.canvas.bot.CanvasBotService bots,
+                                   com.endpoint.frelog.domain.auth.session.AuthSessionService sessions) {
         this.bots=bots;
+        this.sessions=java.util.Objects.requireNonNull(sessions);
         this.mfa = mfa;
         this.tokenProvider = tokenProvider;
         this.userDetailsService = userDetailsService;
@@ -54,6 +54,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             filterChain.doFilter(request,response);return;
         }
         if (StringUtils.hasText(token) && tokenProvider.validateToken(token)) {
+            if (!tokenProvider.isUserAccessToken(token)) {
+                // Canvas/workspace access tokens and password grants are signed with the same key.
+                unauthorized(request, response, "AUTH_004", "TOKEN_TYPE", "유효하지 않거나 만료된 인증 토큰입니다.");
+                return;
+            }
             String email = tokenProvider.getEmailFromToken(token);
             String tokenIp = tokenProvider.getClientIpFromToken(token);
             String currentIp = request.getRemoteAddr();
@@ -98,6 +103,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 SecurityContextHolder.clearContext();response.setStatus(401);response.setContentType(MediaType.APPLICATION_JSON_VALUE);response.setCharacterEncoding("UTF-8");
                 response.getWriter().write("{\"code\":\"AUTH_004\",\"message\":\"유효하지 않거나 만료된 인증 토큰입니다. 다시 로그인해주세요.\"}");return;
             }
+            if (userDetails instanceof CustomUserDetails current && !sessions.isActive(tokenProvider.getSessionId(token), current.getUserId())) {
+                unauthorized(request, response, "AUTH_004", "SESSION_REVOKED", "로그인 세션이 종료되었습니다. 다시 로그인해주세요.");
+                return;
+            }
+            if (userDetails instanceof CustomUserDetails current && issuedBeforePasswordChange(token, current.getUser())) {
+                unauthorized(request, response, "AUTH_004", "PASSWORD_CHANGED", "비밀번호가 변경되었습니다. 다시 로그인해주세요.");
+                return;
+            }
             if (userDetails instanceof CustomUserDetails current && !mfa.accepts(current.getUserId(), token)) {
                 response.setStatus(401);response.setContentType(MediaType.APPLICATION_JSON_VALUE);response.setCharacterEncoding("UTF-8");response.getWriter().write("{\"code\":\"MFA_REQUIRED\",\"message\":\"MFA 인증을 위해 다시 로그인해주세요.\"}");return;
             }
@@ -110,6 +123,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private boolean issuedBeforePasswordChange(String token, com.endpoint.frelog.domain.user.entity.User user) {
+        var changed = user == null ? null : user.getPasswordChangedAt();
+        if (changed == null) return false;
+        var issued = tokenProvider.getIssuedAt(token);
+        // iat has second precision; User.changePassword records local wall-clock time.
+        long changedSecond = changed.atZone(java.time.ZoneId.systemDefault()).toEpochSecond();
+        return issued == null || issued.getTime() / 1000 < changedSecond;
+    }
+
+    private static void unauthorized(HttpServletRequest request, HttpServletResponse response, String code, String reason, String message) throws IOException {
+        SecurityContextHolder.clearContext();
+        RequestLogAttributes.markFailure(request, code, new SecurityException(reason));
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding("UTF-8");
+        response.getWriter().write("{\"status\":401,\"error\":\"UNAUTHORIZED\",\"code\":\"" + code + "\",\"reason\":\"" + reason + "\",\"message\":\"" + message + "\"}");
     }
 
     private String resolveToken(HttpServletRequest request) {

@@ -25,8 +25,10 @@ public class AuthController {
 
     private final AuthService authService;
     private final JwtTokenProvider jwtTokenProvider;
+    private final com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
 
-    public AuthController(AuthService authService, JwtTokenProvider jwtTokenProvider) {
+    public AuthController(AuthService authService, JwtTokenProvider jwtTokenProvider, com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions) {
+        this.authSessions = authSessions;
         this.authService = authService;
         this.jwtTokenProvider = jwtTokenProvider;
     }
@@ -51,7 +53,8 @@ public class AuthController {
     @PostMapping("/me")
     public ResponseEntity<UserResponse> getMe(@RequestBody Map<String, String> body) {
         String token = body.get("token");
-        if (token == null || !jwtTokenProvider.validateToken(token)) {
+        if (token == null || !jwtTokenProvider.validateToken(token) || !jwtTokenProvider.isUserAccessToken(token)
+                || !authSessions.isActive(jwtTokenProvider.getSessionId(token), jwtTokenProvider.getUserIdFromToken(token))) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
         String email = jwtTokenProvider.getEmailFromToken(token);

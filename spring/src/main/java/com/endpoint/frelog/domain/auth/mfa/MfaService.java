@@ -23,6 +23,8 @@ public class MfaService {
     private final UserRepository users;
     private final UserSessionRepository sessions;
     private final JwtTokenProvider tokens;
+    private com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
+    @org.springframework.beans.factory.annotation.Autowired void setAuthSessions(com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions){this.authSessions=authSessions;}
     private final byte[] encryptionKey;
     private final SecureRandom random=new SecureRandom();
     private final Clock clock;
@@ -44,7 +46,8 @@ public class MfaService {
         }catch(GeneralSecurityException|IllegalArgumentException e){throw new IllegalStateException("MFA secret encryption failed",e);}
     }
     @Transactional(readOnly=true) public boolean enabled(Long id){return states.findById(id).map(s->s.enabled).orElse(false);}
-    @Transactional(readOnly=true) public boolean accepts(Long id,String token){return states.findById(id).map(s->!s.enabled||(s.version!=null&&Objects.equals(s.version,tokens.getMfaVersion(token)))).orElse(true);}
+    @Transactional(readOnly=true) public boolean accepts(Long id,String token){return acceptsVersion(id,tokens.getMfaVersion(token));}
+    @Transactional(readOnly=true) public boolean acceptsVersion(Long id,String version){return states.findById(id).map(s->!s.enabled||(s.version!=null&&Objects.equals(s.version,version))).orElse(true);}
     @Transactional(readOnly=true) public Map<String,Object> status(Long id){var s=states.findById(id).orElse(null);return Map.of("available",encryptionKey!=null,"enabled",s!=null&&s.enabled,"recoveryCodesRemaining",s==null||s.recoveryHashes==null||s.recoveryHashes.isEmpty()?0:s.recoveryHashes.split(",").length);}
     private void recent(String token){var date=tokens.getIssuedAt(token);if(date==null||date.toInstant().isBefore(clock.instant().minusSeconds(600)))throw new MfaRejected("보안 설정을 변경하려면 다시 로그인해주세요.");}
     private MfaState setupState(Long id){users.lockById(id).orElseThrow(()->new MfaRejected("계정을 찾을 수 없습니다."));return states.lock(id).orElseGet(()->states.saveAndFlush(new MfaState(id)));}
@@ -88,6 +91,6 @@ public class MfaService {
         if(state!=null&&state.enabled&&(state.version==null||!Objects.equals(state.version,approvedVersion)))throw new MfaRejected("MFA 설정이 변경되었습니다. QR 로그인을 다시 시작해주세요.");
         return issue(user,state!=null&&state.enabled?state.version:null,request);
     }
-    private LoginResponse issue(User u,String version,HttpServletRequest request){var session=sessions.findByIdWithPessimisticLock(u.getUserId()).orElseGet(()->new UserSession(u));session.updateLastLogin(now());sessions.save(session);return LoginResponse.of(u.getEmail()==null&&u.getOrcid()!=null?tokens.createOrcidToken(u,request.getRemoteAddr(),version):tokens.createMfaToken(u.getEmail(),u.getTagNumber(),u.getNickname(),u.getRole().name(),request.getRemoteAddr(),version),UserResponse.from(u));}
+    private LoginResponse issue(User u,String version,HttpServletRequest request){var session=sessions.findByIdWithPessimisticLock(u.getUserId()).orElseGet(()->new UserSession(u));session.updateLastLogin(now());sessions.save(session);return LoginResponse.of(authSessions.issue(u,request,version),UserResponse.from(u));}
     @Scheduled(fixedDelay=3600000) @Transactional public void cleanup(){challenges.deleteExpired(now().minusDays(1));}
 }

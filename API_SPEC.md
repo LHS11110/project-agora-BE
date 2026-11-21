@@ -85,6 +85,18 @@ Spring 오류는 다음 형태입니다.
 {"tokenType":"Bearer","accessToken":"<jwt>","user":{ "email":"user@example.com", "nickname":"사용자", "tag_number":1, "role":"ROLE_USER", "status":"ACTIVE" }}
 ```
 
+`accessToken`은 15분(`JWT_ACCESS_EXPIRATION_MS`) 동안 유효하며 서버 측 로그인 세션(`auth_sessions`)의 `sid`와 `tokenUse: "access"` claim을 포함합니다. 세션이 종료되었거나, 토큰 발급 후 비밀번호가 변경되었거나, 캔버스 접근 토큰·비밀번호 grant처럼 다른 용도의 토큰이면 `401`(`reason`: `SESSION_REVOKED`, `PASSWORD_CHANGED`, `TOKEN_TYPE`)입니다. 로그인 응답은 `__Secure-agora_refresh` 쿠키(HttpOnly, Secure, SameSite=Strict, Path=`/api/auth/session`)도 설정합니다. 쿠키는 마지막 갱신 후 14일, 로그인 후 최대 30일까지 유효합니다.
+
+### 세션 갱신·종료
+
+모든 요청에 `X-Agora-Session: 1` 헤더가 필요합니다. 브라우저는 refresh 쿠키를 자동으로 보냅니다.
+
+- `POST /api/auth/session/refresh`: refresh 쿠키를 회전하고 로그인과 같은 형태의 `accessToken`, `user`를 반환합니다. 이미 회전된 쿠키를 다시 제시하면 탈취로 보고 세션을 폐기합니다. 단, 회전 후 30초 안에는 여러 탭의 동시 갱신으로 보고 `401 REFRESH_RACE`만 반환합니다. 실패 시 `401`과 `reason`(`NO_SESSION`, `SESSION_EXPIRED`, `SESSION_REVOKED`, `CLIENT_IP_CHANGED`, `REFRESH_RACE`)을 반환합니다.
+- `POST /api/auth/session/logout`: Bearer 토큰 또는 refresh 쿠키가 가리키는 세션을 종료하고 쿠키를 삭제합니다. `204`.
+- `POST /api/auth/session/logout-all`: 인증된 사용자의 모든 세션을 종료합니다. `204`.
+
+본인이 비밀번호를 변경하면 요청한 세션을 제외한 모든 세션이 종료됩니다. 관리자가 변경하면 해당 사용자의 모든 세션이 종료됩니다.
+
 ### 내 정보 확인
 
 `POST /api/auth/me`

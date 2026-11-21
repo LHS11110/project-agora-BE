@@ -52,6 +52,7 @@ class SocialOAuthIntegrationTest {
   });vendor.start();return new InMemoryClientRegistrationRepository(registration("naver",vendor.getAddress().getPort()),registration("kakao",vendor.getAddress().getPort()));
  }
  @AfterAll static void stop(){if(vendor!=null)vendor.stop(0);}
+ @org.springframework.beans.factory.annotation.Autowired com.endpoint.frelog.domain.auth.session.AuthSessionService authSessions;
  @Autowired WebApplicationContext context;@Autowired UserRepository users;@Autowired AuthService auth;@Autowired EmailVerificationService emailProof;@Autowired MfaService mfa;@Autowired JwtTokenProvider tokens;@Autowired org.springframework.security.crypto.password.PasswordEncoder passwords;@Autowired EmailProofRepository proofs;
  MockMvc mvc;ObjectMapper json=new ObjectMapper();List<String> codes;
  @BeforeEach void setup(){mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();codes=new ArrayList<>();when(mail.available()).thenReturn(true);doAnswer(i->{codes.add(i.getArgument(1));return null;}).when(mail).send(anyString(),anyString());}
@@ -114,7 +115,7 @@ class SocialOAuthIntegrationTest {
    String address=json.writeValueAsString(Map.of("email",email,"enrollmentToken",nonce));
    mvc.perform(post("/api/auth/oauth2/email/request").session(session).header("Origin","https://frelog.p-e.kr").contentType("application/json").content(address)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("USER_001"));
    String body=json.writeValueAsString(Map.of("email",email,"emailVerificationToken","not-consumed","enrollmentToken",nonce));
-   String jwt=tokens.createToken(email,1,original.getNickname(),"ROLE_USER","127.0.0.1");
+   String jwt=com.endpoint.frelog.TestSessions.token(authSessions,original,"127.0.0.1");
    mvc.perform(post("/api/auth/oauth2/enrollment").session(session).header("Origin","https://frelog.p-e.kr").header("Authorization","Bearer "+jwt).contentType("application/json").content(body)).andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("USER_001"));
    assertThat(codes).isEmpty();assertThat(users.findById(original.getUserId()).orElseThrow().getOauthProvider()).isNull();
   } finally {kakaoEmail=oldEmail;kakaoSubject=oldSubject;}
