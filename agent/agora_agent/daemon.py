@@ -3,9 +3,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from .engine import run_turn
 from . import telemetry
-from .settings import defaults, options
-from .credentials import effective_key, personal_key
-from .providers import PROVIDERS, model_for, server_key, spec
+from .settings import options
+from .providers import model_for, server_key, spec
 import anthropic
 from openai import APIStatusError, APIConnectionError, APITimeoutError
 
@@ -15,15 +14,20 @@ TIMEOUT_ERRORS = (APITimeoutError, anthropic.APITimeoutError)
 CONNECTION_ERRORS = (APIConnectionError, anthropic.APIConnectionError)
 
 MAX_FRAME = 1_000_000
+CANVAS_PROVIDER = "anthropic"
+CANVAS_MODELS = frozenset({"", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"})
+CANVAS_CONSENT_VERSION = "claude-prompt-v1"
 
 
 def public_error(error):
     if isinstance(error, BaseExceptionGroup):
         return public_error(error.exceptions[0])
     if isinstance(error, ValueError) and str(error) == "AGENT_API_KEY_INVALID":
-        return {"error":"AGENT_API_KEY_INVALID","message":"API 키 형식을 확인해주세요. 공백·줄바꿈 없이 입력해주세요."}
+        return {"error":"AGENT_API_KEY_INVALID","message":"캔버스 에이전트는 서버 인증만 사용합니다."}
     if isinstance(error, ValueError) and str(error) == "AGENT_OPTIONS_INVALID":
         return {"error":"AGENT_OPTIONS_INVALID","message":"에이전트 설정값이 허용 범위를 벗어났습니다."}
+    if isinstance(error, ValueError) and str(error) == "AGENT_CONSENT_REQUIRED":
+        return {"error":"AGENT_CONSENT_REQUIRED","message":"에이전트의 데이터 전송 조건에 동의한 뒤 다시 요청해주세요."}
     if isinstance(error, STATUS_ERRORS):
         if error.status_code == 429:
             return {
@@ -65,6 +69,8 @@ async def serve(reader, writer):
 
     async def bridge(name, arguments):
         nonlocal sequence
+        if name != "create_objects":
+            return {"error": "AGENT_TOOL_DENIED"}
         sequence += 1
         await send(
             {"type": "tool", "id": sequence, "name": name, "arguments": arguments}
@@ -84,39 +90,48 @@ async def serve(reader, writer):
     quota_context = None
     try:
         payload = json.loads(await asyncio.wait_for(reader.readline(), 10))
-        config = options(payload.get("options", {}))
-        provider = spec(config["provider"])
-        selected_key = effective_key(payload, provider["id"])
+        if payload.get("api_key", "") != "":
+            raise ValueError("AGENT_API_KEY_INVALID")
+        supplied_options = payload.get("options", {})
+        if not isinstance(supplied_options, dict):
+            raise ValueError("AGENT_OPTIONS_INVALID")
+        config = options({"provider": CANVAS_PROVIDER, **supplied_options})
+        if config["provider"] != CANVAS_PROVIDER or config["model"] not in CANVAS_MODELS:
+            raise ValueError("AGENT_OPTIONS_INVALID")
+        provider = spec(CANVAS_PROVIDER)
+        selected_key = server_key(provider)
         quota_context = telemetry.bind(selected_key)
         if payload.get("operation") == "status":
             await send(
                 {
                     "telemetry": telemetry.snapshot(),
-                    "defaults": options({}),
+                    "defaults": options({"provider": CANVAS_PROVIDER}),
                     "ready": True,
                     "configured": bool(selected_key),
-                    "credential_source": "personal" if personal_key(payload) else "server",
+                    "credential_source": "server",
                     "provider": provider["id"],
                     "default_configured": bool(server_key(provider)),
                     "model": model_for(provider, config["model"]),
-                    # Which providers have a server key; never the keys themselves.
-                    "providers": [
-                        {
-                            "id": provider_id,
-                            "label": entry["label"],
-                            "default_model": model_for(spec(provider_id)),
-                            "default_configured": bool(server_key(entry)),
-                        }
-                        for provider_id, entry in PROVIDERS.items()
-                    ],
                 }
             )
             return
+        if payload.get("operation") != "run":
+            raise ValueError("AGENT_OPTIONS_INVALID")
+        if payload.get("consent_version") != CANVAS_CONSENT_VERSION:
+            raise ValueError("AGENT_CONSENT_REQUIRED")
         if (
             not isinstance(payload.get("message"), str)
             or not 1 <= len(payload["message"]) <= 8000
         ):
             raise ValueError("Invalid message")
+        anchor = payload.get("anchor")
+        if not isinstance(anchor, dict):
+            anchor = {}
+        anchor = {
+            axis: value
+            for axis in ("x", "y")
+            if type(value := anchor.get(axis)) in (int, float) and -1e9 <= value <= 1e9
+        }
         if semaphore.locked():
             await send(
                 {
@@ -129,7 +144,11 @@ async def serve(reader, writer):
             async with asyncio.timeout(
                 min(220, int(os.getenv("AGENT_TIMEOUT_SECONDS", "210")))
             ):
-                result = await run_turn(payload, bridge, progress)
+                result = await run_turn({
+                    "message": payload["message"],
+                    "anchor": anchor,
+                    "options": config,
+                }, bridge, progress, create_only=True)
                 await send(result)
     except TimeoutError:
         try:

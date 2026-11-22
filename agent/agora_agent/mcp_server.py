@@ -35,7 +35,7 @@ TOOLS = [
     ),
     (
         "create_objects",
-        "Create up to 10 objects. Code objects use kind=text, renderMode=code, text=source, language=python/cpp/javascript/html/css. Coordinates are normalized to the world; use the provided viewport anchor.",
+        "Create up to 10 objects. Code objects use kind=text, renderMode=code, text=source, language=python/cpp/javascript/html/css. Coordinates are normalized to the world and snapped to whole world pixels on write; use the provided viewport anchor.",
         {
             "items": {
                 "type": "array",
@@ -92,12 +92,12 @@ TOOLS = [
 ]
 
 
-def make_server(bridge, allow_delete=False):
+def make_server(bridge, allow_delete=False, *, create_only=False):
     server = Server("agora-canvas-mcp")
     allowed = {
         name: (description, properties, required)
         for name, description, properties, required in TOOLS
-        if name != "delete_objects" or allow_delete
+        if (not create_only or name == "create_objects") and (name != "delete_objects" or allow_delete)
     }
 
     @server.list_tools()

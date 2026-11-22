@@ -20,6 +20,14 @@ QUERY_OUTCOME_UNKNOWN 오류는 이미 저장되었을 수 있습니다. 생성 
 오류를 성공으로 보고하지 마세요. 일부 변경이 성공한 뒤 후속 작업이 실패했다면 그 사실을 구분해 설명하세요.
 """
 
+CREATE_ONLY_SYSTEM = """당신은 FreLog 캔버스 작업 에이전트입니다. 한국어로 답하세요.
+사용자의 요청에 따라 새 객체를 생성하고 실제로 생성된 객체와 불확실한 결과를 구분하여 보고하세요.
+기존 캔버스 객체는 모델에 제공되지 않습니다. 기존 객체를 읽거나 편집할 수 있다고 안내하지 마세요.
+코드 객체는 kind=text, renderMode=code, text=코드, language, filename, width, height, x, y로 생성하세요.
+위치와 크기는 정규화된 월드 좌표입니다. 코드 객체를 anchor 근처에 배치하세요.
+생성 요청의 반영 여부를 확인할 수 없으면 반복 실행하지 말고 사용자에게 알려주세요.
+"""
+
 LIMIT_ANSWER = "응답 토큰 상한에 도달했습니다. 추론 수준을 낮추거나 응답 토큰 상한을 높인 뒤 다시 시도해주세요."
 STEP_LIMIT_ANSWER = "도구 실행 횟수 한도에 도달했습니다. 이미 반영된 변경을 확인한 뒤 요청을 나누어 진행해주세요."
 EMPTY_ANSWER = "모델이 응답을 반환하지 않았습니다."
@@ -126,7 +134,7 @@ async def openai_loop(client, provider, model, config, messages, mcp_tools, sess
     return {"answer": STEP_LIMIT_ANSWER, "limited": True}
 
 
-async def run_turn(request, bridge, progress, client=None):
+async def run_turn(request, bridge, progress, client=None, *, create_only=False):
     config = options(request.get("options", {}))
     provider = spec(config["provider"])
     model = model_for(provider, config["model"])
@@ -134,7 +142,7 @@ async def run_turn(request, bridge, progress, client=None):
     if client is None and not key:
         return {
             "error": "AGENT_NOT_CONFIGURED",
-            "message": f"에이전트 설정에 {provider['label']} 개인 API 키를 입력하거나 서버 기본 키를 설정해주세요.",
+            "message": f"서버에 {provider['label']} API 키를 설정해주세요.",
         }
     owned = client is None
     if client is None:
@@ -143,10 +151,13 @@ async def run_turn(request, bridge, progress, client=None):
             client = create_client(key)
         else:
             client = AsyncOpenAI(api_key=key, base_url=base_url(provider), timeout=60, max_retries=0)
-    server = make_server(bridge, request.get("allow_delete") is True)
-    initial = {
-        k: request.get(k) for k in ("canvas_id", "selected_ids", "anchor", "message")
-    }
+    server = make_server(bridge, request.get("allow_delete") is True, create_only=create_only)
+    initial = {"message": request["message"], "anchor": request.get("anchor")}
+    system = SYSTEM
+    if create_only:
+        system = CREATE_ONLY_SYSTEM
+    else:
+        initial.update(canvas_id=request.get("canvas_id"), selected_ids=request.get("selected_ids"))
     # History is explicit and text-only; tools from earlier turns cannot be replayed.
     history = [
         {"role": entry["role"], "content": entry["content"][:8000]}
@@ -169,9 +180,9 @@ async def run_turn(request, bridge, progress, client=None):
                     mcp_tools = (await session.list_tools()).tools
                     if provider["kind"] == "anthropic":
                         from .anthropic_engine import claude_loop
-                        result = await claude_loop(client, model, config, SYSTEM, history + [user], mcp_tools, session, progress)
+                        result = await claude_loop(client, model, config, system, history + [user], mcp_tools, session, progress)
                     else:
-                        messages = [{"role": "system", "content": SYSTEM}] + history + [user]
+                        messages = [{"role": "system", "content": system}] + history + [user]
                         result = await openai_loop(client, provider, model, config, messages, mcp_tools, session, progress)
                 group.cancel_scope.cancel()
         result["telemetry"] = telemetry.snapshot()

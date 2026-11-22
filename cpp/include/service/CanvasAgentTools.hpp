@@ -37,6 +37,24 @@ inline void fields(const Json& item){
  for(const auto& entry:item.items())if(!allowed.count(entry.key()))throw std::invalid_argument("AGENT_FIELD_DENIED");
  if(item.contains("kind")&&!std::unordered_set<std::string>{"text","code","math","shape","note","connector","link","image"}.count(item["kind"].get<std::string>()))throw std::invalid_argument("AGENT_KIND_DENIED");
 }
+// Keep normalized wire coordinates and use the same world-pixel grid as the FE.
+inline void snapGeometry(Json& patch) {
+ struct Field { const char* name; double pixels; bool size; };
+ constexpr Field fields[] = {{"x", 1600, false}, {"y", 1000, false},
+                             {"width", 1600, true}, {"height", 1000, true}};
+ for (const auto& field : fields) {
+  auto value = patch.find(field.name);
+  if (value == patch.end()) continue;
+  if (!value->is_number()) throw std::invalid_argument("ITEM_NUMBER_INVALID");
+  const auto pixels = value->get<double>() * field.pixels;
+  if (!std::isfinite(pixels)) throw std::invalid_argument("ITEM_NUMBER_INVALID");
+  if (field.size && value->get<double>() <= 0) throw std::invalid_argument("ITEM_SIZE_INVALID");
+  const auto lower = std::floor(pixels);
+  // Match Math.round: half-pixel ties go toward positive infinity.
+  const auto rounded = lower + (pixels - lower >= 0.5 ? 1 : 0);
+  *value = (field.size ? std::max(1.0, rounded) : rounded) / field.pixels;
+ }
+}
 inline Json publicItem(const Json& item,bool source){Json result=Json::object();for(const auto* key:{"kind","runtimeRole","title","filename","language","renderMode","x","y","width","height","depth","color","fill","shapeType","locked","from","to","url"})if(item.contains(key))result[key]=item[key];
  if(!source)for(const auto* key:{"title","filename","url"})if(result.contains(key)&&result[key].is_string()&&result[key].get_ref<const std::string&>().size()>512)result.erase(key);
  if(source)for(const auto* key:{"text","code","formula"})if(item.contains(key))result[key]=item[key];

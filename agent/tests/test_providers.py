@@ -158,25 +158,48 @@ def test_claude_params_skip_effort_and_fallbacks_for_models_without_them():
 
 
 @pytest.mark.asyncio
-async def test_status_lists_providers_without_keys(tmp_path, monkeypatch):
+async def test_canvas_socket_requires_operator_claude_and_current_consent(tmp_path, monkeypatch):
     daemon.semaphore = asyncio.Semaphore(1)
-    monkeypatch.setenv("AGENT_SOCKET", str(tmp_path / "agent.sock"))
-    monkeypatch.setenv("AGENT_API_KEY", "legacy-exaone-secret")
-    monkeypatch.setenv("AGENT_OPENAI_API_KEY", "openai-server-secret")
     path = str(tmp_path / "agent.sock")
-    async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
+    monkeypatch.setenv("AGENT_ANTHROPIC_API_KEY", "anthropic-server-secret")
+
+    async def request(payload):
         reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"operation":"status","options":{"provider":"openai","model":"gpt-4.1"}}\n')
+        writer.write((json.dumps(payload) + "\n").encode())
         await writer.drain()
         value = json.loads(await reader.readline())
         writer.close()
         await writer.wait_closed()
-    assert value["provider"] == "openai" and value["model"] == "gpt-4.1"
-    assert value["configured"] is True and value["default_configured"] is True
-    listed = {entry["id"]: entry for entry in value["providers"]}
-    assert listed["anthropic"]["default_configured"] is False and listed["anthropic"]["default_model"] == "claude-opus-5-5"
-    assert "exaone" not in listed
-    assert "secret" not in json.dumps(value)
+        return value
+
+    async def run_turn(payload, bridge, progress, *, create_only):
+        assert create_only
+        assert await bridge("get_objects", {"ids": ["private"]}) == {"error": "AGENT_TOOL_DENIED"}
+        assert payload["anchor"] == {"x": 0.2}
+        assert set(payload) == {"message", "options", "anchor"}
+        return {"answer": "done"}
+
+    engine_call = AsyncMock(side_effect=run_turn)
+    monkeypatch.setattr(daemon, "run_turn", engine_call)
+    async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
+        status = await request({"operation": "status"})
+        assert status["provider"] == "anthropic" and status["configured"] is True
+        assert "secret" not in json.dumps(status)
+        for provider in ("openai", "gemini", "openrouter", "exaone"):
+            reply = await request({"operation": "status", "options": {"provider": provider}})
+            assert reply["error"] == "AGENT_OPTIONS_INVALID"
+        assert (await request({"operation": "status", "options": {"model": "custom"}}))["error"] == "AGENT_OPTIONS_INVALID"
+        assert (await request({"operation": "status", "api_key": "legacy-personal-key"}))["error"] == "AGENT_API_KEY_INVALID"
+        assert (await request({"operation": "run", "message": "hi"}))["error"] == "AGENT_CONSENT_REQUIRED"
+        engine_call.assert_not_awaited()
+
+        result = await request({
+            "operation": "run", "message": "hi", "consent_version": daemon.CANVAS_CONSENT_VERSION,
+            "history": [{"role": "user", "content": "private"}], "selected_ids": ["private"],
+            "anchor": {"x": 0.2, "y": "private", "extra": "private"},
+        })
+        assert result == {"answer": "done"}
+        engine_call.assert_awaited_once()
 
 
 def test_anthropic_errors_map_to_public_messages():

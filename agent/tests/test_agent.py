@@ -144,9 +144,10 @@ async def test_unconfigured(monkeypatch):
 async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
     daemon.semaphore = asyncio.Semaphore(1)
 
-    async def fake_turn(payload, bridge, progress):
-        await progress("읽는 중")
-        result = await bridge("get_objects", {"ids": ["a"]})
+    async def fake_turn(payload, bridge, progress, *, create_only):
+        assert create_only
+        await progress("생성 중")
+        result = await bridge("create_objects", {"items": [{"kind": "text", "text": "hello"}]})
         return {"answer": result["text"]}
 
     monkeypatch.setattr(daemon, "run_turn", fake_turn)
@@ -155,11 +156,11 @@ async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
         daemon.serve, path, limit=daemon.MAX_FRAME
     ):
         reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"message":"hello"}\n')
+        writer.write(b'{"operation":"run","message":"hello","consent_version":"claude-prompt-v1"}\n')
         await writer.drain()
         assert json.loads(await reader.readline())["type"] == "output"
         tool_request = json.loads(await reader.readline())
-        assert tool_request["name"] == "get_objects"
+        assert tool_request["name"] == "create_objects"
         writer.write(
             (
                 json.dumps(
@@ -346,8 +347,7 @@ def test_personal_key_invalid_shapes_rejected(key):
 
 
 @pytest.mark.asyncio
-async def test_status_personal_credentials_does_not_return_or_persist_key(tmp_path,monkeypatch):
-    from agora_agent import telemetry
+async def test_status_rejects_personal_credentials_without_persisting_key(tmp_path,monkeypatch):
     daemon.semaphore=asyncio.Semaphore(1)
     monkeypatch.delenv('AGENT_API_KEY',raising=False)
     monkeypatch.setenv('AGENT_SOCKET',str(tmp_path/'agent.sock'))
@@ -356,8 +356,7 @@ async def test_status_personal_credentials_does_not_return_or_persist_key(tmp_pa
         reader,writer=await asyncio.open_unix_connection(path)
         writer.write(b'{"operation":"status","api_key":"personal-fixture-no-secret"}\n');await writer.drain()
         value=json.loads(await reader.readline())
-        assert value['configured'] is True and value['default_configured'] is False
-        assert value['credential_source']=='personal'
+        assert value['error'] == 'AGENT_API_KEY_INVALID'
         assert 'personal-fixture-no-secret' not in json.dumps(value)
         writer.close();await writer.wait_closed()
         assert not (tmp_path/'quota.json').exists()

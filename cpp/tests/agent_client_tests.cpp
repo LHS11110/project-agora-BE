@@ -41,6 +41,19 @@ void bridgeRoundTrip(){
  item["permission"]="admin-group";bool denied=false;try{agora::agent::fields(item);}catch(const std::invalid_argument&){denied=true;}AGORA_CHECK(denied);
  auto publicItem=agora::agent::publicItem({{"kind","text"},{"text","source"},{"token","hidden"},{"runtimeResults",Json::array()}},true);AGORA_CHECK(publicItem["text"]=="source"&&!publicItem.contains("token")&&!publicItem.contains("runtimeResults"));
 
+ // MCP writes snap geometry, including negative ties and subpixel sizes.
+ auto geometry=Json{{"x",.1234},{"y",-.2345},{"width",.0001},{"height",.1801}};
+ agora::agent::snapGeometry(geometry);
+ AGORA_CHECK((geometry==Json{{"x",197.0/1600},{"y",-.234},{"width",1.0/1600},{"height",.18}}));
+ auto partial=Json{{"y",.2345},{"text","unchanged"}};
+ agora::agent::snapGeometry(partial);
+ AGORA_CHECK((partial==Json{{"y",.235},{"text","unchanged"}}));
+ for(auto invalid: {Json{{"x","1"}},Json{{"height",0}},Json{{"width",-.1}}}){
+  bool rejected=false;
+  try{agora::agent::snapGeometry(invalid);}catch(const std::invalid_argument&){rejected=true;}
+  AGORA_CHECK(rejected);
+ }
+
  // Agent options: API engine only; VM CLI agent options are rejected.
  agora::agent::options({{"engine","api"},{"reasoning_effort","low"},{"max_steps",6},{"locale","en"}});
  // Other providers' APIs: a provider id from the fixed list and a model name.
