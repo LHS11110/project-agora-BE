@@ -159,7 +159,7 @@ public class CanvasSocketServiceController {
     throw fail(HttpStatus.NOT_FOUND,"Unsupported workspace resource");
    }
   }else{
-   if(path.matches("/media/[0-9a-f-]+\\.(gif|mp4|webm|ogv)"))response=media.read(id,path.substring(7),user);
+   if(path.matches("/media/[0-9a-f-]+\\.("+CanvasMediaService.ALLOWED_EXTENSIONS+")"))response=media.read(id,path.substring(7),user);
    else if(path.matches("/pdfs/[0-9a-f-]+(/thumbnail)?")){String key=path.split("/")[2];response=path.endsWith("/thumbnail")?pdf.thumbnail(id,key,user):pdf.read(id,key,user);}
    else if(path.equals("/image"))response=canvasController.getCanvasImage(id,user);
    else if(path.matches("/profile-images/[1-9][0-9]*"))response=profiles.image(Long.valueOf(path.substring(16)),user);
