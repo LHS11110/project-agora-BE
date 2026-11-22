@@ -22,10 +22,13 @@ class CanvasSocketServiceControllerTest {
  final ObjectMapper json=new ObjectMapper();
  final CanvasService canvases=mock(CanvasService.class);final CanvasResourceService resources=mock(CanvasResourceService.class);final UserRepository users=mock(UserRepository.class);
  CanvasSocketServiceController controller(boolean write){
+  return controller(write,mock(CanvasPdfController.class));
+ }
+ CanvasSocketServiceController controller(boolean write,CanvasPdfController pdf){
   User user=mock(User.class);when(user.getUserId()).thenReturn(2L);when(user.isActive()).thenReturn(true);when(users.findById(2L)).thenReturn(Optional.of(user));
   var doc=new CanvasDocument("Test",1,1L,null,"team");doc.setPeople(List.of(1L,2L));doc.setInnerGroup(Map.of("admin-group",List.of(1L),"team",List.of(2L)));doc.setGroupPermissions(Map.of("team",Map.of("read",true,"write",write,"execute",false)));
   when(canvases.getCanvasItemDocument(eq(1),any(),eq("socket-service-access"))).thenReturn(doc);when(resources.getCanvasDirectory(1)).thenReturn(directory);
-  return new CanvasSocketServiceController(canvases,resources,mock(CanvasMediaController.class),mock(CanvasPdfController.class),mock(CanvasController.class),mock(CanvasBotService.class),mock(CanvasGithubService.class),mock(UserProfileController.class),mock(CanvasTerminalSocket.class),users,json,mock(com.endpoint.frelog.domain.link.LinkPreviewController.class),TOKEN);
+  return new CanvasSocketServiceController(canvases,resources,mock(CanvasMediaController.class),pdf,mock(CanvasController.class),mock(CanvasBotService.class),mock(CanvasGithubService.class),mock(UserProfileController.class),mock(CanvasTerminalSocket.class),users,json,mock(com.endpoint.frelog.domain.link.LinkPreviewController.class),TOKEN);
  }
  @Test void mvcRequestConversionAndErrorStatusMatchTheDeployedJacksonVersion()throws Exception{
   var mvc=org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(controller(true)).setControllerAdvice(new com.endpoint.frelog.global.exception.GlobalExceptionHandler()).build();
@@ -46,6 +49,58 @@ class CanvasSocketServiceControllerTest {
   assertEquals(4L,((Map<?,?>)c.exchange(TOKEN,request)).get("offset"));assertEquals(4L,((Map<?,?>)c.exchange(TOKEN,request)).get("offset"));
   body.put("offset",5);assertEquals(409,assertThrows(ResponseStatusException.class,()->c.exchange(TOKEN,request)).getStatusCode().value());
   body.put("operation","upload_cancel");c.exchange(TOKEN,request);assertEquals(410,assertThrows(ResponseStatusException.class,()->c.exchange(TOKEN,request)).getStatusCode().value());
+ }
+ @Test void acceptsLargeDeclaredMediaAndPdfSizes() throws Exception {
+  var c=controller(true);
+  for(String path : List.of("/media","/pdfs")){
+   var request=json.readTree("""
+    {"canvasId":1,"userId":2,"request":{"operation":"upload_begin","path":"%s","files":[{"field":"file","size":2147483649}]}}
+    """.formatted(path));
+   assertTrue(((Map<?,?>)c.exchange(TOKEN,request)).containsKey("uploadId"));
+  }
+ }
+ @Test void storesPdfLargerThanTheFormerLimitFromChunks() throws Exception {
+  var c=controller(true,new CanvasPdfController(canvases,new CanvasPdfService(resources)));
+  byte[] file=new byte[6*1024*1024+7];
+  byte[] header="%PDF-1.7".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+  System.arraycopy(header,0,file,0,header.length);
+  file[file.length-1]=42;
+  var request=json.readTree("""
+   {"canvasId":1,"userId":2,"request":{"operation":"upload_begin","path":"/pdfs","files":[{"field":"file","size":%d}]}}
+   """.formatted(file.length));
+  var started=(Map<?,?>)c.exchange(TOKEN,request);
+  int limit=((Number)started.get("chunkSize")).intValue();
+  var part=(com.fasterxml.jackson.databind.node.ObjectNode)request.path("request");
+  part.put("uploadId",started.get("uploadId").toString());
+  part.put("operation","upload_chunk");part.put("index",0);
+  for(int start=0;start<file.length;start+=limit){
+   int end=Math.min(start+limit,file.length);
+   part.put("offset",start);part.put("data",Base64.getEncoder().encodeToString(Arrays.copyOfRange(file,start,end)));
+   assertEquals((long)end,((Map<?,?>)c.exchange(TOKEN,request)).get("offset"));
+  }
+  part.put("operation","upload_finish");
+  var saved=(Map<?,?>)c.exchange(TOKEN,request);
+  String path=saved.get("src").toString();
+  assertArrayEquals(file,Files.readAllBytes(directory.resolve("pdfs").resolve(path.substring(path.lastIndexOf('/')+1)+".pdf")));
+ }
+ @Test void storesAndReadsChunkedNotebookOriginal() throws Exception {
+  var c=controller(true);
+  var request=json.readTree("""
+   {"canvasId":1,"userId":2,"request":{"operation":"upload_begin","path":"/notebooks","files":[{"field":"file","size":7}]}}
+   """);
+  var started=(Map<?,?>)c.exchange(TOKEN,request);
+  var part=(com.fasterxml.jackson.databind.node.ObjectNode)request.path("request");
+  part.put("uploadId",started.get("uploadId").toString());
+  part.put("operation","upload_chunk");part.put("index",0);part.put("offset",0);part.put("data","AQIDBA==");
+  assertEquals(4L,((Map<?,?>)c.exchange(TOKEN,request)).get("offset"));
+  part.put("offset",4);part.put("data","BQYH");
+  assertEquals(7L,((Map<?,?>)c.exchange(TOKEN,request)).get("offset"));
+  part.put("operation","upload_finish");
+  var saved=(Map<?,?>)c.exchange(TOKEN,request);
+  assertEquals(saved,c.exchange(TOKEN,request));
+  part.put("operation","resource");part.put("path",saved.get("src").toString().substring("/api/canvases/1".length()));part.put("offset",0);
+  var fetched=(Map<?,?>)c.exchange(TOKEN,request);
+  assertArrayEquals(new byte[]{1,2,3,4,5,6,7},Base64.getDecoder().decode(fetched.get("data").toString()));
  }
  @Test void uploadsAndReadsPngImagesThroughCanvasSocketMediaEndpoints()throws Exception{
   User user=mock(User.class);when(user.getUserId()).thenReturn(2L);when(user.isActive()).thenReturn(true);when(users.findById(2L)).thenReturn(Optional.of(user));

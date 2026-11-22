@@ -1,11 +1,8 @@
 package com.endpoint.frelog.domain.canvas.service;
 import com.endpoint.frelog.global.exception.CustomException;
-import com.endpoint.frelog.global.exception.ErrorCode;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.web.multipart.MultipartFile;
-import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.Map;
@@ -69,18 +66,15 @@ class CanvasMediaServiceTest {
   assertEquals("bmp",CanvasMediaService.format(bmpTopDown));
   assertEquals("avif",CanvasMediaService.format(avifMif1));
  }
- @Test void rejectsUnsafeOrUnsupportedImagePayloadsAndOversizedImages()throws Exception{
+ @Test void validatesImageFormatAndDimensionsWithoutAByteLimit()throws Exception{
   var resources=mock(CanvasResourceService.class);when(resources.getCanvasDirectory(7)).thenReturn(directory);var service=new CanvasMediaService(resources);
   assertThrows(CustomException.class,()->CanvasMediaService.format("<svg xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(StandardCharsets.UTF_8)));
   assertThrows(CustomException.class,()->CanvasMediaService.format("BM fake plain text payload with enough bytes".getBytes(StandardCharsets.UTF_8)));
   assertThrows(CustomException.class,()->CanvasMediaService.format(pngBytes(20000,20000)));
   assertThrows(CustomException.class,()->CanvasMediaService.format(new byte[]{0,0,0,16,'f','t','y','p','h','e','i','c',0,0,0,0}));
-  MultipartFile oversizedPng=mock(MultipartFile.class);
-  when(oversizedPng.isEmpty()).thenReturn(false);
-  when(oversizedPng.getSize()).thenReturn(CanvasMediaService.MAX_IMAGE+1);
-  when(oversizedPng.getInputStream()).thenReturn(new ByteArrayInputStream(pngBytes(2,2)));
-  CustomException error=assertThrows(CustomException.class,()->service.save(7,oversizedPng));
-  assertEquals(ErrorCode.PAYLOAD_TOO_LARGE,error.getErrorCode());
+  byte[] large = java.util.Arrays.copyOf(pngBytes(2,2), 21 * 1024 * 1024);
+  var upload = new MockMultipartFile("file", "large.png", "image/png", large);
+  assertEquals("image",service.save(7,upload).get("mediaType"));
  }
  @Test void sniffsContainerAndRejectsHugeGifDimensions(){assertEquals("mp4",CanvasMediaService.format(new byte[]{0,0,0,20,'f','t','y','p','m','p','4','2'}));assertEquals("webm",CanvasMediaService.format(new byte[]{0x1a,0x45,(byte)0xdf,(byte)0xa3}));assertThrows(CustomException.class,()->CanvasMediaService.format(new byte[]{'G','I','F','8','9','a',(byte)255,(byte)255,(byte)255,(byte)255}));}
 }

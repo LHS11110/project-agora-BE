@@ -54,7 +54,10 @@ public class CanvasSocketServiceController {
   if(operation.equals("upload_chunk")||operation.equals("upload_finish")||operation.equals("upload_cancel")){
    String key=request.path("uploadId").asText();Upload upload=uploads.get(key);
    if(upload==null||upload.scope!=scope||upload.canvas!=id||upload.user!=uid||upload.expires<System.currentTimeMillis())throw fail(HttpStatus.GONE,"Upload expired");
-   synchronized(upload){upload.expires=System.currentTimeMillis()+TTL;
+   synchronized(upload){
+    if(uploads.get(key)!=upload||upload.expires<System.currentTimeMillis())throw fail(HttpStatus.GONE,"Upload expired");
+    if(!upload.path.equals(path))throw fail(HttpStatus.BAD_REQUEST,"Upload path mismatch");
+    upload.expires=System.currentTimeMillis()+TTL;
     if(operation.equals("upload_cancel")){uploads.remove(key,upload);delete(upload);return Map.of("cancelled",true);}
     if(operation.equals("upload_finish")){
      if(upload.result!=null)return upload.result;
@@ -65,7 +68,7 @@ public class CanvasSocketServiceController {
      }else if(scope==DocumentScope.WORKSPACE){
       throw fail(HttpStatus.NOT_FOUND,"Unsupported workspace upload");
      }else{
-      upload.result=switch(upload.path){case "/media"->media.upload(id,main,user).getBody();case "/pdfs"->pdf.upload(id,main,thumbnail,user).getBody();case "/image"->canvasController.updateCanvasImage(id,main,user).getBody();default->throw fail(HttpStatus.BAD_REQUEST,"Unsupported upload");};
+      upload.result=switch(upload.path){case "/media"->media.upload(id,main,user).getBody();case "/notebooks"->saveNotebook(upload);case "/pdfs"->pdf.upload(id,main,thumbnail,user).getBody();case "/image"->canvasController.updateCanvasImage(id,main,user).getBody();default->throw fail(HttpStatus.BAD_REQUEST,"Unsupported upload");};
      }
      delete(upload);return upload.result;
     }
@@ -73,17 +76,17 @@ public class CanvasSocketServiceController {
     int index=request.path("index").asInt(-1);long offset=request.path("offset").asLong(-1);String encoded=request.path("data").asText();
     if(index<0||index>=upload.files.size()||offset<0||encoded.length()>CHUNK*4/3+8)throw fail(HttpStatus.BAD_REQUEST,"Invalid upload chunk");
     byte[] bytes;try{bytes=Base64.getDecoder().decode(encoded);}catch(IllegalArgumentException e){throw fail(HttpStatus.BAD_REQUEST,"Invalid base64 chunk");}
-    if(bytes.length==0||bytes.length>CHUNK||offset+bytes.length>upload.files.get(index).path("size").asLong())throw fail(HttpStatus.BAD_REQUEST,"Chunk exceeds declared size");
+    if(bytes.length==0||bytes.length>CHUNK||offset>upload.files.get(index).path("size").asLong()-bytes.length)throw fail(HttpStatus.BAD_REQUEST,"Chunk exceeds declared size");
     Path part=upload.directory.resolve("part"+index);
     try(var file=new RandomAccessFile(part.toFile(),"rw")){
-     if(offset<upload.offsets[index]){byte[] existing=new byte[bytes.length];file.seek(offset);file.readFully(existing);if(!Arrays.equals(existing,bytes))throw fail(HttpStatus.CONFLICT,"Chunk retry differs from saved data");}
+     if(offset<upload.offsets[index]){if(bytes.length>upload.offsets[index]-offset)throw fail(HttpStatus.CONFLICT,"Chunk overlaps saved data");byte[] existing=new byte[bytes.length];file.seek(offset);file.readFully(existing);if(!Arrays.equals(existing,bytes))throw fail(HttpStatus.CONFLICT,"Chunk retry differs from saved data");}
      else{if(offset!=upload.offsets[index])throw fail(HttpStatus.CONFLICT,"Chunk offset mismatch");file.seek(offset);file.write(bytes);upload.offsets[index]+=bytes.length;}
     }
     return Map.of("offset",upload.offsets[index]);
    }
   }
   if(operation.equals("resource")){
-   if(path.matches("/linked-resource/[1-9][0-9]*/(media/.*|pdfs/.*|image)")){
+   if(path.matches("/linked-resource/[1-9][0-9]*/(media/.*|pdfs/.*|notebooks/.*|image)")){
     if(scope!=DocumentScope.CANVAS||CanvasBotService.isBot(account))throw fail(HttpStatus.FORBIDDEN,"Bots cannot read another canvas");
     String[] parts=path.split("/",4);int source=Integer.parseInt(parts[2]);
     var sourceDocument=canvases.getCanvasItemDocument(source,user,"socket-resource-access");
@@ -137,14 +140,21 @@ public class CanvasSocketServiceController {
   throw fail(HttpStatus.BAD_REQUEST,"Unsupported canvas service operation");
  }
  private synchronized Object begin(DocumentScope scope,int id,long uid,String path,JsonNode request)throws IOException{
-  if(!Set.of("/media","/pdfs","/image").contains(path))throw fail(HttpStatus.BAD_REQUEST,"Unsupported upload");
+  if(!(scope==DocumentScope.WORKSPACE?Set.of("/image"):Set.of("/media","/pdfs","/notebooks","/image")).contains(path))throw fail(HttpStatus.BAD_REQUEST,"Unsupported upload");
   cleanup();if(uploads.size()>=128||uploads.values().stream().filter(u->u.result==null).count()>=8||uploads.values().stream().filter(u->u.user==uid&&u.result==null).count()>=2)throw fail(HttpStatus.TOO_MANY_REQUESTS,"Too many uploads");
   JsonNode files=request.path("files");if(!files.isArray()||files.isEmpty()||files.size()>2)throw fail(HttpStatus.BAD_REQUEST,"Invalid upload files");
   Upload upload=new Upload();upload.scope=scope;upload.user=uid;upload.canvas=id;upload.path=path;upload.files=new ArrayList<>();Set<String> fields=new HashSet<>();
-  for(JsonNode file:files){String field=file.path("field").asText();long size=file.path("size").asLong(-1);long max=field.equals("thumbnail")?2L*1024*1024:path.equals("/pdfs")?5L*1024*1024:path.equals("/image")?2L*1024*1024:100L*1024*1024;
-   if(!fields.add(field)||(!field.equals(path.equals("/image")?"image":"file")&&!(path.equals("/pdfs")&&field.equals("thumbnail")))||size<=0||size>max||file.path("name").asText().length()>512||file.path("type").asText().length()>128)throw fail(HttpStatus.BAD_REQUEST,"Invalid upload file metadata");upload.files.add(file.deepCopy());}
+  for(JsonNode file:files){String field=file.path("field").asText();long size=file.path("size").asLong(-1);long max=field.equals("thumbnail")||path.equals("/image")?2L*1024*1024:Long.MAX_VALUE;
+   if(!fields.add(field)||(!field.equals(path.equals("/image")?"image":"file")&&!(path.equals("/pdfs")&&field.equals("thumbnail")))||!file.path("size").isIntegralNumber()||!file.path("size").canConvertToLong()||size<=0||size>max||file.path("name").asText().length()>512||file.path("type").asText().length()>128)throw fail(HttpStatus.BAD_REQUEST,"Invalid upload file metadata");upload.files.add(file.deepCopy());}
   if(!fields.contains(path.equals("/image")?"image":"file"))throw fail(HttpStatus.BAD_REQUEST,"Main file missing");
   Path directory=scope==DocumentScope.CANVAS?resources.getCanvasDirectory(id):resources.getDirectory(scope,id);Files.createDirectories(directory);upload.directory=Files.createTempDirectory(directory,"socket-upload-");upload.offsets=new long[upload.files.size()];String key=UUID.randomUUID().toString();uploads.put(key,upload);return Map.of("uploadId",key,"chunkSize",CHUNK);
+ }
+ private Object saveNotebook(Upload upload)throws IOException{
+  Path directory=upload.directory.getParent().resolve("notebooks");
+  Files.createDirectories(directory);
+  String filename=UUID.randomUUID()+".ipynb";
+  Files.move(upload.directory.resolve("part0"),directory.resolve(filename),StandardCopyOption.ATOMIC_MOVE);
+  return Map.of("src","/api/canvases/"+upload.canvas+"/notebooks/"+filename);
  }
  private Object resource(DocumentScope scope,int id,String path,JsonNode request,CustomUserDetails user)throws IOException{
   ResponseEntity<?> response;
@@ -161,6 +171,11 @@ public class CanvasSocketServiceController {
   }else{
    if(path.matches("/media/[0-9a-f-]+\\.("+CanvasMediaService.ALLOWED_EXTENSIONS+")"))response=media.read(id,path.substring(7),user);
    else if(path.matches("/pdfs/[0-9a-f-]+(/thumbnail)?")){String key=path.split("/")[2];response=path.endsWith("/thumbnail")?pdf.thumbnail(id,key,user):pdf.read(id,key,user);}
+   else if(path.matches("/notebooks/[0-9a-f-]{36}\\.ipynb")){
+    Path file=resources.getCanvasDirectory(id).resolve("notebooks").resolve(path.substring("/notebooks/".length()));
+    if(!Files.isRegularFile(file))throw fail(HttpStatus.NOT_FOUND,"Resource not found");
+    response=ResponseEntity.ok().contentType(MediaType.APPLICATION_OCTET_STREAM).body(new org.springframework.core.io.FileSystemResource(file));
+   }
    else if(path.equals("/image"))response=canvasController.getCanvasImage(id,user);
    else if(path.matches("/profile-images/[1-9][0-9]*"))response=profiles.image(Long.valueOf(path.substring(16)),user);
    else throw fail(HttpStatus.BAD_REQUEST,"Unsupported canvas resource");
@@ -175,6 +190,7 @@ public class CanvasSocketServiceController {
  @Scheduled(fixedDelay=60000) public void cleanup(){uploads.forEach((key,u)->{synchronized(u){if(u.expires<System.currentTimeMillis()&&uploads.remove(key,u))delete(u);}});}
  private void delete(Upload upload){try{if(upload.directory!=null&&Files.exists(upload.directory)){try(var files=Files.list(upload.directory)){for(Path file:files.toList())Files.deleteIfExists(file);}Files.deleteIfExists(upload.directory);}}catch(IOException ignored){}}
  private record DiskPart(Path path,String field,String filename,String type) implements MultipartFile {
-  public String getName(){return field;}public String getOriginalFilename(){return filename;}public String getContentType(){return type;}public boolean isEmpty(){return getSize()==0;}public long getSize(){try{return Files.size(path);}catch(IOException e){return 0;}}public byte[] getBytes()throws IOException{return Files.readAllBytes(path);}public InputStream getInputStream()throws IOException{return Files.newInputStream(path);}public void transferTo(File dest)throws IOException{Files.copy(path,dest.toPath(),StandardCopyOption.REPLACE_EXISTING);}
+  public String getName(){return field;}public String getOriginalFilename(){return filename;}public String getContentType(){return type;}public boolean isEmpty(){return getSize()==0;}public long getSize(){try{return Files.size(path);}catch(IOException e){return 0;}}public byte[] getBytes()throws IOException{return Files.readAllBytes(path);}public InputStream getInputStream()throws IOException{return Files.newInputStream(path);}public void transferTo(File dest)throws IOException{transferTo(dest.toPath());}
+  @Override public void transferTo(Path dest)throws IOException{Files.move(path,dest,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);}
  }
 }

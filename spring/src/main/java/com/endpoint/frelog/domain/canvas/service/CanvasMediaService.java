@@ -11,7 +11,6 @@ import java.util.*;
 
 @Service
 public class CanvasMediaService {
-    public static final long MAX_VIDEO=100L*1024*1024, MAX_IMAGE=20L*1024*1024, MAX_GIF=MAX_IMAGE;
     public static final String ALLOWED_EXTENSIONS="png|jpg|webp|bmp|avif|gif|mp4|webm|ogv";
     private static final int MAX_IMAGE_DIMENSION=16384;
     private static final long MAX_IMAGE_PIXELS=67_108_864L;
@@ -71,15 +70,14 @@ public class CanvasMediaService {
     }
     public Map<String,String> save(Integer canvasId,MultipartFile file){
         if(file==null||file.isEmpty())throw new CustomException(ErrorCode.INVALID_INPUT_VALUE,"미디어 파일을 선택해주세요.");
-        if(file.getSize()>MAX_VIDEO)throw new CustomException(ErrorCode.PAYLOAD_TOO_LARGE,"동영상은 100MiB, 이미지는 20MiB 이하로 올려주세요.");
         Path temporary=null;
-        try(InputStream source=file.getInputStream()){
-            byte[] header=source.readNBytes(64);String extension=format(header);boolean video=isVideo(extension);
-            if(!video&&file.getSize()>MAX_IMAGE)throw new CustomException(ErrorCode.PAYLOAD_TOO_LARGE,"이미지는 20MiB 이하로 올려주세요.");
+        try{
+            String extension;
+            try(InputStream source=file.getInputStream()){extension=format(source.readNBytes(64));}
+            boolean video=isVideo(extension);
             Path directory=resources.getCanvasDirectory(canvasId).resolve("media");Files.createDirectories(directory);
             temporary=Files.createTempFile(directory,"upload-",".tmp");
-            try(OutputStream target=Files.newOutputStream(temporary)){target.write(header);source.transferTo(target);}
-            if(Files.size(temporary)>MAX_VIDEO||(!video&&Files.size(temporary)>MAX_IMAGE))throw new CustomException(ErrorCode.PAYLOAD_TOO_LARGE);
+            file.transferTo(temporary);
             String id=UUID.randomUUID()+"."+extension;Files.move(temporary,directory.resolve(id),StandardCopyOption.ATOMIC_MOVE);
             String mediaType=extension.equals("gif")?"gif":video?"video":"image";
             return Map.of("url","/api/canvases/"+canvasId+"/media/"+id,"mediaType",mediaType);
