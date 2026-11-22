@@ -43,7 +43,18 @@ void bridgeRoundTrip(){
 
  // Agent options: API engine only; VM CLI agent options are rejected.
  agora::agent::options({{"engine","api"},{"reasoning_effort","low"},{"max_steps",6},{"locale","en"}});
+ // Other providers' APIs: a provider id from the fixed list and a model name.
+ agora::agent::options({{"engine","api"},{"provider","anthropic"},{"model","claude-opus-5-5"},{"reasoning_effort","high"},{"max_tokens",8192},{"max_steps",6},{"temperature",1},{"top_p",.95},{"locale","ko"}});
+ agora::agent::options({{"provider","openrouter"},{"model","openrouter/auto"}});
+ agora::agent::options({{"provider","gemini"},{"model",""}});
  for(const auto& bad:Json::array({
+     Json{{"provider","custom"}},
+     Json{{"provider","exaone"}},
+     Json{{"provider",1}},
+     Json{{"base_url","https://example.com"}},
+     Json{{"model","../x"}},
+     Json{{"model","gpt 5"}},
+     Json{{"model",std::string(129,'a')}},
      Json{{"engine","cli"}},
      Json{{"engine","local"}},
      Json{{"cli_tool","claude"}},

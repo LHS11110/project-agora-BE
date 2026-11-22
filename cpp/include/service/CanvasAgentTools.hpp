@@ -5,15 +5,23 @@
 #include <unordered_set>
 #include <stdexcept>
 #include <cmath>
+#include <cctype>
 namespace agora::agent {
 using Json=nlohmann::json;
 inline void options(const Json& value){
- if(!value.is_object()||value.size()>7)throw std::invalid_argument("AGENT_OPTIONS_INVALID");
+ if(!value.is_object()||value.size()>9)throw std::invalid_argument("AGENT_OPTIONS_INVALID");
  for(const auto& entry:value.items()){
   const auto name=entry.key();const auto& v=entry.value();
   if(name=="reasoning_effort"){if(!v.is_string()||(v!="low"&&v!="high"&&v!="max"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   // Agents run through the API engine only; VM-hosted CLI agents were removed.
   if(name=="engine"){if(!v.is_string()||v!="api")throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
+  // Providers and their endpoints are fixed by the agent service; only an id is accepted.
+  // EXAONE is excluded: its API terms forbid integrating the API into products.
+  if(name=="provider"){static const std::unordered_set<std::string> providers={"openai","anthropic","gemini","openrouter"};if(!v.is_string()||!providers.count(v.get<std::string>()))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
+  // Empty selects the provider default; otherwise [A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}.
+  if(name=="model"){if(!v.is_string())throw std::invalid_argument("AGENT_OPTIONS_INVALID");const auto& model=v.get_ref<const std::string&>();
+   if(model.size()>128||(!model.empty()&&!std::isalnum(static_cast<unsigned char>(model[0]))))throw std::invalid_argument("AGENT_OPTIONS_INVALID");
+   for(unsigned char c:model)if(!std::isalnum(c)&&c!='.'&&c!='_'&&c!=':'&&c!='/'&&c!='@'&&c!='-')throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   if(name=="locale"){if(!v.is_string()||(v!="ko"&&v!="en"&&v!="zh"&&v!="ja"&&v!="fr"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   double low=0,high=0;
   if(name=="max_tokens"){low=512;high=32768;}else if(name=="max_steps"){low=1;high=12;}

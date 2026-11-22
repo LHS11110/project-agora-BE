@@ -97,4 +97,4 @@ Email verification uses Spring Mail and its Jakarta Mail/Angus runtime dependenc
 
 ## Python canvas agent
 
-The `agent` image installs `openai` 2.54.0 (Apache-2.0), `mcp` 1.30.0 (MIT), and `python-dotenv` 1.2.4 (BSD-3-Clause). Package distributions and their dependencies retain their installed `.dist-info` license files in the image; retain these files when redistributing it. No EXAONE model weights are distributed; the configured external API provider's terms apply to API use.
+The `agent` image installs `openai` 2.54.0 (Apache-2.0), `anthropic` 2.12.0 (MIT), `mcp` 1.30.0 (MIT), and `python-dotenv` 1.2.4 (BSD-3-Clause). Package distributions and their dependencies retain their installed `.dist-info` license files in the image; retain these files when redistributing it. No model weights are distributed. API use is governed by the terms of the provider the user selects (OpenAI, Anthropic, Google Gemini or OpenRouter); EXAONE is not supported because its API terms forbid integrating the API into products or services. See the FE repository's `docs/AI_PROVIDER_COMPLIANCE.md`.

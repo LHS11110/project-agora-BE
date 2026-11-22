@@ -5,7 +5,14 @@ from .engine import run_turn
 from . import telemetry
 from .settings import defaults, options
 from .credentials import effective_key, personal_key
+from .providers import PROVIDERS, model_for, server_key, spec
+import anthropic
 from openai import APIStatusError, APIConnectionError, APITimeoutError
+
+# Both SDKs raise their own classes; the user-facing mapping is the same.
+STATUS_ERRORS = (APIStatusError, anthropic.APIStatusError)
+TIMEOUT_ERRORS = (APITimeoutError, anthropic.APITimeoutError)
+CONNECTION_ERRORS = (APIConnectionError, anthropic.APIConnectionError)
 
 MAX_FRAME = 1_000_000
 
@@ -17,7 +24,7 @@ def public_error(error):
         return {"error":"AGENT_API_KEY_INVALID","message":"API 키 형식을 확인해주세요. 공백·줄바꿈 없이 입력해주세요."}
     if isinstance(error, ValueError) and str(error) == "AGENT_OPTIONS_INVALID":
         return {"error":"AGENT_OPTIONS_INVALID","message":"에이전트 설정값이 허용 범위를 벗어났습니다."}
-    if isinstance(error, APIStatusError):
+    if isinstance(error, STATUS_ERRORS):
         if error.status_code == 429:
             return {
                 "error": "AGENT_PROVIDER_BUSY",
@@ -32,12 +39,12 @@ def public_error(error):
             "error": "AGENT_PROVIDER_ERROR",
             "message": f"모델 제공 서비스가 오류를 반환했습니다. (HTTP {error.status_code}) 이미 반영된 변경은 유지됩니다.",
         }
-    if isinstance(error, APITimeoutError):
+    if isinstance(error, TIMEOUT_ERRORS):
         return {
             "error": "AGENT_PROVIDER_TIMEOUT",
             "message": "모델 제공 서비스 응답 시간이 초과되었습니다. 이미 반영된 변경은 유지됩니다.",
         }
-    if isinstance(error, APIConnectionError):
+    if isinstance(error, CONNECTION_ERRORS):
         return {
             "error": "AGENT_PROVIDER_UNAVAILABLE",
             "message": "모델 제공 서비스에 연결할 수 없습니다. 이미 반영된 변경은 유지됩니다.",
@@ -77,7 +84,9 @@ async def serve(reader, writer):
     quota_context = None
     try:
         payload = json.loads(await asyncio.wait_for(reader.readline(), 10))
-        selected_key = effective_key(payload)
+        config = options(payload.get("options", {}))
+        provider = spec(config["provider"])
+        selected_key = effective_key(payload, provider["id"])
         quota_context = telemetry.bind(selected_key)
         if payload.get("operation") == "status":
             await send(
@@ -87,8 +96,19 @@ async def serve(reader, writer):
                     "ready": True,
                     "configured": bool(selected_key),
                     "credential_source": "personal" if personal_key(payload) else "server",
-                    "default_configured": bool(os.getenv("AGENT_API_KEY")),
-                    "model": os.getenv("AGENT_MODEL", "k-exaone_v2.5"),
+                    "provider": provider["id"],
+                    "default_configured": bool(server_key(provider)),
+                    "model": model_for(provider, config["model"]),
+                    # Which providers have a server key; never the keys themselves.
+                    "providers": [
+                        {
+                            "id": provider_id,
+                            "label": entry["label"],
+                            "default_model": model_for(spec(provider_id)),
+                            "default_configured": bool(server_key(entry)),
+                        }
+                        for provider_id, entry in PROVIDERS.items()
+                    ],
                 }
             )
             return

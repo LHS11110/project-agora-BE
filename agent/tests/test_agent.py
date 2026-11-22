@@ -100,7 +100,7 @@ async def test_mcp_read_modify_create_and_deleted_tool_disabled():
     assert calls[1][1]["changes"][0]["revision"] == 4
     tools = create.call_args_list[0].kwargs["tools"]
     assert "delete_objects" not in [t["function"]["name"] for t in tools]
-    assert create.call_args.kwargs["model"] == "k-exaone_v2.5"
+    assert create.call_args.kwargs["model"] == "gpt-5"
     assert progress.await_count >= 5
 
 
@@ -257,10 +257,12 @@ async def test_raw_response_headers_and_custom_options(monkeypatch, tmp_path, as
     config={'reasoning_effort':'max','max_tokens':16384,'max_steps':3,'temperature':.7,'top_p':.8}
     result=await run_turn({'message':'test','options':config},AsyncMock(),AsyncMock(),client)
     assert result['telemetry']['limits']['day']=={'limit':100,'remaining':91}
-    assert create.call_args.kwargs['extra_body']['reasoning_effort']=='max'
-    assert create.call_args.kwargs['max_tokens']==16384
-    assert create.call_args.kwargs['temperature']==.7
-    assert result['options']==config
+    # Default provider (OpenAI): reasoning models take max_completion_tokens and
+    # reasoning_effort; temperature/top_p stay at provider defaults.
+    assert create.call_args.kwargs['reasoning_effort']=='high'
+    assert create.call_args.kwargs['max_completion_tokens']==16384
+    assert 'temperature' not in create.call_args.kwargs and 'extra_body' not in create.call_args.kwargs
+    assert result['options']=={**config,'provider':'openai','model':''}
     saved=(tmp_path/'quota.json').read_text()
     assert 'hidden' not in saved and 'authorization' not in saved
     monkeypatch.setattr(telemetry, '_state', None)

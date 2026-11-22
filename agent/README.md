@@ -1,6 +1,6 @@
 # 캔버스 AI 에이전트
 
-OpenAI Python SDK의 OpenAI 호환 클라이언트로 EXAONE을 호출하고, 공식 MCP Python SDK의 서버·클라이언트 세션을 통해 캔버스를 읽고 수정한다.
+OpenAI(기본)·Anthropic Claude·Google Gemini·OpenRouter 중 사용자가 고른 모델 API를 호출하고, 공식 MCP Python SDK의 서버·클라이언트 세션을 통해 캔버스를 읽고 수정한다. Claude는 공식 Anthropic Python SDK로, 나머지는 OpenAI Python SDK(각 제공 서비스의 OpenAI 호환 API)로 호출한다.
 
 ## 설정
 
@@ -8,12 +8,12 @@ OpenAI Python SDK의 OpenAI 호환 클라이언트로 EXAONE을 호출하고, �
 cd /home/steam/Github/project-agora-BE
 cp -n agent/.env.example agent/.env
 chmod 600 agent/.env
-# 편집기로 agent/.env의 AGENT_API_KEY를 입력
+# 서버 기본 키를 쓰려면 agent/.env의 AGENT_<PROVIDER>_API_KEY를 입력(선택)
 
 docker compose -p agora-backend -f docker-compose.backend.yml up -d --build agent cpp
 ```
 
-기본 Base URL은 `https://api.exaone.ai/v1`, 모델 ID는 `k-exaone_v2.5`다. 키를 바꾸면 `docker compose -p agora-backend -f docker-compose.backend.yml up -d --force-recreate --no-deps agent`로 환경 변수를 다시 읽힌다. 단순 restart는 변경된 env_file을 읽지 않는다. 키가 없으면 서비스 자체는 정상 실행되지만 UI에서 미설정을 안내한다. 서버 기본 키는 브라우저나 C++에 전달하지 않는다. 사용자가 지정한 개인 키는 아래의 별도 요청 경로를 따른다. `.env`는 Git 및 Docker 빌드 컨텍스트에서 제외한다.
+제공 서비스별 엔드포인트와 기본 모델은 아래 "모델 제공 서비스" 표를 따른다. EXAONE은 지원하지 않는다(아래 "약관" 참고). 키를 바꾸면 `docker compose -p agora-backend -f docker-compose.backend.yml up -d --force-recreate --no-deps agent`로 환경 변수를 다시 읽힌다. 단순 restart는 변경된 env_file을 읽지 않는다. 서버 키가 없으면 서비스 자체는 정상 실행되며, 사용자가 개인 키를 입력하도록 UI에서 안내한다. 서버 기본 키는 브라우저나 C++에 전달하지 않는다. 사용자가 지정한 개인 키는 아래의 별도 요청 경로를 따른다. `.env`는 Git 및 Docker 빌드 컨텍스트에서 제외한다.
 
 캔버스 상단의 **AI 에이전트**를 열고 요청한다. 객체를 선택하면 최대 20개 ID를 첨부한다. 모델은 해당 객체를 도구로 읽은 뒤 수정할 수 있다. 예: “파이썬 이진 탐색 코드 객체를 만들어줘”, “선택한 코드의 기존 함수를 유지하고 예외 처리를 추가해줘”. 삭제는 사용자가 삭제 허용을 켜고 요청한 경우만 제공한다.
 
@@ -24,7 +24,7 @@ docker compose -p agora-backend -f docker-compose.backend.yml up -d --build agen
                                              ↕ Unix socket
                                 Python agent ↔ MCP 서버/클라이언트
                                       ↕ HTTPS
-                                    EXAONE API
+                     OpenAI · Anthropic · Gemini · OpenRouter API
 ```
 
 - 브로커는 인증된 현재 캔버스의 읽기 권한을 확인한다. 클라이언트의 사용자·캔버스 신원 필드는 사용하지 않는다.
@@ -61,9 +61,9 @@ python3.13 -m venv .venv
 .venv/bin/python -m pytest tests
 ```
 
-실제 MCP 초기화·도구 목록·읽기/수정/생성·충돌 전달·삭제 opt-in과 Unix 소켓 양방향 프로토콜을 모의 모델로 검증한다. 실제 EXAONE 응답 검증에는 유효한 API 키가 필요하다.
+실제 MCP 초기화·도구 목록·읽기/수정/생성·충돌 전달·삭제 opt-in과 Unix 소켓 양방향 프로토콜을 모의 모델로 검증한다. 실제 제공 서비스 응답 검증에는 유효한 API 키가 필요하다.
 
-참조: [EXAONE 2.5 공식 문서](https://docs.exaone.ai/en/docs/k-exaone-2.5), [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), [OpenAI Python SDK](https://github.com/openai/openai-python).
+참조: [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), [OpenAI Python SDK](https://github.com/openai/openai-python), [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python).
 
 실제 제공 서비스와 배포된 Unix 소켓을 이용한 수동 smoke test는 다음과 같다. MCP 도구의 저장 대상만 격리된 메모리 fixture로 대체하므로 실제 캔버스 데이터는 변경하지 않는다. 유효한 키가 필요하고 모델 API 사용량이 발생한다.
 
@@ -77,19 +77,37 @@ docker exec -i agora-agent python - --live < agent/tests/live_smoke.py
 
 ## 캔버스에서 조절하는 설정과 호출 한도
 
-AI 에이전트의 설정 버튼에서 추론 수준(`low`, `high`, `max`), 응답 토큰 상한(512–32768), 최대 작업 단계(1–12), Temperature(0–2), Top P(0.05–1)를 조절한다. 선택 객체 첨부·최근 대화 포함도 선택할 수 있다. 개인 브라우저 설정으로 저장하며 삭제 허용은 별도이며 기본 해제된다. 모델·API 주소·서버 기본 키는 서버에서 관리하며 개인 키만 요청별로 지정할 수 있다. 브로커·C++·Python에서 옵션 허용 범위를 검증한다. 한 작업 단계마다 모델 API를 호출할 수 있으므로 한 사용자 요청이 여러 API 호출을 소비할 수 있다.
+AI 에이전트의 설정 버튼에서 추론 수준(`low`, `high`, `max`), 응답 토큰 상한(512–32768), 최대 작업 단계(1–12)를 조절한다. Temperature·Top P 옵션은 이전 버전과의 호환을 위해 검증만 하고 모델에는 보내지 않는다(현재 추론 모델 다수가 기본값 외의 값을 거부한다). 선택 객체 첨부·최근 대화 포함도 선택할 수 있다. 개인 브라우저 설정으로 저장하며 삭제 허용은 별도이며 기본 해제된다. API 주소와 서버 기본 키는 서버에서 관리한다. 제공 서비스·모델 이름·개인 키는 요청별로 지정할 수 있다(아래 "모델 제공 서비스"). 브로커·C++·Python에서 옵션 허용 범위를 검증한다. 한 작업 단계마다 모델 API를 호출할 수 있으므로 한 사용자 요청이 여러 API 호출을 소비할 수 있다.
 
-성공 및 429 오류 응답에서 `x-{second|minute|day}-rate-limit`와 `-remaining`만 추출하여 표시한다. `retry-after`와 `retry-after-ms`가 있으면 해당 대기 시간도 표시한다. 수치는 **마지막으로 헤더를 받은 시점**의 값이며, 동일 키를 쓰는 모든 캔버스가 공유한다. 헤더가 없는 응답은 이전 한도와 그 확인 시간을 유지한다. 값이 없으면 “첫 응답 후 표시”로 안내하고 임의의 한도를 만들어내지 않는다.
+호출 한도 카드는 EXAONE의 `x-{second|minute|day}-rate-limit` 헤더용이었으며 EXAONE 제거와 함께 화면에서 뺐다. 아래 수집 로직은 남아 있지만 현재 제공 서비스는 이 헤더를 보내지 않는다. 성공 및 429 오류 응답에서 `x-{second|minute|day}-rate-limit`와 `-remaining`만 추출한다. `retry-after`와 `retry-after-ms`가 있으면 해당 대기 시간도 표시한다. 수치는 **마지막으로 헤더를 받은 시점**의 값이며, 동일 키를 쓰는 모든 캔버스가 공유한다. 헤더가 없는 응답은 이전 한도와 그 확인 시간을 유지한다. 값이 없으면 “첫 응답 후 표시”로 안내하고 임의의 한도를 만들어내지 않는다.
 
 허용된 숫자 메타데이터만 Unix 소켓 볼륨의 `quota.json`에 원자적으로 저장해 재시작 후 복구한다. API 키를 변경하면 이전 키의 한도는 재사용하지 않는다. 상태 확인 및 한도 새로고침은 저장된 메타데이터를 조회하며 모델 API를 추가 호출하지 않는다. 원본 헤더·키·쿠키는 클라이언트에 전달하지 않는다.
 
 전용 AI 버튼은 캔버스 상단 중앙에 배치한다. 에이전트 창을 닫아도 진행 중 작업은 계속되며, 버튼의 작업 표시로 확인하고 다시 열 수 있다. 동작 줄이기 설정을 존중하고 유휴 상태의 반복 애니메이션은 사용하지 않는다.
 
-참조: [EXAONE 호출 한도 헤더](https://docs.exaone.ai/en/docs/rate-limits), [추론 옵션](https://docs.exaone.ai/en/docs/k-exaone-2.5).
+
+## 모델 제공 서비스
+
+에이전트 설정의 **모델 제공 서비스**에서 고르고, **모델**에 모델 이름을 적는다. 비워 두면 제공 서비스의 기본 모델을 쓴다. 멀티 에이전트 노드는 노드마다 제공 서비스와 모델을 따로 지정할 수 있다.
+
+| 제공 서비스 (`provider`) | 호출 방식 | 고정 엔드포인트 | 기본 모델 | 서버 기본 키 환경 변수 |
+| --- | --- | --- | --- | --- |
+| `openai` | OpenAI SDK | `https://api.openai.com/v1` | `gpt-5` | `AGENT_OPENAI_API_KEY` |
+| `anthropic` | Anthropic SDK | SDK 기본(`api.anthropic.com`) | `claude-opus-5-5` | `AGENT_ANTHROPIC_API_KEY` |
+| `gemini` | OpenAI SDK | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` | `AGENT_GEMINI_API_KEY` |
+| `openrouter` | OpenAI SDK | `https://openrouter.ai/api/v1` | `openrouter/auto` | `AGENT_OPENROUTER_API_KEY` |
+
+- **엔드포인트는 서버에 고정한다.** 요청은 제공 서비스 ID와 모델 이름(`[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}`)만 보낸다. 개인 키가 요청에서 온 주소로 전송될 수 없다. C++와 Python이 같은 목록과 형식을 검증한다.
+- **서버 기본 키는 선택이다.** 서버 키가 없는 제공 서비스는 개인 키가 필요하다. 이전 `AGENT_API_KEY`(EXAONE)는 읽지 않는다. 한 제공 서비스의 서버 키를 다른 제공 서비스에 쓰지 않는다. 상태 응답은 제공 서비스별로 서버 키가 있는지 여부만 알려주고 키는 반환하지 않는다.
+- **요청 옵션:** OpenAI는 `max_completion_tokens`를 쓰고, 추론 모델(`gpt-5*`, `o*`)에만 추론 수준을 보낸다(`max`는 `high`). Gemini·OpenRouter는 `max_tokens`만 보낸다.
+- **Claude:** 스트리밍으로 받아 `get_final_message()`로 합친다. 추론 수준은 `output_config.effort`로 보낸다(이를 지원하는 모델만). Claude Opus 5.5·Opus 5·Sonnet 5.5·Fable 5.1/5.2는 안전 분류기가 거절하면 서버 측 대체 모델로 다시 처리하도록 `fallbacks: "default"`(베타 `server-side-fallback-2026-07-01`)를 켠다. 도구 입력은 `eager_input_streaming`으로 받으며, 응답이 토큰 상한(`max_tokens`)이나 거절(`refusal`)로 끝나면 그 턴의 도구를 실행하지 않는다. 사고 블록은 응답 그대로 다음 요청에 돌려보낸다.
+- **약관:** 각 제공 서비스의 API 키(종량 과금)로만 호출한다. 개인 구독 로그인(OAuth)은 쓰지 않는다. 요청·선택 객체·도구로 읽은 내용은 선택한 제공 서비스로 전송된다. 확인한 약관과 대응은 FE 저장소의 `docs/AI_PROVIDER_COMPLIANCE.md`에 있다.
+- **사용 전 확인(FE):** 제공 서비스별 첫 사용 시 만 18세 이상·약관 준수·국외 전송 동의(Gemini는 업무 목적·EEA 유료 키 포함)를 받는다. 동의 전에는 패널과 멀티 에이전트 실행이 요청을 보내지 않는다. 에이전트 창에는 AI 생성 응답이라는 고지와 사실 확인 안내를 표시한다.
+- **EXAONE 미지원:** EXAONE API 약관(2026-11-09) 2.1조는 비상업 용도만 허용하고 "API를 제품이나 서비스에 통합해 제3자가 모델을 호출하게 하는 것"을 금지한다. 2.5조는 제3자 제공을, 3.3조는 키 공유를 금지한다. 서버 키든 개인 키든 캔버스 서비스에 통합하는 구조이므로 제공 서비스 목록에서 뺐다.
 
 ## 개인 API 키 지정
 
-에이전트 설정의 **EXAONE 2.5 API 키**에 입력한 뒤 **키 적용**을 누르면 서버 기본 키 대신 그 키로 요청한다. **서버 기본 키 사용**으로 해제한다. 키는 현재 브라우저 탭의 `sessionStorage`에만 보관하며 로그아웃·계정 전환 시 제거한다. 입력란은 비밀번호 형식이며 키가 프롬프트·대화·캔버스 객체·다른 참가자에게 전달되지 않는다. 키를 적용하는 동작은 형식과 상태만 확인하며, 제공 서비스 인증은 실제 모델 요청 시 확인한다.
+에이전트 설정의 **{제공 서비스} API 키**에 입력한 뒤 **키 적용**을 누르면 서버 기본 키 대신 그 키로 요청한다. **서버 기본 키 사용**(서버 키가 없는 제공 서비스는 **키 지우기**)으로 해제한다. 키는 제공 서비스별로 따로, 현재 브라우저 탭의 `sessionStorage`에만 보관하며 로그아웃·계정 전환 시 제거한다. 입력란은 비밀번호 형식이며 키가 프롬프트·대화·캔버스 객체·다른 참가자에게 전달되지 않는다. 키를 적용하는 동작은 형식과 상태만 확인하며, 제공 서비스 인증은 실제 모델 요청 시 확인한다.
 
 WebSocket `agent` 요청의 선택 필드 `api_key`(4096자 이하 ASCII, 공백·제어문자 금지)로 C++/Unix 소켓을 거쳐 Python SDK에 전달한다. 키가 비어 있으면 서버 환경 변수로 대체한다. 서버는 개인 키를 DB/파일/로그에 저장하지 않고 요청 처리 메모리에서만 사용한다. 개인 키별 한도는 ContextVar와 해시 키로 분리한 최대 64개 메모리 캐시에 저장하며 디스크에 기록하지 않는다. 기존 기본 키의 한도 영속화와 `.env`는 변경하지 않는다.
 
