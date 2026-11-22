@@ -41,16 +41,17 @@ void bridgeRoundTrip(){
  item["permission"]="admin-group";bool denied=false;try{agora::agent::fields(item);}catch(const std::invalid_argument&){denied=true;}AGORA_CHECK(denied);
  auto publicItem=agora::agent::publicItem({{"kind","text"},{"text","source"},{"token","hidden"},{"runtimeResults",Json::array()}},true);AGORA_CHECK(publicItem["text"]=="source"&&!publicItem.contains("token")&&!publicItem.contains("runtimeResults"));
 
- // CLI options validation
- agora::agent::options({{"engine","cli"},{"cli_tool","claude"},{"cli_model","claude-sonnet-4-5"},{"max_steps",6}});
- agora::agent::options({{"engine","cli"},{"cli_tool","custom"},{"cli_command","agora-canvas list"}});
- for(const auto& badCli:Json::array({
+ // Agent options: API engine only; VM CLI agent options are rejected.
+ agora::agent::options({{"engine","api"},{"reasoning_effort","low"},{"max_steps",6},{"locale","en"}});
+ for(const auto& bad:Json::array({
+     Json{{"engine","cli"}},
      Json{{"engine","local"}},
-     Json{{"cli_tool","rm"}},
-     Json{{"cli_command","echo ok\nrm -rf /"}},
-     Json{{"cli_model",std::string(129,'a')}},
+     Json{{"cli_tool","claude"}},
+     Json{{"cli_command","agora-canvas list"}},
+     Json{{"cli_model","x"}},
+     Json{{"locale","de"}},
  })){
-  bool rejected=false;try{agora::agent::options(badCli);}catch(const std::invalid_argument&){rejected=true;}AGORA_CHECK(rejected);
+  bool rejected=false;try{agora::agent::options(bad);}catch(const std::invalid_argument&){rejected=true;}AGORA_CHECK(rejected);
  }
 
  // RuntimeKernelClient::requestWithTools bidirectional round-trip
@@ -62,25 +63,25 @@ void bridgeRoundTrip(){
   std::thread kworker([&]{
    int fd=accept(ksrv,nullptr,nullptr);FILE* io=fdopen(fd,"r+");char* line=nullptr;size_t size=0;
    getline(&line,&size,io);
-   const auto req=Json::parse(line);AGORA_CHECK(req["action"]=="cli_agent"&&req["cli_tool"]=="claude");
-   const std::string frames="{\"type\":\"output\",\"output\":\"cli starting\"}\n{\"type\":\"tool\",\"id\":7,\"name\":\"list_objects\",\"arguments\":{\"offset\":0}}\n";
+   const auto req=Json::parse(line);AGORA_CHECK(req["action"]=="tool_stream");
+   const std::string frames="{\"type\":\"output\",\"output\":\"starting\"}\n{\"type\":\"tool\",\"id\":7,\"name\":\"list_objects\",\"arguments\":{\"offset\":0}}\n";
    fwrite(frames.data(),1,frames.size(),io);fflush(io);
    getline(&line,&size,io);
    const auto tr=Json::parse(line);AGORA_CHECK(tr["type"]=="tool_result"&&tr["id"]==7&&tr["result"]["objects"][0]=="o1");
-   const std::string done=Json{{"answer","cli done"},{"engine","cli"}}.dump()+"\n";
+   const std::string done=Json{{"answer","done"}}.dump()+"\n";
    fwrite(done.data(),1,done.size(),io);fflush(io);
    free(line);fclose(io);
   });
   std::string kprog;
   auto kresult=RuntimeKernelClient(kpath).requestWithTools(
-      {{"canvasId",1},{"action","cli_agent"},{"cli_tool","claude"}},
+      {{"canvasId",1},{"action","tool_stream"}},
       [](const std::string& name,const Json& args){
        AGORA_CHECK(name=="list_objects"&&args["offset"]==0);
        return Json{{"objects",Json::array({"o1"})}};
       },
       [&](const std::string& text){kprog+=text;});
   kworker.join();close(ksrv);unlink(kpath.c_str());rmdir(dir2);
-  AGORA_CHECK(kresult["answer"]=="cli done"&&kprog=="cli starting");
+  AGORA_CHECK(kresult["answer"]=="done"&&kprog=="starting");
  }
 }
 int main(){return runTest("agent Unix bridge, tool validation and source filtering",bridgeRoundTrip);}

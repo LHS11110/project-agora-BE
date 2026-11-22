@@ -8,14 +8,13 @@
 namespace agora::agent {
 using Json=nlohmann::json;
 inline void options(const Json& value){
- if(!value.is_object()||value.size()>9)throw std::invalid_argument("AGENT_OPTIONS_INVALID");
+ if(!value.is_object()||value.size()>7)throw std::invalid_argument("AGENT_OPTIONS_INVALID");
  for(const auto& entry:value.items()){
   const auto name=entry.key();const auto& v=entry.value();
   if(name=="reasoning_effort"){if(!v.is_string()||(v!="low"&&v!="high"&&v!="max"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
-  if(name=="engine"){if(!v.is_string()||(v!="api"&&v!="cli"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
-  if(name=="cli_tool"){if(!v.is_string()||(v!="claude"&&v!="codex"&&v!="gemini"&&v!="opencode"&&v!="custom"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
-  if(name=="cli_model"){if(!v.is_string())throw std::invalid_argument("AGENT_OPTIONS_INVALID");const auto& s=v.get_ref<const std::string&>();if(s.size()>128||std::any_of(s.begin(),s.end(),[](unsigned char c){return c<32||c>126;}))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
-  if(name=="cli_command"){if(!v.is_string())throw std::invalid_argument("AGENT_OPTIONS_INVALID");const auto& s=v.get_ref<const std::string&>();if(s.size()>512||std::any_of(s.begin(),s.end(),[](unsigned char c){return c=='\0'||c=='\n'||c=='\r';}))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
+  // Agents run through the API engine only; VM-hosted CLI agents were removed.
+  if(name=="engine"){if(!v.is_string()||v!="api")throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
+  if(name=="locale"){if(!v.is_string()||(v!="ko"&&v!="en"&&v!="zh"&&v!="ja"&&v!="fr"))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   double low=0,high=0;
   if(name=="max_tokens"){low=512;high=32768;}else if(name=="max_steps"){low=1;high=12;}
   else if(name=="temperature"){low=0;high=2;}else if(name=="top_p"){low=.05;high=1;}

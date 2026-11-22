@@ -319,29 +319,6 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             result["session"]=agora::agent::publicSession(result["session"],user,admin);if(result["messages"].empty())result["messages"]=Json::array();
             return envelope(route,{{"type","runtime_result"},{"ok",true},{"result",result}});
         }
-        if(operation=="cli_status"||operation=="cli_install"||operation=="cli_uninstall"){
-            if(execute_groups.empty()&&!admin)throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
-            Json cli_req{{"canvasId",runtimeTargetId(scope,id)},{"action","cli_agent"},{"operation",operation=="cli_status"?"status":(operation=="cli_install"?"install":"uninstall")}};
-            if(operation!="cli_status"){
-                if(write_groups.empty()&&!admin)throw std::invalid_argument("ITEM_WRITE_DENIED");
-                auto cli_tool=event.value("cli_tool",std::string());
-                if(cli_tool.empty()&&event.contains("options")&&event["options"].is_object())cli_tool=event["options"].value("cli_tool",std::string());
-                if(cli_tool!="claude"&&cli_tool!="codex"&&cli_tool!="gemini"&&cli_tool!="opencode")throw std::invalid_argument("AGENT_OPTIONS_INVALID");
-                cli_req["cli_tool"]=cli_tool;
-            }
-            lock.unlock();
-            Json result;
-            try{
-                result=RuntimeKernelClient(runtime_socket_).requestWithTools(cli_req,{},[&](const std::string& text){
-                    if(on_output)on_output(Json{{"agent_event","progress"},{"text",text}}.dump());
-                });
-            }catch(const std::runtime_error& err){
-                const std::string code=err.what();
-                result={{"error",code.empty()?std::string("RUNTIME_VM_UNAVAILABLE"):code},{"message","VM CLI 에이전트 런타임에 연결할 수 없습니다."}};
-            }
-            const bool ok=!result.contains("error");
-            return envelope(route,{{"type","runtime_result"},{"ok",ok},{"code",result.value("error",std::string())},{"message",result.value("message",std::string())},{"result",result}});
-        }
         if(operation!="run"&&operation!="status")throw std::invalid_argument("AGENT_REQUEST_INVALID");
         const auto message=event.value("message",std::string());const auto selected=event.value("selected_ids",Json::array());
         if(operation=="run"&&(message.empty()||message.size()>24000))throw std::invalid_argument("AGENT_REQUEST_INVALID");
@@ -350,14 +327,6 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         const auto api_key=event.value("api_key",std::string());
         if(api_key.size()>4096||std::any_of(api_key.begin(),api_key.end(),[](unsigned char c){return c<33||c>126;}))throw std::invalid_argument("AGENT_API_KEY_INVALID");
         const auto agent_options=event.value("options",Json::object());agora::agent::options(agent_options);
-        const std::string engine=agent_options.value("engine",std::string("api"));
-        const std::string cli_tool=agent_options.value("cli_tool",std::string("claude"));
-        const std::string cli_model=agent_options.value("cli_model",std::string());
-        const std::string cli_command=agent_options.value("cli_command",std::string());
-        if(operation=="run"&&engine=="cli"){
-            if(execute_groups.empty()&&!admin)throw std::invalid_argument("RUNTIME_EXECUTION_DENIED");
-            if(cli_tool=="custom"&&cli_command.find_first_not_of(" \t")==std::string::npos)throw std::invalid_argument("AGENT_OPTIONS_INVALID");
-        }
         std::string session,turn;Json history=Json::array(),begun;
         if(operation=="run"){
             session=event.value("session_id",std::string());if(session.empty())session=sessionCall("ensure",Json::object())["draft"]["id"].get<std::string>();
@@ -392,38 +361,8 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         };
         auto onProgress=[&](const std::string& text){if(on_output)on_output(Json{{"agent_event","progress"},{"text",text}}.dump());};
         Json result;
-        if(operation=="run"&&engine=="cli"){
-            Json cli_payload{
-                {"canvasId",runtimeTargetId(scope,id)},
-                {"action","cli_agent"},
-                {"operation","run"},
-                {"canvas_id",id},
-                {"message",message},
-                {"selected_ids",selected},
-                {"history",history},
-                {"allow_delete",event.value("allow_delete",false)},
-                {"anchor",event.value("anchor",Json{{"x",.15},{"y",.15}})},
-                {"cli_tool",cli_tool},
-                {"cli_model",cli_model},
-                {"cli_command",cli_command},
-                {"api_key",api_key},
-                {"max_steps",agent_options.value("max_steps",8)},
-            };
-            try{
-                result=RuntimeKernelClient(runtime_socket_).requestWithTools(cli_payload,onTool,onProgress);
-            }catch(const std::runtime_error& err){
-                const std::string code=err.what();
-                if(code=="RUNTIME_MANAGER_UNAVAILABLE")result={{"error",code},{"message","VM 런타임 관리자에 연결할 수 없습니다. 이미 반영된 변경은 유지됩니다."}};
-                else if(code=="RUNTIME_VM_UNAVAILABLE")result={{"error",code},{"message","캔버스 VM에 연결할 수 없습니다. 이미 반영된 변경은 유지됩니다."}};
-                else if(code=="AGENT_TOOL_LIMIT")result={{"error",code},{"message","도구 호출 한도를 초과했습니다. 이미 반영된 변경은 유지됩니다."}};
-                else result={{"error",code.empty()?std::string("AGENT_UNAVAILABLE"):code},{"message","VM CLI 에이전트 연결이 종료되었습니다. 이미 반영된 변경은 유지됩니다."}};
-            }catch(const std::exception&){
-                result={{"error","AGENT_UNAVAILABLE"},{"message","VM CLI 에이전트 연결이 종료되었습니다. 이미 반영된 변경은 유지됩니다."}};
-            }
-        }else{
-            try{result=agora::agent::request(payload,onTool,onProgress);}
-            catch(const std::exception&){result={{"error","AGENT_UNAVAILABLE"},{"message","에이전트 연결이 종료되었습니다. 이미 반영된 변경은 유지됩니다."}};}
-        }
+        try{result=agora::agent::request(payload,onTool,onProgress);}
+        catch(const std::exception&){result={{"error","AGENT_UNAVAILABLE"},{"message","에이전트 연결이 종료되었습니다. 이미 반영된 변경은 유지됩니다."}};}
         if(operation=="run"){
             const bool failed=result.contains("error");auto content=result.value(failed?"message":"answer",std::string());if(content.size()>240000){auto n=std::size_t(240000);while(n>0&&(static_cast<unsigned char>(content[n])&0xc0)==0x80)--n;content.resize(n);content+="\n[세션 기록 길이 상한으로 일부를 생략했습니다.]";}
             Json answer{{"id",turn+":result"},{"turn_id",turn},{"role","assistant"},{"kind",failed?"error":"answer"},{"content",content},{"status",failed?"failed":"complete"},{"created_at",clock()},{"code",result.value("error",std::string())}};
