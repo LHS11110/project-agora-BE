@@ -208,3 +208,52 @@ def test_anthropic_errors_map_to_public_messages():
     error = anthropic.AuthenticationError("denied", response=httpx.Response(401, request=request), body=None)
     assert daemon.public_error(error)["error"] == "AGENT_PROVIDER_AUTH_FAILED"
     assert daemon.public_error(anthropic.APITimeoutError(request=request))["error"] == "AGENT_PROVIDER_TIMEOUT"
+
+
+def test_external_steps_are_persisted_without_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_SOCKET", str(tmp_path / "agent.sock"))
+    for _ in range(8):
+        assert daemon.reserve_external_steps(19, 10)
+    assert not daemon.reserve_external_steps(19, 1)
+    assert daemon.reserve_external_steps(20, 1)
+    import sqlite3
+    with sqlite3.connect(tmp_path / "external-quota.sqlite3") as db:
+        assert [row[1] for row in db.execute("PRAGMA table_info(budget)")] == ["user_id", "day", "steps"]
+
+
+@pytest.mark.asyncio
+async def test_canvas_external_requests_require_allowlisted_model_and_key(tmp_path, monkeypatch):
+    daemon.semaphore = asyncio.Semaphore(1)
+    path = str(tmp_path / "agent.sock")
+    monkeypatch.setenv("AGENT_SOCKET", path)
+    monkeypatch.setenv("AGENT_EXTERNAL_MODELS", "anthropic/claude-approved")
+    engine = AsyncMock(return_value={"answer": "done"})
+    monkeypatch.setattr(daemon, "run_turn", engine)
+
+    async def request(**changes):
+        payload = {
+            "operation": "run", "user_id": 19, "message": "hi",
+            "consent_version": daemon.CANVAS_CONSENT_VERSION,
+            "options": {"provider": "openrouter", "model": "anthropic/claude-approved",
+                        "max_steps": 12, "max_tokens": 32768},
+            **changes,
+        }
+        reader, writer = await asyncio.open_unix_connection(path)
+        writer.write((json.dumps(payload) + "\n").encode())
+        await writer.drain()
+        response = json.loads(await reader.readline())
+        writer.close()
+        await writer.wait_closed()
+        return response
+
+    async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
+        assert (await request())["error"] == "AGENT_API_KEY_INVALID"
+        assert (await request(api_key="sk-or-v1-example", options={
+            "provider": "openrouter", "model": "google/gemini-example",
+        }))["error"] == "AGENT_OPTIONS_INVALID"
+        engine.assert_not_awaited()
+        assert await request(api_key="sk-or-v1-example") == {"answer": "done"}
+        call = engine.await_args
+        assert call.kwargs == {"create_only": True, "external_canvas": True}
+        assert call.args[0]["options"]["max_steps"] == 10
+        assert call.args[0]["options"]["max_tokens"] == 8192

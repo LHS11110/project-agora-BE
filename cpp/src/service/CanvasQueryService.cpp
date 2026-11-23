@@ -12,6 +12,8 @@
 #include "service_memory/CanvasItemRules.hpp"
 #include "service_memory/RegistryServiceMemory.hpp"
 #include <chrono>
+#include <cstdlib>
+#include <string_view>
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -23,6 +25,21 @@
 
 namespace {
 using Json = nlohmann::json;
+
+bool hasAdultAgentAccess(long long user_id) {
+    const char* configured = std::getenv("AGENT_VERIFIED_ADULT_USER_IDS");
+    if (!configured || user_id <= 0) return false;
+    const auto user = std::to_string(user_id);
+    std::string_view entries(configured);
+    while (!entries.empty()) {
+        const auto separator = entries.find(',');
+        if (entries.substr(0, separator) == user) return true;
+        if (separator == std::string_view::npos) break;
+        entries.remove_prefix(separator + 1);
+    }
+    return false;
+}
+
 Json routing(const Json& input) {
     const auto route = input.value("route", Json::object());
     if (!route.is_object() || !route.contains("canvas_id") || !route["canvas_id"].is_number_integer()
@@ -146,6 +163,7 @@ Json CanvasQueryService::join(const Json& input) {
         {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin", admin}, {"settings_revision", revision}, {"canvas_id", id}, {"scope", std::string(spaceScopeWire(scope))}};
     return {{"route", route}, {"identity", identity},
         {"response", {{"type", "init_items"}, {"canvas_id", id}, {"scope", std::string(spaceScopeWire(scope))}, {"items", visible}, {"group_bits",group_bits},{"group_masks",group_masks},{"groups", groups}, {"member_groups",member_groups}, {"write_groups",write_groups}, {"execute_groups",execute_groups}, {"is_admin",admin},
+                      {"agent_adult_access", scope == SpaceScope::Canvas && hasAdultAgentAccess(user_id)},
                       {"participant_joined", participantJoined}, {"edit_protocol",2},{"points_protocol",1},{"sync_protocol", 2}, {"sync_user_id",user_id}, {"revision", (*sync)["revision"]}, {"client_id", client}, {"accepted_count", receipt.is_null()?0LL:receipt.value("count",0LL)}, {"canvas_name", doc.value("canvas-name", "")}, {"status", "connected"}, {"server_protocol", "Phoenix"}}}};
 }
 Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output) {
@@ -237,6 +255,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     }
     if(type=="agent_tool"){
         if(scope!=SpaceScope::Canvas)throw std::invalid_argument("AGENT_SCOPE_DENIED");
+        if(!hasAdultAgentAccess(identity["user_id"].get<long long>()))throw std::invalid_argument("AGENT_ADULT_ACCESS_REQUIRED");
         const auto name=event.value("name",std::string());const auto args=event.value("arguments",Json::object());
         if(!args.is_object()||args.dump().size()>800000)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
         auto readable=[&](const std::string& key){if(!validQueryItemId(key))throw std::invalid_argument("ITEM_ID_INVALID");const auto target=readItem(memory,scope,id,key);if(!target||!target->contains("kind")||target->value("kind","")=="host-tombstone"||!queryCanAccess(*target,groups,admin))throw std::invalid_argument("ITEM_ACCESS_DENIED");return *target;};
@@ -260,8 +279,11 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         if(write_groups.empty()&&!admin)throw std::invalid_argument("ITEM_WRITE_DENIED");
         Json operations=Json::array(),ids=Json::array(),visibility=Json::array();
         if(name=="create_objects"){
+            const auto settings=memory.loadCanvasSettings(scope,id);
+            if(!settings||!settings->is_object())throw std::runtime_error("STORAGE_UNAVAILABLE");
+            if(canvasIsPublic(*settings))throw std::invalid_argument("AGENT_PUBLIC_PUBLISH_DENIED");
             const auto values=args.value("items",Json::array());if(!values.is_array()||values.empty()||values.size()>10)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
-            for(auto item:values){agora::agent::fields(item);agora::agent::snapGeometry(item);const auto key=agora::agent::randomId();item["permission"]=member_groups;visibility.push_back(agora::agent::sessionPermission(item));operations.push_back({{"action","create"},{"id",key},{"patch",item}});ids.push_back(key);}
+            for(auto item:values){agora::agent::fields(item);agora::agent::snapGeometry(item);const auto key=agora::agent::randomId();item["permission"]=member_groups;item["aiGenerated"]=true;visibility.push_back(agora::agent::sessionPermission(item));operations.push_back({{"action","create"},{"id",key},{"patch",item}});ids.push_back(key);}
         }else if(name=="patch_objects"||name=="delete_objects"){
             if(name=="delete_objects"&&!event.value("allow_delete",false))throw std::invalid_argument("AGENT_DELETE_DISABLED");
             const auto values=args.value(name=="patch_objects"?"changes":"objects",Json::array());if(!values.is_array()||values.empty()||values.size()>10)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
@@ -285,6 +307,12 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     if(type=="runtime_execute"&&event.value("action",std::string())=="agent"){
         if(scope!=SpaceScope::Canvas||(!admin&&groups.empty()))throw std::invalid_argument("AGENT_SCOPE_DENIED");
         const auto user=identity["user_id"].get<long long>();
+        if(!hasAdultAgentAccess(user))throw std::invalid_argument("AGENT_ADULT_ACCESS_REQUIRED");
+        const auto operation=event.value("operation",std::string("run"));
+        const auto personal_key=event.value("api_key",std::string());
+        if(!personal_key.empty()&&(operation!="run"||personal_key.size()>256||personal_key.compare(0,9,"sk-or-v1-")!=0
+            ||!std::all_of(personal_key.begin(),personal_key.end(),[](unsigned char c){return std::isalnum(c)||c=='-'||c=='_';})))
+            throw std::invalid_argument("AGENT_API_KEY_INVALID");
         const auto clock=[](){return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();};
         auto sessionCall=[&](const std::string& operation,Json args){
             args["user_id"]=user;args["nickname"]=identity.value("nickname",std::string());args["now"]=clock();args["new_id"]=agora::agent::randomId();
@@ -297,7 +325,6 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             if(!agora::agent::sessionVisible(result,user,groups,admin))throw std::invalid_argument("AGENT_SESSION_ACCESS_DENIED");return result;
         };
         auto sessionNotice=[&](long long revision){if(on_output)on_output(Json{{"agent_event","commits"},{"broadcasts",Json::array({{{"all",true},{"event",{{"type","agent_sessions_changed"},{"session_revision",revision}}}}})}}.dump());};
-        const auto operation=event.value("operation",std::string("run"));
         if(operation=="sessions"){
             const auto offset=event.value("offset",0),limit=event.value("limit",30);if(offset<0||offset>10000000||limit<1||limit>50)throw std::invalid_argument("AGENT_SESSION_INVALID");
             auto page=sessionCall("list",{{"offset",offset},{"limit",limit}});Json sessions=Json::array();
@@ -322,13 +349,15 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         if(operation!="run"&&operation!="status")throw std::invalid_argument("AGENT_REQUEST_INVALID");
         const auto message=event.value("message",std::string());
         if(operation=="run"&&(message.empty()||message.size()>24000))throw std::invalid_argument("AGENT_REQUEST_INVALID");
-        if(!event.value("api_key",std::string()).empty())throw std::invalid_argument("AGENT_API_KEY_INVALID");
         const auto consent_version=event.value("consent_version",std::string());
-        if(operation=="run"&&consent_version!="claude-prompt-v1")throw std::invalid_argument("AGENT_CONSENT_REQUIRED");
+        if(operation=="run"&&consent_version!="agent-adult-v3")throw std::invalid_argument("AGENT_CONSENT_REQUIRED");
         const auto agent_options=event.value("options",Json::object());agora::agent::options(agent_options);
         const auto provider=agent_options.value("provider",std::string("anthropic"));
         const auto model=agent_options.value("model",std::string());
-        if(provider!="anthropic"||(!model.empty()&&model!="claude-opus-5-5"&&model!="claude-sonnet-5-5"&&model!="claude-haiku-5-5"))
+        const bool external=provider=="openrouter";
+        if(external ? (model.compare(0,17,"anthropic/claude-")!=0 || (operation=="run" && personal_key.empty()))
+                    : (provider!="anthropic" || !personal_key.empty()
+                       || (!model.empty()&&model!="claude-opus-5-5"&&model!="claude-sonnet-5-5"&&model!="claude-haiku-5-5")))
             throw std::invalid_argument("AGENT_OPTIONS_INVALID");
         std::string session,turn;Json begun;
         if(operation=="run"){
@@ -346,6 +375,10 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             }
         }
         Json payload{{"options",agent_options},{"operation",operation},{"message",message},{"consent_version",consent_version},{"anchor",event.value("anchor",Json{{"x",.15},{"y",.15}})}};
+        if(external && operation=="run"){
+            payload["api_key"]=personal_key;
+            payload["user_id"]=user;
+        }
         lock.unlock();if(operation=="run")sessionNotice(begun.value("revision",0LL));
         auto onTool=[&](const std::string& tool,const Json& args){
             if(tool!="create_objects")return Json{{"error","AGENT_TOOL_DENIED"}};

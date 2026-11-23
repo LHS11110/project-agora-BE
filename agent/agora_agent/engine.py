@@ -1,5 +1,6 @@
 import asyncio, json, re, inspect
 import anyio
+import httpx
 from mcp import ClientSession
 from mcp.shared.memory import create_client_server_memory_streams
 from openai import AsyncOpenAI, APIStatusError
@@ -92,7 +93,7 @@ def completion_options(provider, model, config):
     return {"max_tokens": config["max_tokens"]}
 
 
-async def openai_loop(client, provider, model, config, messages, mcp_tools, session, progress):
+async def openai_loop(client, provider, model, config, messages, mcp_tools, session, progress, *, external_canvas=False):
     tools = [
         {
             "type": "function",
@@ -107,9 +108,13 @@ async def openai_loop(client, provider, model, config, messages, mcp_tools, sess
     extra = completion_options(provider, model, config)
     for step in range(config["max_steps"]):
         await progress(f"모델이 작업을 계획하고 있습니다. ({step+1})\n")
-        completion = await complete_with_retry(
-            client, progress, model=model, messages=messages, tools=tools, **extra
-        )
+        params = dict(model=model, messages=messages, tools=tools, **extra)
+        if external_canvas:
+            completion = await client.chat.completions.create(
+                **params, extra_body={"provider": {"only": ["anthropic"], "allow_fallbacks": False}}
+            )
+        else:
+            completion = await complete_with_retry(client, progress, **params)
         message = completion.choices[0].message
         if completion.choices[0].finish_reason == "length":
             return {"answer": ((message.content or "").strip() + "\n\n" + LIMIT_ANSWER).strip(), "limited": True, "model": model}
@@ -134,7 +139,7 @@ async def openai_loop(client, provider, model, config, messages, mcp_tools, sess
     return {"answer": STEP_LIMIT_ANSWER, "limited": True}
 
 
-async def run_turn(request, bridge, progress, client=None, *, create_only=False):
+async def run_turn(request, bridge, progress, client=None, *, create_only=False, external_canvas=False):
     config = options(request.get("options", {}))
     provider = spec(config["provider"])
     model = model_for(provider, config["model"])
@@ -150,7 +155,8 @@ async def run_turn(request, bridge, progress, client=None, *, create_only=False)
             from .anthropic_engine import create_client
             client = create_client(key)
         else:
-            client = AsyncOpenAI(api_key=key, base_url=base_url(provider), timeout=60, max_retries=0)
+            client = AsyncOpenAI(api_key=key, base_url=base_url(provider), timeout=60, max_retries=0,
+                                 **({"http_client": httpx.AsyncClient(follow_redirects=False, trust_env=False)} if external_canvas else {}))
     server = make_server(bridge, request.get("allow_delete") is True, create_only=create_only)
     initial = {"message": request["message"], "anchor": request.get("anchor")}
     system = SYSTEM
@@ -183,7 +189,7 @@ async def run_turn(request, bridge, progress, client=None, *, create_only=False)
                         result = await claude_loop(client, model, config, system, history + [user], mcp_tools, session, progress)
                     else:
                         messages = [{"role": "system", "content": system}] + history + [user]
-                        result = await openai_loop(client, provider, model, config, messages, mcp_tools, session, progress)
+                        result = await openai_loop(client, provider, model, config, messages, mcp_tools, session, progress, external_canvas=external_canvas)
                 group.cancel_scope.cancel()
         result["telemetry"] = telemetry.snapshot()
         result["options"] = config

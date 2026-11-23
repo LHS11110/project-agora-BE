@@ -156,7 +156,7 @@ async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
         daemon.serve, path, limit=daemon.MAX_FRAME
     ):
         reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"operation":"run","message":"hello","consent_version":"claude-prompt-v1"}\n')
+        writer.write(b'{"operation":"run","message":"hello","consent_version":"agent-adult-v3"}\n')
         await writer.drain()
         assert json.loads(await reader.readline())["type"] == "output"
         tool_request = json.loads(await reader.readline())

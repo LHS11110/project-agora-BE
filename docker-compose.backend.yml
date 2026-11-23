@@ -182,6 +182,7 @@ services:
       - path: ./agent/.env
         required: false
     environment:
+      AGENT_EXTERNAL_MODELS: ${AGENT_EXTERNAL_MODELS:-}
       AGENT_SOCKET: /run/agora-agent/agent.sock
     volumes:
       - agent-socket:/run/agora-agent
@@ -225,6 +226,7 @@ services:
       CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
       CPP_CANVAS_LRU_ITEMS_PER_CANVAS: ${CPP_CANVAS_LRU_ITEMS_PER_CANVAS:-64}
       CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      AGENT_VERIFIED_ADULT_USER_IDS: ${AGENT_VERIFIED_ADULT_USER_IDS:-}
       AGORA_AGENT_SOCKET: /run/agora-agent/agent.sock
       AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
       DB_HOST: ${DOCKER_DB_HOST:-agora-mssql}

@@ -6,6 +6,11 @@ personal key can never be sent to a URL that came from a request.
 import os
 import re
 
+
+def canvas_external_models():
+    return {model for model in os.getenv("AGENT_EXTERNAL_MODELS", "").split(",")
+            if model.startswith("anthropic/claude-") and valid_model(model)}
+
 PROVIDERS = {
     # EXAONE was removed: its API terms (2026-11-09, 2.1/2.5) allow non-commercial use
     # only and forbid integrating the API into products or letting third parties call it.

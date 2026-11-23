@@ -1,10 +1,11 @@
-import asyncio, json, os, signal, stat
+from datetime import UTC, datetime
+import asyncio, json, os, re, signal, sqlite3, stat
 from pathlib import Path
 from dotenv import load_dotenv
 from .engine import run_turn
 from . import telemetry
 from .settings import options
-from .providers import model_for, server_key, spec
+from .providers import canvas_external_models, model_for, server_key, spec
 import anthropic
 from openai import APIStatusError, APIConnectionError, APITimeoutError
 
@@ -14,16 +15,43 @@ TIMEOUT_ERRORS = (APITimeoutError, anthropic.APITimeoutError)
 CONNECTION_ERRORS = (APIConnectionError, anthropic.APIConnectionError)
 
 MAX_FRAME = 1_000_000
+EXTERNAL_DAILY_STEPS = 80
+EXTERNAL_MAX_STEPS = 10
+
+
+def reserve_external_steps(user_id, steps):
+    # Persist only account IDs, dates and reserved work. Credentials never enter this file.
+    path = Path(os.getenv("AGENT_SOCKET", "/run/agora-agent/agent.sock")).with_name("external-quota.sqlite3")
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.close(descriptor)
+    day = datetime.now(UTC).date().isoformat()
+    connection = sqlite3.connect(path, timeout=2)
+    try:
+        with connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("CREATE TABLE IF NOT EXISTS budget (user_id INTEGER PRIMARY KEY, day TEXT, steps INTEGER)")
+            connection.execute("DELETE FROM budget WHERE day < ?", (day,))
+            result = connection.execute(
+                """INSERT INTO budget VALUES (?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET steps = steps + excluded.steps
+                   WHERE steps + excluded.steps <= ?""",
+                (user_id, day, steps, EXTERNAL_DAILY_STEPS),
+            )
+            return result.rowcount == 1
+    finally:
+        connection.close()
+
+
 CANVAS_PROVIDER = "anthropic"
 CANVAS_MODELS = frozenset({"", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"})
-CANVAS_CONSENT_VERSION = "claude-prompt-v1"
+CANVAS_CONSENT_VERSION = "agent-adult-v3"
 
 
 def public_error(error):
     if isinstance(error, BaseExceptionGroup):
         return public_error(error.exceptions[0])
     if isinstance(error, ValueError) and str(error) == "AGENT_API_KEY_INVALID":
-        return {"error":"AGENT_API_KEY_INVALID","message":"캔버스 에이전트는 서버 인증만 사용합니다."}
+        return {"error":"AGENT_API_KEY_INVALID","message":"이 연결에 허용된 개발자 API 키를 확인해주세요."}
     if isinstance(error, ValueError) and str(error) == "AGENT_OPTIONS_INVALID":
         return {"error":"AGENT_OPTIONS_INVALID","message":"에이전트 설정값이 허용 범위를 벗어났습니다."}
     if isinstance(error, ValueError) and str(error) == "AGENT_CONSENT_REQUIRED":
@@ -90,25 +118,34 @@ async def serve(reader, writer):
     quota_context = None
     try:
         payload = json.loads(await asyncio.wait_for(reader.readline(), 10))
-        if payload.get("api_key", "") != "":
-            raise ValueError("AGENT_API_KEY_INVALID")
         supplied_options = payload.get("options", {})
         if not isinstance(supplied_options, dict):
             raise ValueError("AGENT_OPTIONS_INVALID")
         config = options({"provider": CANVAS_PROVIDER, **supplied_options})
-        if config["provider"] != CANVAS_PROVIDER or config["model"] not in CANVAS_MODELS:
-            raise ValueError("AGENT_OPTIONS_INVALID")
-        provider = spec(CANVAS_PROVIDER)
-        selected_key = server_key(provider)
-        quota_context = telemetry.bind(selected_key)
+        external = config["provider"] == "openrouter"
+        key = payload.get("api_key", "")
+        if external:
+            if config["model"] not in canvas_external_models():
+                raise ValueError("AGENT_OPTIONS_INVALID")
+            config["max_steps"] = min(config["max_steps"], EXTERNAL_MAX_STEPS)
+            config["max_tokens"] = min(config["max_tokens"], 8192)
+            if key and (payload.get("operation") != "run" or not isinstance(key, str)
+                        or len(key) > 256 or not re.fullmatch(r"sk-or-v1-[a-zA-Z0-9_-]+", key)):
+                raise ValueError("AGENT_API_KEY_INVALID")
+        elif config["provider"] != CANVAS_PROVIDER or config["model"] not in CANVAS_MODELS or key:
+            raise ValueError("AGENT_OPTIONS_INVALID" if not key else "AGENT_API_KEY_INVALID")
+        provider = spec(config["provider"])
+        selected_key = "" if external else server_key(provider)
+        if not external:
+            quota_context = telemetry.bind(selected_key)
         if payload.get("operation") == "status":
             await send(
                 {
                     "telemetry": telemetry.snapshot(),
                     "defaults": options({"provider": CANVAS_PROVIDER}),
                     "ready": True,
-                    "configured": bool(selected_key),
-                    "credential_source": "server",
+                    "configured": external or bool(selected_key),
+                    "credential_source": "request" if external else "server",
                     "provider": provider["id"],
                     "default_configured": bool(server_key(provider)),
                     "model": model_for(provider, config["model"]),
@@ -140,6 +177,13 @@ async def serve(reader, writer):
                 }
             )
             return
+        if external:
+            user_id = payload.get("user_id")
+            if not key or type(user_id) is not int or user_id <= 0:
+                raise ValueError("AGENT_API_KEY_INVALID")
+            if not reserve_external_steps(user_id, config["max_steps"]):
+                await send({"error": "AGENT_DAILY_LIMIT", "message": "외부 모델 일일 작업 한도에 도달했습니다."})
+                return
         async with semaphore:
             async with asyncio.timeout(
                 min(220, int(os.getenv("AGENT_TIMEOUT_SECONDS", "210")))
@@ -148,7 +192,8 @@ async def serve(reader, writer):
                     "message": payload["message"],
                     "anchor": anchor,
                     "options": config,
-                }, bridge, progress, create_only=True)
+                    **({"api_key": key} if external else {}),
+                }, bridge, progress, create_only=True, **({"external_canvas": True} if external else {}))
                 await send(result)
     except TimeoutError:
         try:
