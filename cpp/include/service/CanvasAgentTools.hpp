@@ -42,6 +42,24 @@ inline bool matchesConfirmedDelete(const Json& confirmed,const Json& args){
  return confirmed.is_object()&&confirmed.contains("revision")&&
   args==Json{{"objects",Json::array({confirmed})}};
 }
+inline std::string confirmedEditId(const Json& event,const Json& selected,const std::string& operation){
+ const auto target=event.value("confirmed_edit_id",std::string());
+ if(!target.empty()&&(operation!="run"||selected.size()!=1||selected[0]!=target||
+                     !event.value("confirmed_delete_id",std::string()).empty()))
+  throw std::invalid_argument("AGENT_EDIT_SCOPE_DENIED");
+ return target;
+}
+inline void requireMutationScope(bool public_canvas,const std::string& tool,const Json& args,const std::string& edit_id){
+ if(public_canvas&&tool!="patch_objects")throw std::invalid_argument("AGENT_PUBLIC_PUBLISH_DENIED");
+ if(edit_id.empty()){
+  if(public_canvas)throw std::invalid_argument("AGENT_PUBLIC_EDIT_APPROVAL_REQUIRED");
+  return;
+ }
+ const auto changes=args.value("changes",Json::array());
+ if(tool!="patch_objects"||!changes.is_array()||changes.size()!=1||!changes[0].is_object()||
+    changes[0].value("id",std::string())!=edit_id)
+  throw std::invalid_argument("AGENT_EDIT_SCOPE_DENIED");
+}
 inline bool manageableField(const std::string& field){
  static const std::unordered_set<std::string> protected_fields={
   "permission","locked","aiGenerated","members","groupId","automerge_snapshot","automerge_changes",

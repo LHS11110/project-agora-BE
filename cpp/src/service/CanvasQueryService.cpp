@@ -255,7 +255,20 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         auto readable=[&](const std::string& key){if(!validQueryItemId(key))throw std::invalid_argument("ITEM_ID_INVALID");const auto target=readItem(memory,scope,id,key);if(!target||!target->contains("kind")||target->value("kind","")=="host-tombstone"||!queryCanAccess(*target,groups,admin))throw std::invalid_argument("ITEM_ACCESS_DENIED");return *target;};
         if(name=="get_objects"){
             const auto ids=args.value("ids",Json::array());if(!ids.is_array()||ids.empty()||ids.size()>6)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");Json objects=Json::array(),visibility=Json::array();
-            for(const auto& key:ids){const auto item=readable(key.get<std::string>());visibility.push_back(agora::agent::sessionPermission(item));const auto source=agora::agent::publicItem(item,true);if(source.dump().size()>100000)throw std::invalid_argument("AGENT_OBJECT_TOO_LARGE");objects.push_back({{"id",key},{"revision",item.value("__broker_revision",0LL)},{"item",source}});}
+            const bool position_only=args.value("position_only",false);
+            for(const auto& key:ids){
+                const auto item=readable(key.get<std::string>());
+                visibility.push_back(agora::agent::sessionPermission(item));
+                Json source;
+                if(position_only){
+                    source={{"kind",item["kind"]}};
+                    for(const auto* axis:{"x","y"})if(item.contains(axis)&&item[axis].is_number())source[axis]=item[axis];
+                }else{
+                    source=agora::agent::publicItem(item,true);
+                    if(source.dump().size()>100000)throw std::invalid_argument("AGENT_OBJECT_TOO_LARGE");
+                }
+                objects.push_back({{"id",key},{"revision",item.value("__broker_revision",0LL)},{"item",source}});
+            }
             auto reply=envelope(route,{{"type","agent_tool_result"},{"result",{{"objects",objects}}}});reply["agent_visibility"]=visibility;return reply;
         }
         if(name=="list_objects"){
@@ -264,7 +277,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             for(const auto& key:page->value("ids",Json::array())){
                 ++examined;const auto item=readItem(memory,scope,id,key.get<std::string>());if(!item||!item->contains("kind")||item->value("kind","")=="host-tombstone"||!queryCanAccess(*item,groups,admin))continue;
                 const auto kind=args.value("kind",std::string()),search=args.value("query",std::string());if(!kind.empty()&&item->value("kind","")!=kind)continue;
-                bool matches=search.empty();
+                bool matches=search.empty()||key.get_ref<const std::string&>().find(search)!=std::string::npos;
                 for(const auto* field:{"title","name","filename","text","label"}){
                     const auto value=item->find(field);
                     if(value!=item->end()&&value->is_string()&&value->get_ref<const std::string&>().find(search)!=std::string::npos){matches=true;break;}
@@ -278,7 +291,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         if(write_groups.empty()&&!admin)throw std::invalid_argument("ITEM_WRITE_DENIED");
         const auto settings=memory.loadCanvasSettings(scope,id);
         if(!settings||!settings->is_object())throw std::runtime_error("STORAGE_UNAVAILABLE");
-        if(canvasIsPublic(*settings))throw std::invalid_argument("AGENT_PUBLIC_PUBLISH_DENIED");
+        agora::agent::requireMutationScope(canvasIsPublic(*settings),name,args,event.value("confirmed_edit_id",std::string()));
         Json operations=Json::array(),ids=Json::array(),visibility=Json::array();
         if(name=="create_objects"){
             const auto values=args.value("items",Json::array());if(!values.is_array()||values.empty()||values.size()>10)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
@@ -367,13 +380,16 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             if(!key.is_string()||!validQueryItemId(key.get_ref<const std::string&>()))
                 throw std::invalid_argument("ITEM_ID_INVALID");
         const auto delete_id=agora::agent::confirmedDeleteId(event,selected,operation);
+        const auto edit_id=agora::agent::confirmedEditId(event,selected,operation);
         Json confirmed;
         std::string session,turn;Json begun;
         if(operation=="run"){
             session=event.value("session_id",std::string());if(session.empty())session=sessionCall("ensure",Json::object())["draft"]["id"].get<std::string>();
             const auto summary=sessionRead(session);if(summary.value("owner_id",0LL)!=user)throw std::invalid_argument("AGENT_SESSION_READ_ONLY");
             turn=event.value("turn_id",route["request_id"].get<std::string>());if(!validQueryItemId(turn))throw std::invalid_argument("AGENT_SESSION_INVALID");
-            const auto serialized=Json{{"message",message},{"options",agent_options},{"consent_version",consent_version},{"selected_ids",selected},{"confirmed_delete_id",delete_id}}.dump();
+            Json turnInput{{"message",message},{"options",agent_options},{"consent_version",consent_version},{"selected_ids",selected},{"confirmed_delete_id",delete_id}};
+            if(!edit_id.empty())turnInput["confirmed_edit_id"]=edit_id;
+            const auto serialized=turnInput.dump();
             unsigned char hash[SHA256_DIGEST_LENGTH];SHA256(reinterpret_cast<const unsigned char*>(serialized.data()),serialized.size(),hash);const char* hex="0123456789abcdef";std::string digest;for(auto byte:hash){digest+=hex[byte>>4];digest+=hex[byte&15];}
             Json userMessage{{"id",turn},{"turn_id",turn},{"role","user"},{"content",message},{"status","running"},{"created_at",clock()},{"user_id",user},{"nickname",identity.value("nickname",std::string())},{"options",agent_options}};
             begun=sessionCall("begin",{{"session_id",session},{"turn_id",turn},{"digest",digest},{"message",userMessage},{"title",agora::agent::sessionTitle(message)},{"visibility",Json::array()},{"terms_version",consent_version}});
@@ -399,7 +415,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
             if(deleting ? !agora::agent::matchesConfirmedDelete(confirmed,args) : !normal||!confirmed.is_null())
                 return Json{{"error","AGENT_TOOL_DENIED"}};
             auto nested=input;nested["route"]["request_id"]=agora::agent::randomId();
-            nested["event"]={{"type","agent_tool"},{"name",tool},{"arguments",args},{"allow_delete",deleting}};
+            nested["event"]={{"type","agent_tool"},{"name",tool},{"arguments",args},{"allow_delete",deleting},{"confirmed_edit_id",edit_id}};
             auto reply=executeInternal(nested,{},true);const auto response=reply.value("response",Json::object());
             if(response.value("ok",true)==false||response.value("type",std::string())=="error")return Json{{"error",response.value("code",std::string("AGENT_TOOL_REJECTED"))}};
             if(reply.contains("broadcasts")&&on_output)on_output(Json{{"agent_event","commits"},{"broadcasts",reply["broadcasts"]}}.dump());

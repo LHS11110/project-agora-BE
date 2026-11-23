@@ -95,6 +95,25 @@ async def test_local_reads_revision_before_mutating_and_never_exposes_delete():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["locate_object", "highlight_object"])
+async def test_local_agent_finds_and_locates_without_writes(action):
+    create = AsyncMock(side_effect=[
+        completion([tool("find_object", {"query": "회의"})]),
+    ])
+    bridge = AsyncMock(side_effect=[
+        {"objects": [{"id": "note-1", "item": {"kind": "note", "text": "회의 준비"}}]},
+        {"objects": [{"id": "note-1", "revision": 7, "item": {"kind": "note", "x": .25, "y": .5}}]},
+    ])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    prompt = "회의 메모 하이라이트" if action == "highlight_object" else "회의 메모 좌표"
+    result = await run_turn({"message": prompt, "options": {"provider": "local"}}, bridge, AsyncMock(), client)
+    assert "x=0.25000, y=0.50000" in result["answer"]
+    assert result.get("highlight_id") == ("note-1" if action == "highlight_object" else None)
+    assert [call.args[0] for call in bridge.await_args_list] == ["list_objects", "get_objects"]
+    assert bridge.await_args.args[1] == {"ids": ["note-1"], "position_only": True}
+
+
+@pytest.mark.asyncio
 async def test_mcp_read_modify_create_and_deleted_tool_disabled():
     responses = [
         completion([tool("get_objects", {"ids": ["code-a"]})]),

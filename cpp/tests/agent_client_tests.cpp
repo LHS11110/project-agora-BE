@@ -55,6 +55,23 @@ void bridgeRoundTrip(){
  AGORA_CHECK(!agora::agent::matchesConfirmedDelete(other,args));
  AGORA_CHECK(!agora::agent::matchesConfirmedDelete(chosen,Json{{"objects",Json::array({chosen,other})}}));
  AGORA_CHECK(!agora::agent::matchesConfirmedDelete(Json{{"id","chosen"},{"revision",9}},args));
+ const Json editRequest{{"confirmed_edit_id","chosen"}};
+ AGORA_CHECK(agora::agent::confirmedEditId(editRequest,selected,"run")=="chosen");
+ const auto changes=Json{{"changes",Json::array({{{"id","chosen"},{"revision",8},{"patch",{{"title","updated"}}}}})}};
+ agora::agent::requireMutationScope(true,"patch_objects",changes,"chosen");
+ agora::agent::requireMutationScope(false,"patch_objects",changes,"");
+ auto rejectsMutation=[&](bool isPublic,const std::string& name,const Json& toolArgs,const std::string& id){
+  try{agora::agent::requireMutationScope(isPublic,name,toolArgs,id);}
+  catch(const std::invalid_argument&){return true;}
+  return false;
+ };
+ AGORA_CHECK(rejectsMutation(true,"patch_objects",changes,""));
+ AGORA_CHECK(rejectsMutation(true,"patch_objects",changes,"other"));
+ auto extraChanges=changes;extraChanges["changes"].push_back(other);
+ AGORA_CHECK(rejectsMutation(true,"patch_objects",extraChanges,"chosen"));
+ AGORA_CHECK(rejectsMutation(true,"create_objects",Json::object(),"chosen"));
+ AGORA_CHECK(rejectsMutation(true,"delete_objects",args,"chosen"));
+ AGORA_CHECK(rejectsMutation(false,"patch_objects",changes,"other"));
  auto item=Json{{"kind","text"},{"renderMode","code"},{"text","print(1)"},{"x",.1},{"width",.4}};agora::agent::fields(item);
  item["permission"]="admin-group";bool denied=false;try{agora::agent::fields(item);}catch(const std::invalid_argument&){denied=true;}AGORA_CHECK(denied);
  auto publicItem=agora::agent::publicItem({{"kind","text"},{"text","source"},{"token","hidden"},{"runtimeResults",Json::array()}},true);AGORA_CHECK(publicItem["text"]=="source"&&!publicItem.contains("token")&&!publicItem.contains("runtimeResults"));

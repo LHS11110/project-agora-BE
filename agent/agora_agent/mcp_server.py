@@ -29,7 +29,8 @@ TOOLS = [
                 "items": {"type": "string"},
                 "minItems": 1,
                 "maxItems": 6,
-            }
+            },
+            "position_only": {"type": "boolean"},
         },
         ["ids"],
     ),
