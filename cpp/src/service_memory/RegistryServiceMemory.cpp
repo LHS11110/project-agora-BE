@@ -322,6 +322,15 @@ std::optional<int> RegistryServiceMemory::getActiveUserIdChecked(const std::stri
     return scalar(result).value_or(-1);
 }
 
+std::optional<bool> RegistryServiceMemory::hasAgentTermsConsent(int userId, const std::string& version) {
+    SqlCommand sql("SELECT COUNT(*) FROM dbo.agent_term_decisions d JOIN dbo.users u ON u.user_id=d.user_id "
+                   "WHERE d.user_id=@user_id AND d.terms_version=@version AND d.accepted=1 AND u.status='ACTIVE';");
+    sql.addInt("@user_id", userId).addVarchar("@version", version);
+    const auto count = scalar(storage_->query(sql));
+    if (!count) return std::nullopt;
+    return *count == 1;
+}
+
 std::optional<std::pair<std::string, int>> RegistryServiceMemory::getUserHandle(int userId) {
     if (userId <= 0) return std::nullopt;
     SqlCommand sql("SELECT nickname, tag_number FROM users WHERE user_id = @user_id;");

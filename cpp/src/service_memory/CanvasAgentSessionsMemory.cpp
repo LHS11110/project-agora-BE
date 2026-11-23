@@ -146,7 +146,10 @@ if action=='begin' then
  local constraints=s.visibility or {}
  for _,permission in ipairs(a.visibility or {}) do constraints[#constraints+1]=permission end
  set(sp..'.visibility',constraints)
- if count==0 then set(sp..'.title',a.title) end
+ if count==0 then
+  set(sp..'.title',a.title)
+  if a.terms_version then set(sp..'.terms_version',a.terms_version) end
+ end
  local previousIndex=read(root..'.index') or {};local ordered={sid}
  for _,entry in ipairs(previousIndex) do if entry~=sid then ordered[#ordered+1]=entry end end
  set(root..'.index',ordered)

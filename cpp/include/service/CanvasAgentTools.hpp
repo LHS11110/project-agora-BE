@@ -17,7 +17,7 @@ inline void options(const Json& value){
   if(name=="engine"){if(!v.is_string()||v!="api")throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   // Providers and their endpoints are fixed by the agent service; only an id is accepted.
   // EXAONE is excluded: its API terms forbid integrating the API into products.
-  if(name=="provider"){static const std::unordered_set<std::string> providers={"openai","anthropic","gemini","openrouter"};if(!v.is_string()||!providers.count(v.get<std::string>()))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
+  if(name=="provider"){static const std::unordered_set<std::string> providers={"openai","anthropic","gemini","openrouter","local"};if(!v.is_string()||!providers.count(v.get<std::string>()))throw std::invalid_argument("AGENT_OPTIONS_INVALID");continue;}
   // Empty selects the provider default; otherwise [A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}.
   if(name=="model"){if(!v.is_string())throw std::invalid_argument("AGENT_OPTIONS_INVALID");const auto& model=v.get_ref<const std::string&>();
    if(model.size()>128||(!model.empty()&&!std::isalnum(static_cast<unsigned char>(model[0]))))throw std::invalid_argument("AGENT_OPTIONS_INVALID");

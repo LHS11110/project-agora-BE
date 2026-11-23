@@ -1,0 +1,28 @@
+services:
+  agent:
+    environment:
+      AGENT_LOCAL_ENABLED: "1"
+    networks: [agent-egress, agent-model]
+
+  ollama:
+    image: ollama/ollama:0.40.14@sha256:ebaef4f4c5d93660e1f25f8ad085a112f51ccfb0e8458073e71793959dba91c9
+    restart: unless-stopped
+    environment:
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+    volumes:
+      - ollama-models:/root/.ollama
+    networks: [agent-model]
+    mem_limit: 4g
+    cpus: 2.0
+
+networks:
+  agent-model:
+    internal: true
+
+volumes:
+  ollama-models:
+    external: true
+    name: agora-ollama-models

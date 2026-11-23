@@ -150,13 +150,15 @@ async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
         result = await bridge("create_objects", {"items": [{"kind": "text", "text": "hello"}]})
         return {"answer": result["text"]}
 
+    async def ready(): return True
+    monkeypatch.setattr(daemon, "local_model_ready", ready)
     monkeypatch.setattr(daemon, "run_turn", fake_turn)
     path = str(tmp_path / "agent.sock")
     async with await asyncio.start_unix_server(
         daemon.serve, path, limit=daemon.MAX_FRAME
     ):
         reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"operation":"run","message":"hello","consent_version":"agent-adult-v3"}\n')
+        writer.write(b'{"operation":"run","message":"hello","consent_version":"agent-local-v2"}\n')
         await writer.drain()
         assert json.loads(await reader.readline())["type"] == "output"
         tool_request = json.loads(await reader.readline())

@@ -139,12 +139,65 @@ async def openai_loop(client, provider, model, config, messages, mcp_tools, sess
     return {"answer": STEP_LIMIT_ANSWER, "limited": True}
 
 
+async def local_turn(client, model, config, request, session, progress):
+    await progress("로컬 모델이 요청을 처리하고 있습니다.\n")
+    completion = await client.chat.completions.create(
+        model=model,
+        max_tokens=min(config["max_tokens"], 768),
+        temperature=0,
+        messages=[
+            {"role": "system", "content": (
+                "You are the Agora canvas assistant. Answer in the user's language. "
+                "If the user asks to add a note to the canvas, call create_note with the note text. "
+                "This is your only action. Never say you changed the canvas without using the tool."
+            )},
+            {"role": "user", "content": request["message"]},
+        ],
+        tools=[{"type": "function", "function": {
+            "name": "create_note",
+            "description": "Add one sticky note to the canvas with the given text.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}},
+                           "required": ["text"], "additionalProperties": False},
+        }}],
+    )
+    choice = completion.choices[0]
+    if choice.finish_reason == "length":
+        return {"answer": LIMIT_ANSWER, "limited": True}
+    calls = choice.message.tool_calls or []
+    if not calls:
+        return {"answer": choice.message.content or EMPTY_ANSWER}
+    invalid = {"error": "AGENT_TOOL_INVALID", "message": "로컬 모델이 메모 내용을 올바르게 전달하지 못했습니다."}
+    if len(calls) != 1 or calls[0].function.name != "create_note":
+        return invalid
+    try:
+        args = json.loads(calls[0].function.arguments)
+    except ValueError:
+        return invalid
+    if not isinstance(args, dict) or set(args) != {"text"}:
+        return invalid
+    text = args["text"]
+    if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+        return invalid
+    anchor = request.get("anchor") or {}
+    serialized = await run_tool(session, progress, "create_objects", {"items": [{
+        "kind": "note", "text": text.strip(), "x": anchor.get("x", .15),
+        "y": anchor.get("y", .15), "width": .18, "height": .14,
+    }]})
+    result = json.loads(serialized)
+    if result.get("error") or not result.get("object_ids"):
+        return {"error": result.get("error") or "AGENT_TOOL_FAILED", "message": "캔버스에 메모를 추가하지 못했습니다."}
+    return {"answer": "캔버스에 메모를 추가했습니다."}
+
+
 async def run_turn(request, bridge, progress, client=None, *, create_only=False, external_canvas=False):
     config = options(request.get("options", {}))
     provider = spec(config["provider"])
     model = model_for(provider, config["model"])
     key = effective_key(request, provider["id"])
-    if client is None and not key:
+    local = provider["kind"] == "ollama"
+    if local and (key or model != provider["model"] or not create_only):
+        raise ValueError("AGENT_OPTIONS_INVALID")
+    if client is None and not key and not local:
         return {
             "error": "AGENT_NOT_CONFIGURED",
             "message": f"서버에 {provider['label']} API 키를 설정해주세요.",
@@ -155,8 +208,8 @@ async def run_turn(request, bridge, progress, client=None, *, create_only=False,
             from .anthropic_engine import create_client
             client = create_client(key)
         else:
-            client = AsyncOpenAI(api_key=key, base_url=base_url(provider), timeout=60, max_retries=0,
-                                 **({"http_client": httpx.AsyncClient(follow_redirects=False, trust_env=False)} if external_canvas else {}))
+            client = AsyncOpenAI(api_key="ollama-local" if local else key, base_url=base_url(provider), timeout=60, max_retries=0,
+                                 **({"http_client": httpx.AsyncClient(follow_redirects=False, trust_env=False)} if external_canvas or local else {}))
     server = make_server(bridge, request.get("allow_delete") is True, create_only=create_only)
     initial = {"message": request["message"], "anchor": request.get("anchor")}
     system = SYSTEM
@@ -183,15 +236,18 @@ async def run_turn(request, bridge, progress, client=None, *, create_only=False,
                 )
                 async with ClientSession(*client_streams) as session:
                     await session.initialize()
-                    mcp_tools = (await session.list_tools()).tools
-                    if provider["kind"] == "anthropic":
+                    if local:
+                        result = await local_turn(client, model, config, request, session, progress)
+                    elif provider["kind"] == "anthropic":
+                        mcp_tools = (await session.list_tools()).tools
                         from .anthropic_engine import claude_loop
                         result = await claude_loop(client, model, config, system, history + [user], mcp_tools, session, progress)
                     else:
+                        mcp_tools = (await session.list_tools()).tools
                         messages = [{"role": "system", "content": system}] + history + [user]
                         result = await openai_loop(client, provider, model, config, messages, mcp_tools, session, progress, external_canvas=external_canvas)
                 group.cancel_scope.cancel()
-        result["telemetry"] = telemetry.snapshot()
+        result["telemetry"] = {} if local else telemetry.snapshot()
         result["options"] = config
         result["provider"] = provider["id"]
         return result

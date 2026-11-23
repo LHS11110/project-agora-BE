@@ -157,51 +157,6 @@ def test_claude_params_skip_effort_and_fallbacks_for_models_without_them():
     assert params["output_config"] == {"effort": "max"} and "fallbacks" not in params
 
 
-@pytest.mark.asyncio
-async def test_canvas_socket_requires_operator_claude_and_current_consent(tmp_path, monkeypatch):
-    daemon.semaphore = asyncio.Semaphore(1)
-    path = str(tmp_path / "agent.sock")
-    monkeypatch.setenv("AGENT_ANTHROPIC_API_KEY", "anthropic-server-secret")
-
-    async def request(payload):
-        reader, writer = await asyncio.open_unix_connection(path)
-        writer.write((json.dumps(payload) + "\n").encode())
-        await writer.drain()
-        value = json.loads(await reader.readline())
-        writer.close()
-        await writer.wait_closed()
-        return value
-
-    async def run_turn(payload, bridge, progress, *, create_only):
-        assert create_only
-        assert await bridge("get_objects", {"ids": ["private"]}) == {"error": "AGENT_TOOL_DENIED"}
-        assert payload["anchor"] == {"x": 0.2}
-        assert set(payload) == {"message", "options", "anchor"}
-        return {"answer": "done"}
-
-    engine_call = AsyncMock(side_effect=run_turn)
-    monkeypatch.setattr(daemon, "run_turn", engine_call)
-    async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
-        status = await request({"operation": "status"})
-        assert status["provider"] == "anthropic" and status["configured"] is True
-        assert "secret" not in json.dumps(status)
-        for provider in ("openai", "gemini", "openrouter", "exaone"):
-            reply = await request({"operation": "status", "options": {"provider": provider}})
-            assert reply["error"] == "AGENT_OPTIONS_INVALID"
-        assert (await request({"operation": "status", "options": {"model": "custom"}}))["error"] == "AGENT_OPTIONS_INVALID"
-        assert (await request({"operation": "status", "api_key": "legacy-personal-key"}))["error"] == "AGENT_API_KEY_INVALID"
-        assert (await request({"operation": "run", "message": "hi"}))["error"] == "AGENT_CONSENT_REQUIRED"
-        engine_call.assert_not_awaited()
-
-        result = await request({
-            "operation": "run", "message": "hi", "consent_version": daemon.CANVAS_CONSENT_VERSION,
-            "history": [{"role": "user", "content": "private"}], "selected_ids": ["private"],
-            "anchor": {"x": 0.2, "y": "private", "extra": "private"},
-        })
-        assert result == {"answer": "done"}
-        engine_call.assert_awaited_once()
-
-
 def test_anthropic_errors_map_to_public_messages():
     import anthropic, httpx
     request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -210,32 +165,20 @@ def test_anthropic_errors_map_to_public_messages():
     assert daemon.public_error(anthropic.APITimeoutError(request=request))["error"] == "AGENT_PROVIDER_TIMEOUT"
 
 
-def test_external_steps_are_persisted_without_credentials(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENT_SOCKET", str(tmp_path / "agent.sock"))
-    for _ in range(8):
-        assert daemon.reserve_external_steps(19, 10)
-    assert not daemon.reserve_external_steps(19, 1)
-    assert daemon.reserve_external_steps(20, 1)
-    import sqlite3
-    with sqlite3.connect(tmp_path / "external-quota.sqlite3") as db:
-        assert [row[1] for row in db.execute("PRAGMA table_info(budget)")] == ["user_id", "day", "steps"]
-
-
 @pytest.mark.asyncio
-async def test_canvas_external_requests_require_allowlisted_model_and_key(tmp_path, monkeypatch):
+async def test_local_canvas_agent_requires_fixed_model_without_personal_key(tmp_path, monkeypatch):
     daemon.semaphore = asyncio.Semaphore(1)
     path = str(tmp_path / "agent.sock")
-    monkeypatch.setenv("AGENT_SOCKET", path)
-    monkeypatch.setenv("AGENT_EXTERNAL_MODELS", "anthropic/claude-approved")
+    readiness = AsyncMock(return_value=True)
     engine = AsyncMock(return_value={"answer": "done"})
+    monkeypatch.setattr(daemon, "local_model_ready", readiness)
     monkeypatch.setattr(daemon, "run_turn", engine)
 
     async def request(**changes):
         payload = {
-            "operation": "run", "user_id": 19, "message": "hi",
+            "operation": "run", "message": "hello",
             "consent_version": daemon.CANVAS_CONSENT_VERSION,
-            "options": {"provider": "openrouter", "model": "anthropic/claude-approved",
-                        "max_steps": 12, "max_tokens": 32768},
+            "options": {"provider": "local", "max_steps": 12, "max_tokens": 32768},
             **changes,
         }
         reader, writer = await asyncio.open_unix_connection(path)
@@ -247,13 +190,22 @@ async def test_canvas_external_requests_require_allowlisted_model_and_key(tmp_pa
         return response
 
     async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
-        assert (await request())["error"] == "AGENT_API_KEY_INVALID"
-        assert (await request(api_key="sk-or-v1-example", options={
-            "provider": "openrouter", "model": "google/gemini-example",
-        }))["error"] == "AGENT_OPTIONS_INVALID"
+        status = await request(operation="status")
+        assert status["configured"] and status["credential_source"] == "none"
+        assert status["model"] == "qwen2.5:1.5b"
+        assert (await request(api_key="not-a-local-key"))["error"] == "AGENT_API_KEY_INVALID"
+        assert (await request(options={"provider": "local", "model": "cloud"}))["error"] == "AGENT_OPTIONS_INVALID"
+        for provider in ("anthropic", "openrouter", "openai", "gemini"):
+            assert (await request(options={"provider": provider}))["error"] == "AGENT_OPTIONS_INVALID"
+        assert (await request(consent_version="agent-adult-v3"))["error"] == "AGENT_CONSENT_REQUIRED"
+        readiness.return_value = False
+        assert (await request())["error"] == "AGENT_NOT_CONFIGURED"
         engine.assert_not_awaited()
-        assert await request(api_key="sk-or-v1-example") == {"answer": "done"}
-        call = engine.await_args
-        assert call.kwargs == {"create_only": True, "external_canvas": True}
-        assert call.args[0]["options"]["max_steps"] == 10
-        assert call.args[0]["options"]["max_tokens"] == 8192
+        readiness.return_value = True
+        assert await request() == {"answer": "done"}
+        payload = engine.await_args.args[0]
+        assert "api_key" not in payload
+        assert payload["options"]["provider"] == "local"
+        assert payload["options"]["max_steps"] == 1
+        assert payload["options"]["max_tokens"] == 768
+        assert engine.await_args.kwargs == {"create_only": True}

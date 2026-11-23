@@ -59,6 +59,7 @@ public:
     // Resolve an active user from the nickname and tag in the canvas token.
     int getActiveUserId(const std::string& nickname, int tagNumber);
     std::optional<int> getActiveUserIdChecked(const std::string& nickname, int tagNumber);
+    std::optional<bool> hasAgentTermsConsent(int userId, const std::string& version);
     std::optional<std::pair<std::string, int>> getUserHandle(int userId);
     bool isCanvasAssignedToServer(int canvasId, const std::string& serverIp, int serverPort);
     bool isCanvasAssignedToServer(SpaceScope scope, int spaceId, const std::string& serverIp, int serverPort);

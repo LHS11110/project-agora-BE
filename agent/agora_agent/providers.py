@@ -11,7 +11,16 @@ def canvas_external_models():
     return {model for model in os.getenv("AGENT_EXTERNAL_MODELS", "").split(",")
             if model.startswith("anthropic/claude-") and valid_model(model)}
 
+LOCAL_MODEL = "qwen2.5:1.5b"
+LOCAL_OLLAMA_URL = "http://ollama:11434"
+
 PROVIDERS = {
+    "local": {
+        "label": "Local Qwen",
+        "kind": "ollama",
+        "base_url": LOCAL_OLLAMA_URL + "/v1",
+        "model": LOCAL_MODEL,
+    },
     # EXAONE was removed: its API terms (2026-11-09, 2.1/2.5) allow non-commercial use
     # only and forbid integrating the API into products or letting third parties call it.
     "openai": {
@@ -70,4 +79,4 @@ def model_for(provider, requested=""):
 
 
 def server_key(provider):
-    return os.getenv(provider["key_env"], "")
+    return os.getenv(provider["key_env"], "") if "key_env" in provider else ""

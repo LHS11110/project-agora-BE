@@ -20,6 +20,11 @@ public class UserErasureService {
             entityManager.createQuery("delete from "+type+" p where p.userId=:id").setParameter("id",id).executeUpdate();
         entityManager.createNativeQuery("SELECT user_id FROM dbo.users WITH(UPDLOCK,HOLDLOCK) WHERE user_id=:id").setParameter("id",id).getResultList();
         entityManager.createNativeQuery("DELETE FROM dbo.user_canvas_activity WHERE user_id=:id").setParameter("id",id).executeUpdate();
+        entityManager.createNativeQuery("""
+            UPDATE dbo.users SET adult_verified_at=NULL, adult_verification_attempt=NULL,
+                adult_verification_expires_at=NULL WHERE user_id=:id
+            """).setParameter("id",id).executeUpdate();
+        entityManager.createNativeQuery("DELETE FROM dbo.agent_term_decisions WHERE user_id=:id").setParameter("id",id).executeUpdate();
         images.remove(id);
         user.erasePersonalData();
     }
