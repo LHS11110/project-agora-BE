@@ -14,7 +14,7 @@ TIMEOUT_ERRORS = (APITimeoutError, anthropic.APITimeoutError)
 CONNECTION_ERRORS = (APIConnectionError, anthropic.APIConnectionError)
 
 MAX_FRAME = 1_000_000
-CANVAS_CONSENT_VERSION = "agent-local-v2"
+CANVAS_CONSENT_VERSION = "agent-local-v3"
 
 
 async def local_model_ready():
@@ -79,7 +79,7 @@ async def serve(reader, writer):
 
     async def bridge(name, arguments):
         nonlocal sequence
-        if name != "create_objects":
+        if name not in {"list_objects", "get_objects", "create_objects", "patch_objects"}:
             return {"error": "AGENT_TOOL_DENIED"}
         sequence += 1
         await send(
@@ -107,7 +107,7 @@ async def serve(reader, writer):
         config = options({"provider": "local", **supplied_options})
         if config["provider"] != "local" or config["model"] not in ("", LOCAL_MODEL):
             raise ValueError("AGENT_OPTIONS_INVALID")
-        config["max_steps"] = 1
+        config["max_steps"] = 4
         config["max_tokens"] = min(config["max_tokens"], 768)
         if payload.get("operation") == "status":
             await send({
@@ -151,7 +151,8 @@ async def serve(reader, writer):
                     "message": payload["message"],
                     "anchor": anchor,
                     "options": config,
-                }, bridge, progress, create_only=True)
+                    "selected_ids": payload.get("selected_ids", []),
+                }, bridge, progress)
                 await send(result)
     except TimeoutError:
         try:

@@ -1,4 +1,5 @@
 #pragma once
+#include "service/CanvasBrokerOperations.hpp"
 #include <nlohmann/json.hpp>
 #include <openssl/rand.h>
 #include <algorithm>
@@ -31,11 +32,27 @@ inline void options(const Json& value){
  }
 }
 inline std::string randomId(){unsigned char bytes[16];if(RAND_bytes(bytes,sizeof(bytes))!=1)throw std::runtime_error("AGENT_UNAVAILABLE");const char* hex="0123456789abcdef";std::string id="agent-";for(auto b:bytes){id+=hex[b>>4];id+=hex[b&15];}return id;}
+inline std::string confirmedDeleteId(const Json& event,const Json& selected,const std::string& operation){
+ const auto target=event.value("confirmed_delete_id",std::string());
+ if(!target.empty()&&(operation!="run"||selected.size()!=1||selected[0]!=target))
+  throw std::invalid_argument("AGENT_DELETE_DISABLED");
+ return target;
+}
+inline bool matchesConfirmedDelete(const Json& confirmed,const Json& args){
+ return confirmed.is_object()&&confirmed.contains("revision")&&
+  args==Json{{"objects",Json::array({confirmed})}};
+}
+inline bool manageableField(const std::string& field){
+ static const std::unordered_set<std::string> protected_fields={
+  "permission","locked","aiGenerated","members","groupId","automerge_snapshot","automerge_changes",
+  "runtimeState","runtimeResults","notebookResult","notebookResults","projectHistory",
+  "questionAnswer","questionScore","questionFeedback","questionSubmitted","questionGradedVersion"
+ };
+ return agora::broker::objectFields().count(field)&&!protected_fields.count(field);
+}
 inline void fields(const Json& item){
- static const std::unordered_set<std::string> allowed={"kind","text","code","formula","title","filename","language","renderMode","x","y","width","height","depth","rotation","color","fill","strokeWidth","shapeType","url","src","mediaType","videoId","embedUrl","from","to","fromPort","toPort","startHead","endHead","label","labelMode"};
  if(!item.is_object()||item.empty()||item.dump().size()>100000)throw std::invalid_argument("AGENT_ITEM_INVALID");
- for(const auto& entry:item.items())if(!allowed.count(entry.key()))throw std::invalid_argument("AGENT_FIELD_DENIED");
- if(item.contains("kind")&&!std::unordered_set<std::string>{"text","code","math","shape","note","connector","link","image"}.count(item["kind"].get<std::string>()))throw std::invalid_argument("AGENT_KIND_DENIED");
+ for(const auto& entry:item.items())if(!manageableField(entry.key()))throw std::invalid_argument("AGENT_FIELD_DENIED");
 }
 // Keep normalized wire coordinates and use the same world-pixel grid as the FE.
 inline void snapGeometry(Json& patch) {
@@ -55,9 +72,17 @@ inline void snapGeometry(Json& patch) {
   *value = (field.size ? std::max(1.0, rounded) : rounded) / field.pixels;
  }
 }
-inline Json publicItem(const Json& item,bool source){Json result=Json::object();for(const auto* key:{"kind","runtimeRole","title","filename","language","renderMode","x","y","width","height","depth","color","fill","shapeType","locked","from","to","url"})if(item.contains(key))result[key]=item[key];
- if(!source)for(const auto* key:{"title","filename","url"})if(result.contains(key)&&result[key].is_string()&&result[key].get_ref<const std::string&>().size()>512)result.erase(key);
- if(source)for(const auto* key:{"text","code","formula"})if(item.contains(key))result[key]=item[key];
+inline Json publicItem(const Json& item,bool source){
+ Json result=Json::object();
+ if(source){
+  for(const auto& field:item.items())if(manageableField(field.key()))result[field.key()]=field.value();
+ }else{
+  for(const auto* key:{"kind","runtimeRole","title","name","filename","language","renderMode","x","y","from","to"}){
+   if(item.contains(key)&&item[key].dump().size()<=512)result[key]=item[key];
+  }
+  if(item.contains("text")&&item["text"].is_string()&&item["text"].dump().size()<=240)result["text"]=item["text"];
+ }
+ for(const auto* key:{"locked","aiGenerated"})if(item.contains(key))result[key]=item[key];
  return result;
 }
 }

@@ -38,6 +38,63 @@ def tool(name, args):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_result,expected", [
+    ({"object_ids": ["note-1"]}, {"answer": "캔버스에 메모를 추가했습니다.", "object_ids": ["note-1"]}),
+    ({"error": "ITEM_WRITE_DENIED"}, {
+        "error": "ITEM_WRITE_DENIED",
+        "message": "이 객체를 변경하려면 편집 권한이 필요하며 객체의 잠금이 해제되어 있어야 합니다.",
+    }),
+])
+async def test_local_note_uses_mcp_and_reports_commit_outcome(bridge_result, expected):
+    create = AsyncMock(return_value=completion([tool("create_object", {"kind": "note", "text": "회의 준비"})]))
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    bridge = AsyncMock(return_value=bridge_result)
+    result = await run_turn(
+        {"message": "회의 준비 메모를 추가해줘", "options": {"provider": "local"}},
+        bridge, AsyncMock(), client, create_only=True,
+    )
+    assert {key: result.get(key) for key in expected} == expected
+    bridge.assert_awaited_once_with("create_objects", {"items": [{
+        "kind": "note", "text": "회의 준비", "x": .15, "y": .15, "width": .18, "height": .14,
+    }]})
+    messages = create.await_args.kwargs["messages"]
+    assert messages[0]["role"] == "system"
+    assert "Project Agora" in messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_local_reads_revision_before_mutating_and_never_exposes_delete():
+    change = {"id": "table-1", "patch": {"title": "Updated"}}
+    create = AsyncMock(side_effect=[
+        completion([tool("get_object", {"id": "table-1"})]),
+        completion([tool("patch_object", change)]),
+    ])
+    bridge = AsyncMock(side_effect=[
+        {"objects": [{"id": "table-1", "revision": 9, "item": {"kind": "table"}}]},
+        {"object_ids": ["table-1"]},
+    ])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    request = {"message": "표 이름을 Updated로 바꿔", "options": {"provider": "local"}}
+    result = await run_turn(request, bridge, AsyncMock(), client)
+    assert result["object_ids"] == ["table-1"]
+    assert [call.args[0] for call in bridge.await_args_list] == ["get_objects", "patch_objects"]
+    assert "delete_objects" not in {tool["function"]["name"] for tool in create.await_args.kwargs["tools"]}
+
+    create.side_effect = [completion([tool("patch_object", change)]), completion(answer="확인이 필요합니다.")]
+    bridge.reset_mock()
+    bridge.side_effect = None
+    bridge.return_value = {"objects": [{"id": "table-1", "revision": 9, "item": {"kind": "table"}}]}
+    assert (await run_turn(request, bridge, AsyncMock(), client))["answer"] == "확인이 필요합니다."
+    bridge.assert_awaited_once_with("get_objects", {"ids": ["table-1"]})
+
+    create.side_effect = None
+    create.return_value = completion([tool("delete_objects", {"objects": [{"id": "table-1", "revision": 9}]})])
+    bridge.reset_mock()
+    assert (await run_turn(request, bridge, AsyncMock(), client))["error"] == "AGENT_TOOL_INVALID"
+    bridge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_mcp_read_modify_create_and_deleted_tool_disabled():
     responses = [
         completion([tool("get_objects", {"ids": ["code-a"]})]),
@@ -144,8 +201,7 @@ async def test_unconfigured(monkeypatch):
 async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
     daemon.semaphore = asyncio.Semaphore(1)
 
-    async def fake_turn(payload, bridge, progress, *, create_only):
-        assert create_only
+    async def fake_turn(payload, bridge, progress):
         await progress("생성 중")
         result = await bridge("create_objects", {"items": [{"kind": "text", "text": "hello"}]})
         return {"answer": result["text"]}
@@ -158,7 +214,7 @@ async def test_unix_duplex_bridge_and_status(tmp_path, monkeypatch):
         daemon.serve, path, limit=daemon.MAX_FRAME
     ):
         reader, writer = await asyncio.open_unix_connection(path)
-        writer.write(b'{"operation":"run","message":"hello","consent_version":"agent-local-v2"}\n')
+        writer.write(b'{"operation":"run","message":"hello","consent_version":"agent-local-v3"}\n')
         await writer.drain()
         assert json.loads(await reader.readline())["type"] == "output"
         tool_request = json.loads(await reader.readline())

@@ -17,7 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 @RequestMapping("/api/users/agent-terms")
 public class AgentTermsController {
-    private static final String VERSION = "agent-local-v2";
+    private static final String VERSION = "agent-local-v3";
     private final JdbcTemplate jdbc;
 
     public AgentTermsController(JdbcTemplate jdbc) {

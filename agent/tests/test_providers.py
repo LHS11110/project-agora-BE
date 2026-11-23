@@ -206,6 +206,6 @@ async def test_local_canvas_agent_requires_fixed_model_without_personal_key(tmp_
         payload = engine.await_args.args[0]
         assert "api_key" not in payload
         assert payload["options"]["provider"] == "local"
-        assert payload["options"]["max_steps"] == 1
+        assert payload["options"]["max_steps"] == 4
         assert payload["options"]["max_tokens"] == 768
-        assert engine.await_args.kwargs == {"create_only": True}
+        assert engine.await_args.kwargs == {}

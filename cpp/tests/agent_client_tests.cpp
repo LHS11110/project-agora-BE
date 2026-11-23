@@ -37,6 +37,24 @@ void bridgeRoundTrip(){
  for(const auto& invalid:Json::array({Json{{"max_steps",1.5}},Json{{"api_key","forged"}},Json{{"reasoning_effort","medium"}},Json{{"top_p",false}}})){
   bool rejected=false;try{agora::agent::options(invalid);}catch(const std::invalid_argument&){rejected=true;}AGORA_CHECK(rejected);
  }
+ const auto selected=Json::array({"chosen"});
+ const auto request=Json{{"confirmed_delete_id","chosen"}};
+ AGORA_CHECK(agora::agent::confirmedDeleteId(Json::object(),selected,"run").empty());
+ AGORA_CHECK(agora::agent::confirmedDeleteId(request,selected,"run")=="chosen");
+ for(const auto& selection:{Json::array(),Json::array({"other"}),Json::array({"chosen","other"})}){
+  bool rejected=false;
+  try{agora::agent::confirmedDeleteId(request,selection,"run");}
+  catch(const std::invalid_argument& e){rejected=std::string(e.what())=="AGENT_DELETE_DISABLED";}
+  AGORA_CHECK(rejected);
+ }
+ const auto chosen=Json{{"id","chosen"},{"revision",8}};
+ const auto other=Json{{"id","other"},{"revision",8}};
+ const auto args=Json{{"objects",Json::array({chosen})}};
+ AGORA_CHECK(agora::agent::matchesConfirmedDelete(chosen,args));
+ AGORA_CHECK(!agora::agent::matchesConfirmedDelete(Json(),args));
+ AGORA_CHECK(!agora::agent::matchesConfirmedDelete(other,args));
+ AGORA_CHECK(!agora::agent::matchesConfirmedDelete(chosen,Json{{"objects",Json::array({chosen,other})}}));
+ AGORA_CHECK(!agora::agent::matchesConfirmedDelete(Json{{"id","chosen"},{"revision",9}},args));
  auto item=Json{{"kind","text"},{"renderMode","code"},{"text","print(1)"},{"x",.1},{"width",.4}};agora::agent::fields(item);
  item["permission"]="admin-group";bool denied=false;try{agora::agent::fields(item);}catch(const std::invalid_argument&){denied=true;}AGORA_CHECK(denied);
  auto publicItem=agora::agent::publicItem({{"kind","text"},{"text","source"},{"token","hidden"},{"runtimeResults",Json::array()}},true);AGORA_CHECK(publicItem["text"]=="source"&&!publicItem.contains("token")&&!publicItem.contains("runtimeResults"));

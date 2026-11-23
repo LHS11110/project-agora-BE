@@ -14,9 +14,13 @@
 namespace agora::broker {
 using Json=nlohmann::json;
 struct Mutation {Json items=Json::object(),previous=Json::object(),expected=Json::object(),translations=Json::array();bool only_translations=true;};
+inline const std::unordered_set<std::string>& objectFields(){
+ static const std::unordered_set<std::string> fields={"timerDuration","timerRemaining","timerDeadline","frameId","animationPriority","frameOrder","frameLinkPriority","portfolioCursor","animation","animationPlayback","portfolioPages","portfolioDescription","projectType","projectBoard","projectIssueType","projectStatus","projectRequestedStatus","projectAssignee","projectPriority","projectStart","projectDue","projectParent","projectDependencies","projectSprint","projectPoints","projectRank","projectHistory","projectConfig","notebookCells","notebookResults","notebookCellIds","notebookId","notebookCell","notebookResult","valueType","valueNumber","valueMin","valueMax","valueStep","valueText","valueOptions","pdfPage","mediaState","mediaLoop","runtimeState","questionType","questionPrompt","questionOptions","questionAnswer","questionSubmitted","questionMaxScore","questionScore","questionFeedback","questionVersion","questionGradedVersion","kind","aiGenerated","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","channelType","name","order","categoryId","automerge_snapshot","automerge_changes"};
+ return fields;
+}
 inline void validate(const Json& item){
  static const std::unordered_set<std::string> kinds={"frame","portfolio","project","text","note","code","math","shape","table","chart","question","value","image","link","connector","stroke","pdf","user-group","channel"};
- static const std::unordered_set<std::string> fields={"timerDuration","timerRemaining","timerDeadline","frameId","animationPriority","frameOrder","frameLinkPriority","portfolioCursor","animation","animationPlayback","portfolioPages","portfolioDescription","projectType","projectBoard","projectIssueType","projectStatus","projectRequestedStatus","projectAssignee","projectPriority","projectStart","projectDue","projectParent","projectDependencies","projectSprint","projectPoints","projectRank","projectHistory","projectConfig","notebookCells","notebookResults","notebookCellIds","notebookId","notebookCell","notebookResult","valueType","valueNumber","valueMin","valueMax","valueStep","valueText","valueOptions","pdfPage","mediaState","mediaLoop","runtimeState","questionType","questionPrompt","questionOptions","questionAnswer","questionSubmitted","questionMaxScore","questionScore","questionFeedback","questionVersion","questionGradedVersion","kind","text","code","formula","format","filename","language","shapeType","visualStyle","volumeStyle","chartType","color","fill","permission","groupId","src","url","title","mediaType","from","to","fromPort","toPort","startHead","endHead","brush","embedUrl","videoId","renderMode","label","labelMode","groupTitle","thumbnail","cornerStyle","runtimeRole","runtimeResults","shadowBlur","shadowOpacity","shadowOffsetX","shadowOffsetY","depth","x","y","width","height","rotation","fontSize","strokeWidth","bend","opacity","contentScale","contentScaleX","contentScaleY","bendPointCount","headSize","vertexCount","fillOpacity","sketchFillOpacity","points","rows","columns","simulatePressure","complete","strokeEnabled","shadowEnabled","locked","imageFrameEnabled","bendPoints","members","channelType","name","order","categoryId","automerge_snapshot","automerge_changes"};
+ const auto& fields=objectFields();
  if(!item.is_object()||!kinds.count(item.value("kind","")))throw std::invalid_argument("ITEM_KIND_INVALID");
  // Chat/call channels and channel categories are footprint-free items; a text
  // channel's messages are its comment thread (see CanvasQueryService chat).
@@ -29,6 +33,7 @@ inline void validate(const Json& item){
   if(!item.contains("order")||!item["order"].is_number())throw std::invalid_argument("ITEM_CHANNEL_INVALID");
   if(item.contains("categoryId")&&(type=="category"||!item["categoryId"].is_string()||item["categoryId"].get<std::string>().empty()||item["categoryId"].get<std::string>().size()>128))throw std::invalid_argument("ITEM_CHANNEL_INVALID");
  }
+ if(item.contains("aiGenerated")&&!item["aiGenerated"].is_boolean())throw std::invalid_argument("ITEM_FIELD_INVALID");
  agora::presentation::validate(item);
  for(const auto& field:item.items()){
   if(!fields.count(field.key()))throw std::invalid_argument("ITEM_FIELD_INVALID");
@@ -88,7 +93,7 @@ inline void validate(const Json& item){
  }
 }
 inline Mutation prepare(const Json& operations,const std::function<std::optional<Json>(const std::string&)>& read,
- const std::unordered_set<std::string>& groups,bool admin,const std::unordered_set<std::string>* readable=nullptr,const std::unordered_set<std::string>* executable=nullptr,const std::unordered_set<std::string>* memberships=nullptr){
+ const std::unordered_set<std::string>& groups,bool admin,const std::unordered_set<std::string>* readable=nullptr,const std::unordered_set<std::string>* executable=nullptr,const std::unordered_set<std::string>* memberships=nullptr,bool agent_creation=false){
  if(!operations.is_array()||operations.empty()||operations.size()>512)throw std::invalid_argument("QUERY_BATCH_INVALID");
  Mutation result;
  auto get=[&](const std::string& id)->Json{
@@ -140,7 +145,9 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    if(action=="patch"&&old.is_null())throw std::invalid_argument("ITEM_NOT_FOUND");
    const auto patch=operation.value("patch",Json::object()),unset=operation.value("unset",Json::array());
    if(!patch.is_object()||!unset.is_array())throw std::invalid_argument("ITEM_PATCH_INVALID");
+   if(patch.contains("aiGenerated"))throw std::invalid_argument("ITEM_FIELD_INVALID");
    auto item=old.is_null()?Json::object():old;item.update(patch);
+   if(action=="create"&&agent_creation)item["aiGenerated"]=true;
    if(operation.contains("notebook_structure")){
     const auto& structure=operation["notebook_structure"];
     if(action!="patch"||old.value("runtimeRole",std::string())!="notebook"||!old.contains("notebookCells")||patch.contains("notebookCells")||!structure.is_object()||structure.size()!=3||!structure.contains("order")||!structure["order"].is_array()||!structure.contains("insert")||!structure["insert"].is_array()||!structure.contains("remove")||!structure["remove"].is_array()||structure["order"].size()>32||structure["insert"].size()>32||structure["remove"].size()>32)throw std::invalid_argument("ITEM_NOTEBOOK_INVALID");
@@ -204,7 +211,7 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
     item["points"]=std::move(points);
    }
    if(old.is_null()&&!item.contains("permission"))item["permission"]=memberships?*memberships:readable?*readable:groups;
-   for(const auto& field:unset){if(!field.is_string()||field.get<std::string>().rfind("__",0)==0)throw std::invalid_argument("ITEM_PATCH_INVALID");item.erase(field.get<std::string>());}
+   for(const auto& field:unset){if(!field.is_string()||field=="aiGenerated"||field.get<std::string>().rfind("__",0)==0)throw std::invalid_argument("ITEM_PATCH_INVALID");item.erase(field.get<std::string>());}
    if(!old.is_null()&&old.value("kind","")!=item.value("kind",""))throw std::invalid_argument("ITEM_KIND_INVALID");
    const bool output_only=action=="patch"&&old.is_object()&&old.value("runtimeRole","")=="output"&&patch.size()==1&&patch.contains("runtimeResults")&&unset.empty();
    const bool state_only=!operation.contains("notebook_edits")&&action=="patch"&&old.is_object()&&agora::shared::runtimeTarget(old)&&patch.size()==1&&patch.contains("runtimeState")&&unset.empty();

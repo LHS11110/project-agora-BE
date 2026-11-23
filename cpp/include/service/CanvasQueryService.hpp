@@ -12,8 +12,9 @@ public:
     nlohmann::json execute(const nlohmann::json& input);
     nlohmann::json execute(const nlohmann::json& input, const OutputHandler& on_output);
 private:
+    nlohmann::json executeInternal(const nlohmann::json& input, const OutputHandler& on_output, bool agent_tool);
     nlohmann::json join(const nlohmann::json& input);
-    nlohmann::json query(const nlohmann::json& input, const OutputHandler& on_output = {});
+    nlohmann::json query(const nlohmann::json& input, const OutputHandler& on_output = {}, bool agent_creation = false, bool agent_tool = false);
     CanvasLifecycleMemory& pool_;
     int logical_ws_port_;
     std::string runtime_socket_;
