@@ -30,6 +30,7 @@ class CanvasSession:
         self._closed=threading.Event();self._thread=None;self._ready=False;self._terminal=None
         self._flight=None;self._flight_error=None;self._sent_at=0;self._waiters={};self._events=deque(maxlen=256)
         self._realtime_events=deque(maxlen=256);self._cursor_events=OrderedDict();self._event_overflow=0
+        self._presence_reconnect=threading.Event()
         self._presence=PresenceConnection(client,canvas_id,self.client_id,timeout,self._closed,self._presence_event,self._presence_lost)
     def __repr__(self):return f"CanvasSession(canvas_id={self.canvas_id}, connected={self._ready})"
     def __enter__(self):return self.connect()
@@ -47,7 +48,7 @@ class CanvasSession:
     def peers(self):return self._presence.peers
     def _presence_lost(self):
         with self._cv:self._ready=False;self._cv.notify_all()
-        if self._socket:self._socket.close()
+        self._presence_reconnect.set()
     def _presence_event(self,event):
         if event.get('type')=='canvas_access_revoked':self._handle(event);return
         with self._cv:
@@ -145,11 +146,15 @@ class CanvasSession:
             elif kind in ("canvas_result","error") and self._flight and event.get("request_id")==self._flight["request_id"]:
                 if event.get("ok"):
                     if event.get("duplicate"):need_sync=True
-                elif event.get("code") in TRANSIENT:pass
+                elif event.get("code") in TRANSIENT and not (
+                    event.get("code") == "CANVAS_WRITE_CONFLICT"
+                    and any("expected_revision" in op for op in self._flight["operations"])
+                ):pass
                 elif event.get("code")=="CLIENT_SEQUENCE_CONFLICT":self._ready=False;need_sync=True
                 else:self._flight_error=AgoraError("Canvas mutation rejected: "+str(event.get("code","UNKNOWN")),code=event.get("code"));self._flight=None
             request_id=event.get("request_id")
-            if request_id in self._waiters:self._waiters[request_id]=event
+            if kind != "runtime_output" and request_id in self._waiters and self._waiters[request_id] is None:
+                self._waiters[request_id] = event
             # Large snapshots are available through .items rather than duplicated in the event queue.
             summary={"type":kind,"revision":self.revision}
             if kind=="canvas_commit":
@@ -165,6 +170,9 @@ class CanvasSession:
         synced=time.monotonic()
         while not self._closed.is_set():
             try:
+                if self._presence_reconnect.is_set():
+                    self._presence_reconnect.clear()
+                    raise Disconnected("Presence channel changed")
                 try:
                     event=json.loads(self._socket.recv(timeout=1))
                     if event.get("type")=="server_reconnect":raise Disconnected("Server requested reconnect")
@@ -244,8 +252,33 @@ class CanvasSession:
             groups=self.capabilities.get("member_groups") or self.capabilities.get("groups") or []
             item["permission"]=sorted(set(groups))
         self.apply([{"action":"create","id":key,"patch":item,"unset":[]}]);return key
-    def patch(self,id,fields,*,unset=()):return self.apply([{"action":"patch","id":str(id),"patch":fields,"unset":list(unset)}])
-    def set_text(self,id,text,*,code=False):return self.patch(id,{"code" if code else "text":text},unset=("automerge_snapshot","automerge_changes"))
+    def patch(self, id, fields, *, unset=(), expected_revision=None):
+        operation = {"action": "patch", "id": str(id), "patch": fields, "unset": list(unset)}
+        if expected_revision is not None:
+            if type(expected_revision) is not int or not 0 <= expected_revision < 2**53:
+                raise ValueError("Expected a nonnegative object revision")
+            operation["expected_revision"] = expected_revision
+        return self.apply([operation])
+
+    def set_text(self, id, text, *, code=False, expected_revision=None):
+        return self.patch(id, {"code" if code else "text": text},
+                          unset=("automerge_snapshot", "automerge_changes"), expected_revision=expected_revision)
+
+    def find_objects(self, query="", *, kind=None):
+        """Search the current readable snapshot by ID, title, name, filename, text or label."""
+        if not isinstance(query, str):
+            raise TypeError("Expected a text query")
+        query = query.strip().casefold()
+        with self._cv:
+            self._check()
+            return {
+                key: copy.deepcopy(item) for key, item in self._items.items()
+                if (kind is None or item.get("kind") == kind)
+                and (not query or any(
+                    isinstance(value, str) and query in value.casefold()
+                    for value in (key, *(item.get(field) for field in ("title", "name", "filename", "text", "label")))
+                ))
+            }
     def delete(self,*ids,include_connections=True):
         keys=set(map(str,ids))
         if include_connections:
@@ -263,7 +296,7 @@ class CanvasSession:
                 with self._cv:
                     self._wait(lambda:self._waiters[request_id] is not None,timeout);reply=self._waiters[request_id]
                 if isinstance(reply,Exception):raise reply
-                if reply.get("ok") is False or reply.get("type")=="error":raise AgoraError("Canvas request rejected",code=reply.get("code"))
+                if reply.get("ok") is False or reply.get("type")=="error":raise AgoraError(reply.get("message") or "Canvas request rejected",code=reply.get("code"))
                 return reply
             finally:
                 with self._cv:self._waiters.pop(request_id,None)
@@ -301,6 +334,51 @@ class CanvasSession:
         body={"language":language,"code":code,"passwordGrant":self._password_grant}
         if stdin is not None:body["stdin"]=stdin
         return self.client.request("POST",f"/api/canvases/{self.canvas_id}/runtime/execute",json=body)
+    def _agent_request(self, operation, *, timeout=None, **fields):
+        reply = self._request({"type": "runtime_execute", "action": "agent", "operation": operation, **fields},
+                              timeout=timeout)
+        if reply.get("type") != "runtime_result" or not isinstance(reply.get("result"), dict):
+            raise AgoraError("Unexpected agent response", code="PROTOCOL_INVALID")
+        return reply["result"]
+
+    def agent_status(self):
+        return self._agent_request("status")
+
+    def agent_sessions(self, *, offset=0, limit=30):
+        return self._agent_request("sessions", offset=offset, limit=limit)
+
+    def agent_session(self, session_id, *, limit=50):
+        return self._agent_request("session_get", session_id=session_id, limit=limit)
+
+    def run_agent(self, message, *, selected_ids=(), edit_id=None, session_id=None, turn_id=None, timeout=260):
+        """Submit an agent turn under the current user's recorded consent."""
+        if not isinstance(message, str) or not 1 <= len(message.strip()) <= 8000:
+            raise ValueError("Expected an agent prompt of 1..8000 characters")
+        if isinstance(selected_ids, str):
+            raise ValueError("Pass selected_ids as a collection of IDs")
+        selected = list(selected_ids)
+        if len(selected) > 10 or any(not isinstance(key, str) or not key or len(key) > 128 for key in selected):
+            raise ValueError("Expected up to 10 object IDs")
+        if edit_id is not None and selected != [edit_id]:
+            raise ValueError("Edit approval must target the single selected object")
+        terms = self.client.agent_terms()
+        version = terms.get("version") if isinstance(terms, dict) and terms.get("accepted") is True else None
+        if not isinstance(version, str) or not version:
+            raise AgoraError("Review and accept the current agent terms before submitting a prompt",
+                             code="AGENT_CONSENT_REQUIRED")
+        turn = turn_id if turn_id is not None else str(uuid.uuid4())
+        fields = {"message": message.strip(), "consent_version": version, "selected_ids": selected, "turn_id": turn}
+        if session_id is not None:
+            fields["session_id"] = session_id
+        if edit_id is not None:
+            fields["confirmed_edit_id"] = edit_id
+        try:
+            return self._agent_request("run", timeout=timeout, **fields)
+        except (TimeoutError, Disconnected, ConnectionClosed, OSError) as failure:
+            error = OutcomeUnknown("Agent outcome is unknown; inspect your session history before resubmitting")
+            error.turn_id = turn
+            raise error from failure
+
     @staticmethod
     def _coordinate(value):
         if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):raise ValueError('Expected finite canvas coordinates')

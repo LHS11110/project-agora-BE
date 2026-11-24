@@ -81,6 +81,16 @@ class AgoraClient:
         client.bot_canvas_id=saved["bot"]["canvas_id"]
         return client
     def me(self):return self.request("GET","/api/auth/me")
+    def agent_terms(self):
+        """Return the current local-agent terms and this user's recorded decision."""
+        return self.request("GET", "/api/users/agent-terms")
+
+    def set_agent_consent(self, version, accepted):
+        """Record a decision for the exact terms version the user reviewed."""
+        if not isinstance(version, str) or not version.strip() or type(accepted) is not bool:
+            raise ValueError("Expected a terms version and a boolean decision")
+        return self.request("PUT", "/api/users/agent-terms", json={"version": version, "accepted": accepted})
+
     def canvases(self,name=None):return self.request("GET","/api/canvases",params={"name":name} if name is not None else None)
     def create_canvas(self,name,*,description="",visibility="private",password=None):
         return self.request("POST","/api/canvases",json={"canvasName":name,"description":description,"visibility":visibility,"canvasPassword":password})

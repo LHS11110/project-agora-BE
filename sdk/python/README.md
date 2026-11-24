@@ -104,6 +104,22 @@ canvas.execute("python", "print(input())", stdin="hello\n")
 
 `execute()`는 기존 런타임 API를 호출해 결과를 반환합니다. 브라우저의 블루프린트 실행 계획을 자동 실행하거나 결과 객체에 출력을 자동 작성하지는 않습니다. 결과 객체를 갱신하려면 기존 `runtimeResults` 스키마로 `patch()`하세요. JSON 외 파일 응답은 `client.request("GET", "/api/...", raw=True).content`로 받을 수 있고 multipart 업로드는 `request(..., files=...)`로 기존 API를 호출할 수 있습니다. 봇의 HTTP 허용 경로는 캔버스 조회·접속·실행 등으로 제한되므로 추가 관리 API가 필요한 작업은 실제 사용자 계정을 사용하세요. 그 밖의 브로커 기능은 `send_event()`로 기존 이벤트를 전달할 수 있습니다. 응답이 없는 커서 등 일방향 이벤트는 `publish()`를 사용합니다.
 
+## 객체 검색과 로컬 에이전트 (0.1.5)
+
+`canvas.find_objects("회의", kind="note")`는 현재 읽을 수 있는 스냅샷에서 ID, 제목, 이름, 파일명, 본문, 라벨을 검색해 `{객체 ID: 객체 데이터}` 복사본을 반환합니다. 객체의 `x`, `y`는 정규화 좌표입니다. `patch()`와 `set_text()`에 객체의 `__broker_revision`을 `expected_revision`으로 넘기면, 조회 이후 수정된 버전에 쓰는 작업은 충돌로 종료됩니다.
+
+```python
+terms = client.agent_terms()
+# 약관 본문 terms["body"]를 검토하고 사용자가 동의한 경우:
+# client.set_agent_consent(terms["version"], True)
+with client.canvas(2053) as canvas:
+    print(canvas.agent_status())
+    result = canvas.run_agent("회의 메모를 찾아 좌표를 알려줘.")
+    print(result["answer"])
+```
+
+`run_agent()`는 서버에 기록된 현재 약관 동의를 확인합니다. 사용자 토큰을 사용하세요. 공개 캔버스에서 수정할 객체는 `selected_ids=[item_id], edit_id=item_id`로 명시합니다. 서버가 편집 권한과 대상을 다시 검증합니다. 하이라이트 요청 결과의 `highlight_id`는 호출 애플리케이션에서 표시 대상으로 사용할 수 있습니다. 브라우저의 하이라이트는 요청자 화면에서 렌더링됩니다. `next_event()`의 `runtime_output`으로 진행 상황을 읽을 수 있습니다. 시간 초과나 연결 단절의 `OutcomeUnknown.turn_id`는 `agent_sessions()`와 `agent_session(session_id)`로 대화 기록을 확인할 때 사용하세요.
+
 ## 일반 사용자와 동일한 실시간 참여 (0.1.4)
 
 `client.canvas(id).connect()` 또는 `with client.canvas(id)`는 객체 동기화 연결과 참여자 채널을 자동으로 엽니다. 캔버스 연결에서 받은 증명값으로 두 채널을 묶으며, 브라우저 접속자 목록에도 표시됩니다. 같은 동작이 일반 사용자 토큰과 봇 토큰에 모두 적용됩니다. 봇은 지정된 캔버스의 초대·그룹 권한을 따릅니다.

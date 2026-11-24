@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agora-canvas"
-version = "0.1.4"
+version = "0.1.5"
 description = "Authenticated Python client for FreLog canvas HTTP and durable broker APIs"
 readme = "README.md"
 license = {file = "LICENSE"}

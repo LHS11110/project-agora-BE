@@ -66,6 +66,53 @@ class SessionTests(unittest.TestCase):
   def respond(event):
    sent.append(event);s._handle({'type':'canvas_commit','client_id':s.client_id,'author_id':7,'request_count':event['request_count'],'revision':1,'items':{'a':None,'wire':None}})
   s._send=respond;s.delete('a');self.assertEqual({op['id'] for op in sent[0]['operations']},{'a','wire'})
+ def test_snapshot_search_and_version_checked_patch(self):
+  s=self.session()
+  s._items['doc']={'kind':'note','text':'Quarterly Plan','x':.25,'y':.4,'__broker_revision':4}
+  matches=s.find_objects('PLAN',kind='note')
+  self.assertEqual(set(matches),{'doc'})
+  matches['doc']['x']=100
+  self.assertEqual(s.items['doc']['x'],.25)
+  sent=[]
+  def respond(event):
+   sent.append(event)
+   s._handle({'type':'canvas_result','ok':False,'code':'CANVAS_WRITE_CONFLICT','request_id':event['request_id']})
+  s._send=respond
+  with self.assertRaises(AgoraError) as error:s.set_text('doc','new',expected_revision=4)
+  self.assertEqual(error.exception.code,'CANVAS_WRITE_CONFLICT')
+  self.assertIsNone(s._flight)
+  self.assertEqual(sent[0]['operations'][0]['expected_revision'],4)
+ def test_agent_only_completes_on_final_response(self):
+  s=self.session()
+  class Client:
+   def agent_terms(self):return {'version':'server-version','accepted':True}
+  s.client=Client()
+  sent=[]
+  def respond(event):
+   sent.append(event)
+   req=event['request_id']
+   s._handle({'type':'runtime_output','request_id':req,'output':'planning'})
+   self.assertIsNone(s._waiters[req])
+   s._handle({'type':'runtime_result','request_id':req,'ok':True,'result':{'answer':'located','highlight_id':'a'}})
+  s._send=respond
+  result=s.run_agent('find a',selected_ids=['a'],edit_id='a')
+  self.assertEqual(result['highlight_id'],'a')
+  self.assertEqual(sent[0]['consent_version'],'server-version')
+  self.assertEqual(sent[0]['confirmed_edit_id'],'a')
+  self.assertEqual(sent[0]['operation'],'run')
+  with self.assertRaises(ValueError):s.run_agent('edit',selected_ids=['a','b'],edit_id='b')
+  s.client.agent_terms=lambda:{'version':'server-version','accepted':False}
+  with self.assertRaises(AgoraError) as error:s.run_agent('find')
+  self.assertEqual(error.exception.code,'AGENT_CONSENT_REQUIRED')
+  self.assertEqual(len(sent),1)
+ def test_agent_timeout_has_turn_id_without_resubmitting(self):
+  s=self.session()
+  class Client:
+   def agent_terms(self):return {'version':'v3','accepted':True}
+  s.client=Client();sent=[];s._send=sent.append
+  with self.assertRaises(OutcomeUnknown) as error:s.run_agent('find',turn_id='test-turn',timeout=.01)
+  self.assertEqual(error.exception.turn_id,'test-turn')
+  self.assertEqual(len(sent),1)
  def test_stale_snapshot_cannot_roll_back_state(self):
   s=self.session();s.revision=3;s._count=2
   s._handle({'type':'canvas_snapshot','sync_protocol':2,'revision':1,'accepted_count':1,'sync_user_id':7,'items':{}})
