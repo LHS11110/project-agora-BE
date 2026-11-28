@@ -259,6 +259,7 @@ async def local_turn(client, model, config, request, session, progress):
         completion = await client.chat.completions.create(
             model=model, max_tokens=min(config["max_tokens"], 768),
             temperature=0, messages=messages, tools=tools,
+            reasoning_effort="none",
         )
         choice = completion.choices[0]
         if choice.finish_reason == "length":
@@ -394,7 +395,8 @@ async def run_turn(request, bridge, progress, client=None, *, create_only=False,
             from .anthropic_engine import create_client
             client = create_client(key)
         else:
-            client = AsyncOpenAI(api_key="ollama-local" if local else key, base_url=base_url(provider), timeout=60, max_retries=0,
+            client = AsyncOpenAI(api_key="ollama-local" if local else key, base_url=base_url(provider),
+                                 timeout=120 if local else 60, max_retries=0,
                                  **({"http_client": httpx.AsyncClient(follow_redirects=False, trust_env=False)} if external_canvas or local else {}))
     server = make_server(bridge, request.get("allow_delete") is True, create_only=create_only)
     initial = {"message": request["message"], "anchor": request.get("anchor")}

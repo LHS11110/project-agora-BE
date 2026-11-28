@@ -11,12 +11,12 @@ def canvas_external_models():
     return {model for model in os.getenv("AGENT_EXTERNAL_MODELS", "").split(",")
             if model.startswith("anthropic/claude-") and valid_model(model)}
 
-LOCAL_MODEL = "qwen2.5:1.5b"
+LOCAL_MODEL = "gemma4:12b"
 LOCAL_OLLAMA_URL = "http://ollama:11434"
 
 PROVIDERS = {
     "local": {
-        "label": "Local Qwen",
+        "label": "Local Gemma",
         "kind": "ollama",
         "base_url": LOCAL_OLLAMA_URL + "/v1",
         "model": LOCAL_MODEL,

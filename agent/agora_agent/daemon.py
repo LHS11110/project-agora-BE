@@ -105,8 +105,10 @@ async def serve(reader, writer):
         if "api_key" in payload:
             raise ValueError("AGENT_API_KEY_INVALID")
         config = options({"provider": "local", **supplied_options})
-        if config["provider"] != "local" or config["model"] not in ("", LOCAL_MODEL):
+        if config["provider"] != "local" or config["model"] not in ("", LOCAL_MODEL, "qwen2.5:1.5b"):
             raise ValueError("AGENT_OPTIONS_INVALID")
+        if config["model"] == "qwen2.5:1.5b":
+            config["model"] = LOCAL_MODEL
         config["max_steps"] = 4
         config["max_tokens"] = min(config["max_tokens"], 768)
         if payload.get("operation") == "status":

@@ -8,9 +8,9 @@ Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring
 
 캔버스에 연결한 로그인 이용자는 AI 에이전트 패널의 이용약관에 동의한 뒤 로컬 모델을 사용할 수 있습니다. 요청과 객체 생성에는 기존 캔버스 권한이 적용됩니다. 프런트엔드·브로커·C++·Spring·에이전트 데몬은 같은 배포에서 갱신합니다. 배포 전에 DB의 `mssql/migrations/2026-11-23-agent-terms.sql`을 적용합니다. `GET /api/users/agent-terms`는 로그인 계정의 현재 약관과 동의 상태를 반환하고, `PUT`은 현재 버전에 대한 동의 또는 철회를 기록합니다. C++는 모델 실행과 캔버스 도구 호출 직전에 현재 버전의 저장된 동의를 검사합니다.
 
-### 서버에서 로컬 Qwen 실행
+### 서버에서 로컬 Gemma 실행
 
-선택 설정인 `docker-compose.ollama.yml`은 Agora의 에이전트와 Ollama를 전용 내부 네트워크로 연결합니다. Ollama는 공개 포트가 없고 클라우드 기능이 꺼져 있습니다. 모델은 `qwen2.5:1.5b`로 고정되며, 로컬 호출은 외부 공급자로 전환되지 않습니다. 개인 API 키도 받지 않습니다.
+선택 설정인 `docker-compose.ollama.yml`은 Agora의 에이전트와 Ollama를 전용 내부 네트워크로 연결합니다. Ollama는 공개 포트가 없고 클라우드 기능이 꺼져 있습니다. 모델은 `gemma4:12b`로 고정되며, 로컬 호출은 외부 공급자로 전환되지 않습니다. 개인 API 키도 받지 않습니다.
 
 최초 1회 모델을 전용 볼륨에 다운로드합니다. 다음 명령은 배포에 고정한 Ollama 이미지와 동일한 이미지이며, 내려받기 전용 컨테이너는 실행 후 종료됩니다.
 
@@ -18,15 +18,15 @@ Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring
 docker run --rm --volume agora-ollama-models:/root/.ollama \
   --env OLLAMA_NO_CLOUD=1 --entrypoint sh \
   ollama/ollama:0.40.14@sha256:ebaef4f4c5d93660e1f25f8ad085a112f51ccfb0e8458073e71793959dba91c9 \
-  -ec 'ollama serve & server=$!; trap "kill $server" EXIT; for i in $(seq 1 30); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama pull qwen2.5:1.5b'
+  -ec 'ollama serve & server=$!; trap "kill $server" EXIT; for i in $(seq 1 30); do ollama list >/dev/null 2>&1 && break; sleep 1; done; ollama pull gemma4:12b'
 ```
 
-기존 Compose 파일 조합에 `-f docker-compose.ollama.yml`을 추가하고, 동일한 프로젝트 이름과 기존 런타임·TLS 설정을 사용해 에이전트와 Ollama를 시작합니다. 브로커·C++·프런트엔드도 로컬 모델을 인식하는 버전이어야 합니다. 캔버스의 **AI 에이전트** 버튼을 열면 로컬 Qwen을 사용할 수 있습니다. 모델이 누락되거나 내부 서버가 연결되지 않으면 로컬 실행을 시작하지 않습니다.
+기존 Compose 파일 조합에 `-f docker-compose.ollama.yml`을 추가하고, 동일한 프로젝트 이름과 기존 런타임·TLS 설정을 사용해 에이전트와 Ollama를 시작합니다. 브로커·C++·프런트엔드도 로컬 모델을 인식하는 버전이어야 합니다. 캔버스의 **AI 에이전트** 버튼을 열면 로컬 Gemma를 사용할 수 있습니다. 모델이 누락되거나 내부 서버가 연결되지 않으면 로컬 실행을 시작하지 않습니다.
 
-모델은 요청당 모델 호출 한 번, 출력 768토큰으로 제한됩니다. 텍스트 응답과 메모 한 개 생성만 지원하며, 메모 생성에는 기존 캔버스 권한 검사를 적용합니다. 대화 및 생성 객체는 Agora 캔버스 권한을 따라 저장됩니다. 라이선스는 [Qwen2.5-1.5B-Instruct Apache-2.0](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/blob/main/LICENSE)과 [Ollama MIT](https://github.com/ollama/ollama/blob/main/LICENSE)입니다. 모델이나 실행기를 재배포하는 경우 각 라이선스·저작권 고지를 함께 제공해야 합니다.
+모델은 요청당 모델 호출 최대 네 번, 호출당 출력 768토큰으로 제한됩니다. 객체 조회·생성·수정에는 기존 캔버스 권한 검사를 적용합니다. 대화 및 생성 객체는 Agora 캔버스 권한을 따라 저장됩니다. 라이선스는 [Gemma 4 12B Apache-2.0](https://ollama.com/library/gemma4:12b)과 [Ollama MIT](https://github.com/ollama/ollama/blob/main/LICENSE)입니다. 모델이나 실행기를 재배포하는 경우 각 라이선스·저작권 고지를 함께 제공해야 합니다.
 
 
-로컬 Qwen의 메모 작업은 **Ollama 모델 → 에이전트의 프로세스 내부 MCP 세션 → Unix 소켓 → C++ 캔버스 서버** 순서로 처리됩니다. 로컬 모델에 노출하는 도구는 메모 생성 하나이며, 이를 기존 MCP의 `create_objects` 호출로 변환합니다. MCP 공개 포트는 없습니다.
+로컬 Gemma의 메모 작업은 **Ollama 모델 → 에이전트의 프로세스 내부 MCP 세션 → Unix 소켓 → C++ 캔버스 서버** 순서로 처리됩니다. 메모 생성 요청은 기존 MCP의 `create_objects` 호출로 변환합니다. MCP 공개 포트는 없습니다.
 
 
 ## 구성

@@ -372,7 +372,7 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
         const auto agent_options=event.value("options",Json::object());agora::agent::options(agent_options);
         const auto provider=agent_options.value("provider",std::string("local"));
         const auto model=agent_options.value("model",std::string());
-        if(provider!="local"||(!model.empty()&&model!="qwen2.5:1.5b"))
+        if(provider!="local"||(!model.empty()&&model!="qwen2.5:1.5b"&&model!="gemma4:12b"))
             throw std::invalid_argument("AGENT_OPTIONS_INVALID");
         const auto selected=event.value("selected_ids",Json::array());
         if(!selected.is_array()||selected.size()>10)throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");

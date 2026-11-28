@@ -192,7 +192,7 @@ async def test_local_canvas_agent_requires_fixed_model_without_personal_key(tmp_
     async with await asyncio.start_unix_server(daemon.serve, path, limit=daemon.MAX_FRAME):
         status = await request(operation="status")
         assert status["configured"] and status["credential_source"] == "none"
-        assert status["model"] == "qwen2.5:1.5b"
+        assert status["model"] == "gemma4:12b"
         assert (await request(api_key="not-a-local-key"))["error"] == "AGENT_API_KEY_INVALID"
         assert (await request(options={"provider": "local", "model": "cloud"}))["error"] == "AGENT_OPTIONS_INVALID"
         for provider in ("anthropic", "openrouter", "openai", "gemini"):
